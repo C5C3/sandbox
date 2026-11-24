@@ -316,11 +316,14 @@ scaffold_attached() {
 }
 
 @test "cluster_vars prints every key of the configuration as a string in cluster-vars" {
+	local pin
+	# scripts/pin.sh moves the pin, so the test reads it.
+	pin=$(yq '.upstream.cobaltcore' "$SANDBOX_ROOT/config.yaml")
 	run cluster_vars
 	[ "$status" -eq 0 ]
 	[ "$(yq '[.apiVersion, .kind, .metadata.name, .metadata.namespace] | join(" ")' - <<<"$output")" = "v1 ConfigMap cluster-vars flux-system" ]
 	[ "$(yq -o=json -I=0 '.metadata.labels' - <<<"$output")" = '{"reconcile.fluxcd.io/watch":"Enabled"}' ]
-	[ "$(yq -o=json -I=0 '.data' - <<<"$output")" = '{"NETWORK_SUBNET":"172.30.0.0/16","ADDRESSES_GATEWAY":"172.30.255.10","REGISTRY_IMAGE":"registry:3","SWITCHES_HYPERVISOR_NODES":"1","UPSTREAM_COBALTCORE":"15a0323e243c7f53b91200f193a58b5b41d41f6a","FLUX_OPERATOR":"0.63.1"}' ]
+	[ "$(yq -o=json -I=0 '.data' - <<<"$output")" = '{"NETWORK_SUBNET":"172.30.0.0/16","ADDRESSES_GATEWAY":"172.30.255.10","REGISTRY_IMAGE":"registry:3","SWITCHES_HYPERVISOR_NODES":"1","UPSTREAM_COBALTCORE":"'"$pin"'","FLUX_OPERATOR":"0.63.1"}' ]
 	[ "$(yq '[.data[] | tag] | unique | join(" ")' - <<<"$output")" = '!!str' ]
 }
 
