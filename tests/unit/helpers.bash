@@ -8,20 +8,36 @@
 . "$BATS_TEST_DIRNAME/../../scripts/lib/preflight.sh"
 # shellcheck source=../../scripts/lib/profile.sh
 . "$BATS_TEST_DIRNAME/../../scripts/lib/profile.sh"
+# shellcheck source=../../scripts/lib/hub.sh
+. "$BATS_TEST_DIRNAME/../../scripts/lib/hub.sh"
 
-# Every test starts without a configuration and a profile, whatever the
-# caller exported.
+# Every test starts without a configuration, a profile and a revision,
+# whatever the caller exported.
 unset SANDBOX_CONFIG SANDBOX_SUBNET SANDBOX_GATEWAY_ADDRESS \
 	SANDBOX_REGISTRY_IMAGE SANDBOX_HYPERVISOR_NODES SANDBOX_FLUX_OPERATOR_VERSION \
-	SANDBOX_PROFILE SANDBOX_PROFILE_FILE SANDBOX_PROFILE_DIR SANDBOX_PROFILE_CLUSTERS
+	SANDBOX_PROFILE SANDBOX_PROFILE_FILE SANDBOX_PROFILE_DIR SANDBOX_PROFILE_CLUSTERS \
+	SANDBOX_REVISION SANDBOX_STAGE_TIMEOUT SANDBOX_SOURCE_TIMEOUT
 
-# A unit test that reaches Docker or kind fails instead of touching the host.
+# A unit test that reaches Docker, kind, a cluster, Helm or Flux fails instead
+# of touching the host.
 docker() {
 	echo "unit test called docker $*" >&2
 	return 1
 }
 kind() {
 	echo "unit test called kind $*" >&2
+	return 1
+}
+kubectl() {
+	echo "unit test called kubectl $*" >&2
+	return 1
+}
+helm() {
+	echo "unit test called helm $*" >&2
+	return 1
+}
+flux() {
+	echo "unit test called flux $*" >&2
 	return 1
 }
 
