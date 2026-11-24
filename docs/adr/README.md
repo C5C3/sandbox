@@ -19,6 +19,8 @@ Each file in this directory records one decision with its context, the alternati
 | [ADR-0013](0013-move-the-upstream-pin-by-scheduled-pull-request.md) | Move the upstream pin by a scheduled pull request gated on validation | Accepted |
 | [ADR-0014](0014-16-gib-host-for-the-profiles-up-to-full.md) | Target a 16 GiB host for the profiles up to full | Accepted |
 | [ADR-0015](0015-select-modules-through-one-root-kustomization-per-cluster.md) | Select modules through one root Kustomization per cluster | Accepted |
+| [ADR-0016](0016-vendor-only-the-upstream-paths-that-are-read.md) | Vendor only the upstream paths that are read | Accepted |
+| [ADR-0017](0017-open-the-pin-pull-request-with-the-built-in-token.md) | Open the pin pull request with the built-in token | Accepted |
 
 ## Points to prove first
 

@@ -26,6 +26,8 @@ Following upstream `main` directly. Upstream would change under a running evalua
 
 A scheduled workflow moves the pin to upstream `main`, runs `make validate` and opens a pull request. The validation renders every stage, checks the result against the schemas and checks that every patch still finds its target.
 
+How the pull request is opened and validated is recorded in [ADR-0017](0017-open-the-pin-pull-request-with-the-built-in-token.md).
+
 The validation cannot see a break that only shows at run time, so `make up` records the pin it ran with.
 
 Holding the pin is a change of one line.
