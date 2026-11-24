@@ -12,7 +12,8 @@ The idea for this sandbox and its implementation come out of the
 [IPCEI-CIS Hackathon Potsdam](https://apeirora.eu/content/news/apeirora-ipcei-cis-hackathon/)
 of the IPCEI-CIS and NeoNephos community, November 24 to 26, 2026.
 
-> **Status: specification.** Nothing in this repository is implemented yet.
+> **Status: milestone 0 built.** The scaffold of milestone 0 is implemented,
+> and milestones 1 to 7 are specification.
 > This README describes what is to be built, which upstream material it builds
 > on, and which points have to be proven first. It was written against
 > `C5C3/cobaltcore` at `15a0323e` and `C5C3/playground` at `d2e6b596`
@@ -335,16 +336,29 @@ that deploys them.
   Git remote. The same registry can serve as a pull-through cache for the
   images.
 - **Upstream by inclusion, pinned, moved on a schedule.** `make vendor` checks
-  out `C5C3/cobaltcore` at the commit recorded in the configuration into
-  `vendor/cobaltcore`, which Git ignores and which becomes part of the
-  artifact. Stages reference `vendor/cobaltcore/deploy/...` and patch what
-  differs. A scheduled workflow moves the pin to upstream `main`, runs
-  `make validate` and opens a pull request, and a passing validation is the
-  gate for merging it. The validation renders every stage against the new
-  checkout, checks the result against the schemas, and checks that every
-  patch still finds its target. It cannot see a break that only shows at run
-  time, so `make up` records the pin it ran with, and holding the pin is one
-  line.
+  out `C5C3/cobaltcore` at the commit `upstream.cobaltcore` of the
+  configuration into `vendor/cobaltcore`, which Git ignores and which becomes
+  part of the artifact. The checkout holds two paths of upstream, `deploy/`
+  and `operators/*/config/crd/bases/`; a module that reads another path adds
+  its pattern to `SANDBOX_VENDOR_PATHS` in `scripts/lib/vendor.sh`
+  ([ADR-0016](docs/adr/0016-vendor-only-the-upstream-paths-that-are-read.md)).
+  Stages reference `vendor/cobaltcore/deploy/...` and patch what differs.
+  `make up` checks out a missing checkout, and moves one at another commit or
+  with other paths, before it creates anything. It refuses such a checkout
+  when it has local changes, which only `make vendor` discards; a staged file
+  and a commit made in the checkout are local changes too. A scheduled workflow
+  moves the pin to upstream `main`, runs `make validate` and opens a pull
+  request, and a passing validation is the gate for merging it. The
+  validation runs six checks: the tools, the checkout at the pin, the render
+  of every root and stage with strict substitution, the schemas of
+  `scripts/crd-sources.yaml`, `kubeconform -strict` against them, and that
+  every patch changes the render of a stage that reaches it. It does not
+  template Helm charts: a `HelmRelease` is checked as an object. The
+  validation cannot see a break that only shows at run time, so `make up` and
+  `make push` record the commit of the checkout they pushed, followed by
+  `-modified` when it has local changes, in the annotation
+  `sandbox.c5c3.io/upstream` of the `OCIRepository` `sandbox`, and
+  `make status` prints it. Holding the pin is one line.
 - **Bootstrap steps as Jobs.** OpenBao initialisation and unseal, the auth
   mounts and policies, and the database tenant onboarding
   (`setup-database-tenant.sh`) run as Jobs that mount the upstream scripts,
@@ -354,6 +368,35 @@ that deploys them.
   nodes (loop devices, labels), install Flux, exchange what crosses a cluster
   boundary before Flux can (kubeconfigs, the token-review configuration of
   OpenBao, CA bundles), and print access data.
+
+### Moving the upstream pin
+
+The workflow `upstream-pin` (`.github/workflows/upstream-pin.yaml`) runs every
+day at 04:23 UTC and on request. When upstream `main` is past the pin, it
+checks out upstream at the new commit, runs `make validate` and proposes the
+move as the pull request of the branch `upstream-pin`. The description of the
+pull request carries the result of the validation and the end of its log, and
+the workflow `validate` runs on the branch.
+
+A failed validation is fixed with commits on the branch `upstream-pin`. The
+workflow replaces the branch only while every commit on it is its own, so a
+fix pushed there stays. When the pull request of such a branch is merged or
+closed and the branch is kept, every later run fails until the branch is
+deleted.
+
+The workflow opens the pull request with the built-in token of GitHub Actions
+([ADR-0017](docs/adr/0017-open-the-pin-pull-request-with-the-built-in-token.md)).
+The repository setting
+"Allow GitHub Actions to create and approve pull requests" under Settings,
+Actions, General must be on. Without it, a run pushes the branch and fails
+when it opens the pull request. The setting also lets `GITHUB_TOKEN` approve
+pull requests, in every workflow of the repository, so the review that the
+protection of `main` requires must be one that github-actions[bot] cannot
+give, such as the review of a code owner.
+
+Holding the pin is leaving the line `upstream.cobaltcore` of `config.yaml` as
+it is, or setting that line back, while the proposal stays an open pull
+request. `gh workflow disable upstream-pin.yaml` stops the proposals.
 
 ## Modules
 
@@ -566,7 +609,7 @@ docs/adr/            Design decisions, one file each
 .github/workflows/   Validation and the scheduled move of the upstream pin
 config.yaml          Addresses, sizes, the upstream pin
 Makefile
-vendor/              Upstream checkout, ignored by Git
+vendor/              The paths of upstream that make vendor checks out, ignored by Git
 .sandbox/            State of a running sandbox, ignored by Git
 ```
 
@@ -582,9 +625,10 @@ make status                 # the FluxInstance, the source, the roots and the st
 make footprint              # memory requests and working set, per cluster and in total
 make env                    # print OS_* variables, write sandbox-ca.pem
 make verify                 # the checks of the milestones the profile covers
-make vendor                 # refresh vendor/cobaltcore at the pinned commit
-make validate               # render every stage and check it against the schemas
+make vendor                 # check out the paths of upstream at the pin into vendor/cobaltcore, discarding local changes
+make validate               # render every root and stage against vendor/cobaltcore, check schemas and patches
 make test                   # the unit tests of the command layer
+make test-validate          # the tests of make validate on a fixture tree, with flux and kubeconform
 make test-host              # the lifecycle test against a real Docker, which creates and removes a sandbox
 make down                   # delete clusters, registry, network, loop devices
 ```
@@ -595,6 +639,14 @@ each. `CONFIG=<file>` selects another configuration file. `make up` waits up
 to 600 s for the stages, and `SANDBOX_STAGE_TIMEOUT=<seconds>` changes that;
 `SANDBOX_SOURCE_TIMEOUT=<seconds>` does the same for the source, by default
 120 s.
+
+`make vendor` and `make up` fetch upstream from
+`https://github.com/C5C3/cobaltcore`, and `SANDBOX_UPSTREAM_URL=<url>` names
+another repository. `scripts/install-validate-tools.sh` installs the `flux`
+and `kubeconform` that `make validate` runs, pinned and checked against their
+SHA-256 sums, into `SANDBOX_VALIDATE_CACHE`, by default
+`${XDG_CACHE_HOME:-$HOME/.cache}/sandbox-validate`, which also keeps the
+downloaded schemas. `scripts/validate.sh <directory>` validates another tree.
 
 `make verify` is the quick start turned into a script: each milestone below
 lists the checks it adds.
@@ -611,15 +663,15 @@ lists the checks it adds.
 | CPU | To be measured. *Upstream* budgets 4 vCPU for the control plane with all eight services. Working estimate for `full`: 8 cores |
 | Disk | To be measured. Every kind node keeps its own image store, so an image is stored once per node that runs it. Working estimate: 60 GB free for `full`, 100 GB for `parity`, including the sparse OSD files |
 | DNS | The resolver must answer `*.nip.io` names with private addresses. Resolvers with DNS rebinding protection drop such answers; a module with a CoreDNS template and a local resolver entry is the fallback |
-| Tools | `docker`, `kind`, `kubectl`, `helm`, `flux`, `yq` v4.40.1 or newer, `jq`, `make`, `bats` (bats-core 1.5.0 or newer, for `make test` and `make test-host`), and the OpenStack CLI with `osc-placement` and `python-barbicanclient` |
-| Network | Egress to `ghcr.io`, `quay.io`, `docker.io`, the Helm repositories and the cirros download |
+| Tools | `docker`, `kind`, `kubectl`, `helm`, `flux`, `git`, `yq` v4.40.1 or newer, `jq`, `make`, `bats` (bats-core 1.5.0 or newer, for `make test`, `make test-validate` and `make test-host`), `kubeconform`, `curl` and `tar` for `make validate`, and the OpenStack CLI with `osc-placement` and `python-barbicanclient` |
+| Network | Egress to `github.com` (upstream, the tools and schemas of `make validate`), `raw.githubusercontent.com` (the Kubernetes schemas of `make validate`), `ghcr.io`, `quay.io`, `docker.io`, the Helm repositories and the cirros download |
 
 `make up`, `make up-<cluster>` and `scripts/preflight.sh [<role>...]` check
 the host before anything is created. They print one line per check, with the
 version of each tool found, and stop only for what the clusters being created
 need. Every cluster needs Linux on x86-64, cgroup v2, a reachable rootful
 Docker, `fs.inotify.max_user_instances` at 512 or more, `docker`, `kind`,
-`kubectl`, `jq`, `helm`, `flux`, `yq` v4.40.1 or newer and a valid
+`kubectl`, `jq`, `helm`, `flux`, `git`, `yq` v4.40.1 or newer and a valid
 configuration file. `sandbox-storage` also needs the module `loop`, and
 `sandbox-compute` the modules `openvswitch`, `geneve` and `vhost_net`.
 `/dev/kvm`, the resolver's answer for a nip.io name and the OpenStack CLI with
