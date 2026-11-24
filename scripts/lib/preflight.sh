@@ -122,7 +122,7 @@ preflight_run() {
 		_preflight_report ok inotify "$out"
 	fi
 
-	for name in docker kind kubectl jq; do
+	for name in docker kind kubectl jq helm flux; do
 		if out=$(probe_tool "$name"); then
 			_preflight_report ok "tool $name" "$out"
 		else
@@ -141,14 +141,12 @@ preflight_run() {
 		_preflight_report FAIL "tool yq" "mikefarah yq v$yq_min or newer required, found $out"
 	fi
 
-	for name in helm flux openstack; do
-		if out=$(probe_tool "$name"); then
-			[ "$name" != openstack ] || openstack_ok=true
-			_preflight_report ok "tool $name" "$out"
-		else
-			_preflight_report warn "tool $name" "not found in PATH"
-		fi
-	done
+	if out=$(probe_tool openstack); then
+		openstack_ok=true
+		_preflight_report ok "tool openstack" "$out"
+	else
+		_preflight_report warn "tool openstack" "not found in PATH"
+	fi
 
 	if $openstack_ok; then
 		for name in osc-placement python-barbicanclient; do
