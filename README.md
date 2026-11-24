@@ -266,9 +266,11 @@ address on it directly, which is why a Linux host is required.
 | Kubernetes APIs | `https://<cluster>-control-plane:6443`, the address of `kind get kubeconfig --internal`, used in the registration kubeconfig and in the kubeconfigs of Flux |
 | MTU | The Docker bridge carries 1500, so `global_physnet_mtu` is `1500` and tenant networks get 1442, where the upstream lab has 1460 and 1402 |
 
-Nothing binds a port on a host interface. The sandbox is reachable from the
-host only; a remote workstation uses an SSH tunnel or a route to the Docker
-subnet.
+Nothing binds a port on a host interface that another machine reaches. kind
+publishes the API server of each cluster on `127.0.0.1`, at a port it picks,
+and the sandbox adds no port mapping of its own. The sandbox is reachable from
+the host only; a remote workstation uses an SSH tunnel or a route to the
+Docker subnet.
 
 Every address above comes from one configuration file and reaches the
 manifests through Flux `postBuild` substitution from a `cluster-vars`
@@ -537,11 +539,13 @@ orders/              Owners' namespaces, assignment and example orders
 profiles/            One file per profile: clusters, modules, switches
 kind/                kind cluster configurations
 scripts/             Cluster lifecycle, node preparation, registration, validation
+tests/               Tests of the command layer
 docs/adr/            Design decisions, one file each
 .github/workflows/   Validation and the scheduled move of the upstream pin
 config.yaml          Addresses, sizes, the upstream pin
 Makefile
 vendor/              Upstream checkout, ignored by Git
+.sandbox/            State of a running sandbox, ignored by Git
 ```
 
 ## Planned command surface
@@ -558,8 +562,14 @@ make env                    # print OS_* variables, write sandbox-ca.pem
 make verify                 # the checks of the milestones the profile covers
 make vendor                 # refresh vendor/cobaltcore at the pinned commit
 make validate               # render every stage and check it against the schemas
+make test                   # the unit tests of the command layer
+make test-host              # the lifecycle test against a real Docker, which creates and removes a sandbox
 make down                   # delete clusters, registry, network, loop devices
 ```
+
+`make up` writes one kubeconfig per cluster to
+`.sandbox/kubeconfig/<role>.yaml` and prints the `export KUBECONFIG=` line for
+each. `CONFIG=<file>` selects another configuration file.
 
 `make verify` is the quick start turned into a script: each milestone below
 lists the checks it adds.
@@ -576,8 +586,19 @@ lists the checks it adds.
 | CPU | To be measured. *Upstream* budgets 4 vCPU for the control plane with all eight services. Working estimate for `full`: 8 cores |
 | Disk | To be measured. Every kind node keeps its own image store, so an image is stored once per node that runs it. Working estimate: 60 GB free for `full`, 100 GB for `parity`, including the sparse OSD files |
 | DNS | The resolver must answer `*.nip.io` names with private addresses. Resolvers with DNS rebinding protection drop such answers; a module with a CoreDNS template and a local resolver entry is the fallback |
-| Tools | `docker`, `kind`, `kubectl`, `helm`, `flux`, `yq` v4.40.1 or newer, `jq`, `make`, and the OpenStack CLI with `osc-placement` and `python-barbicanclient` |
+| Tools | `docker`, `kind`, `kubectl`, `helm`, `flux`, `yq` v4.40.1 or newer, `jq`, `make`, `bats` (bats-core 1.5.0 or newer, for `make test` and `make test-host`), and the OpenStack CLI with `osc-placement` and `python-barbicanclient` |
 | Network | Egress to `ghcr.io`, `quay.io`, `docker.io`, the Helm repositories and the cirros download |
+
+`make up`, `make up-<cluster>` and `scripts/preflight.sh [<role>...]` check
+the host before anything is created. They print one line per check, with the
+version of each tool found, and stop only for what the clusters being created
+need. Every cluster needs Linux on x86-64, cgroup v2, a reachable rootful
+Docker, `fs.inotify.max_user_instances` at 512 or more, `docker`, `kind`,
+`kubectl`, `jq`, `yq` v4.40.1 or newer and a valid configuration file.
+`sandbox-storage` also needs the module `loop`, and `sandbox-compute` the
+modules `openvswitch`, `geneve` and `vhost_net`. `/dev/kvm`, the resolver's
+answer for a nip.io name, `helm`, `flux` and the OpenStack CLI with its
+plugins are reported as warnings.
 
 ## Footprint
 
