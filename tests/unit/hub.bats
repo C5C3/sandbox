@@ -321,6 +321,18 @@ scaffold_attached() {
 	[ "$output" = 'error: config: switches.hypervisor-nodes and switches.hypervisor_nodes become the same Flux variable SWITCHES_HYPERVISOR_NODES' ]
 }
 
+@test "up.sh stops before it calls kind or Docker when two keys become the same Flux variable" {
+	cp -R -- "$SANDBOX_ROOT/scripts" "$BATS_TEST_TMPDIR/"
+	# The host check passes.
+	echo 'preflight_run() { :; }' >"$BATS_TEST_TMPDIR/scripts/lib/preflight.sh"
+	export SANDBOX_CONFIG=$SANDBOX_ROOT/config.yaml
+	profile_with $'clusters: [management]\nswitches:\n  hypervisor_nodes: 2'
+	export -f docker kind
+	run "$BATS_TEST_TMPDIR/scripts/up.sh"
+	[ "$status" -eq 1 ]
+	[ "$output" = 'error: config: switches.hypervisor-nodes and switches.hypervisor_nodes become the same Flux variable SWITCHES_HYPERVISOR_NODES' ]
+}
+
 @test "cluster_vars carries the switches of the profile" {
 	profile_with $'clusters: [management]\nswitches:\n  hypervisor-nodes: 2'
 	profile_load
