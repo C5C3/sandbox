@@ -1,0 +1,5 @@
+clusters: [management, storage, compute]
+modules:
+  management: [test]
+  storage: [test]
+  compute: [test]

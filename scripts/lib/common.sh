@@ -65,23 +65,39 @@ kind_config() {
 	yq ".nodes += [$workers]" "$file"
 }
 
-# config_load: reads the configuration file that SANDBOX_CONFIG names, by
-# default config.yaml in the repository root, and exports SANDBOX_SUBNET,
+# config_merged: prints the configuration file that SANDBOX_CONFIG names, by
+# default config.yaml in the repository root. When SANDBOX_PROFILE_FILE names
+# a profile with switches, each of them replaces the key of the same name
+# under switches.
+config_merged() {
+	local path=${SANDBOX_CONFIG:-$SANDBOX_ROOT/config.yaml} out
+
+	[ -f "$path" ] || die "config: $path not found"
+	if ! out=$(yq '.' "$path" 2>&1); then
+		out=${out%%$'\n'*}
+		die "config: $path: ${out#Error: }"
+	fi
+	if [ -n "${SANDBOX_PROFILE_FILE:-}" ] && [ "$(yq '.switches | tag' "$SANDBOX_PROFILE_FILE")" = '!!map' ]; then
+		# + of two maps replaces the keys of the left one with those of the
+		# right one, key by key.
+		out=$(yq '.switches = ((.switches // {}) + load(strenv(SANDBOX_PROFILE_FILE)).switches)' "$path") ||
+			die "config: cannot apply the switches of $SANDBOX_PROFILE_FILE"
+	fi
+	printf '%s\n' "$out"
+}
+
+# config_load: reads the output of config_merged and exports SANDBOX_SUBNET,
 # SANDBOX_GATEWAY_ADDRESS, SANDBOX_REGISTRY_IMAGE, SANDBOX_HYPERVISOR_NODES and
 # SANDBOX_FLUX_OPERATOR_VERSION. A missing key is an error; no script carries
 # a default for these five.
 config_load() {
-	local path=${SANDBOX_CONFIG:-$SANDBOX_ROOT/config.yaml}
-	local key value subnet gateway nodes operator
+	local merged key value subnet gateway nodes operator
 	local -A values=()
 
-	[ -f "$path" ] || die "config: $path not found"
+	merged=$(config_merged) || exit 1
 	for key in network.subnet addresses.gateway registry.image switches.hypervisor-nodes flux.operator; do
 		# The bracket form reads a key with a hyphen, such as hypervisor-nodes.
-		if ! value=$(yq ".${key%%.*}[\"${key#*.}\"] // \"\"" "$path" 2>&1); then
-			value=${value%%$'\n'*}
-			die "config: $path: ${value#Error: }"
-		fi
+		value=$(yq ".${key%%.*}[\"${key#*.}\"] // \"\"" - <<<"$merged")
 		[ -n "$value" ] || die "config: $key is not set"
 		values[$key]=$value
 	done

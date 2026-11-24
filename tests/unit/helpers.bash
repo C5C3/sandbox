@@ -6,10 +6,14 @@
 . "$BATS_TEST_DIRNAME/../../scripts/lib/common.sh"
 # shellcheck source=../../scripts/lib/preflight.sh
 . "$BATS_TEST_DIRNAME/../../scripts/lib/preflight.sh"
+# shellcheck source=../../scripts/lib/profile.sh
+. "$BATS_TEST_DIRNAME/../../scripts/lib/profile.sh"
 
-# Every test starts without a configuration, whatever the caller exported.
+# Every test starts without a configuration and a profile, whatever the
+# caller exported.
 unset SANDBOX_CONFIG SANDBOX_SUBNET SANDBOX_GATEWAY_ADDRESS \
-	SANDBOX_REGISTRY_IMAGE SANDBOX_HYPERVISOR_NODES SANDBOX_FLUX_OPERATOR_VERSION
+	SANDBOX_REGISTRY_IMAGE SANDBOX_HYPERVISOR_NODES SANDBOX_FLUX_OPERATOR_VERSION \
+	SANDBOX_PROFILE SANDBOX_PROFILE_FILE SANDBOX_PROFILE_DIR SANDBOX_PROFILE_CLUSTERS
 
 # A unit test that reaches Docker or kind fails instead of touching the host.
 docker() {
@@ -26,6 +30,14 @@ kind() {
 config_with() {
 	export SANDBOX_CONFIG=$BATS_TEST_TMPDIR/config.yaml
 	yq "$1" "$SANDBOX_ROOT/config.yaml" >"$SANDBOX_CONFIG"
+}
+
+# profile_with <yaml>: writes the text as the profile case into the test's
+# directory and selects it.
+profile_with() {
+	mkdir -p -- "$BATS_TEST_TMPDIR/profiles"
+	printf '%s\n' "$1" >"$BATS_TEST_TMPDIR/profiles/case.yaml"
+	export SANDBOX_PROFILE_DIR=$BATS_TEST_TMPDIR/profiles SANDBOX_PROFILE=case
 }
 
 # tool_version <name>: prints a version line of the tool as probe_tool does.
