@@ -166,3 +166,215 @@ ensure_source() {
 	done
 	die "source sandbox is not Ready at $SANDBOX_REVISION after $timeout s: $message; the pods of sandbox-management must resolve and reach $SANDBOX_REGISTRY:$SANDBOX_REGISTRY_PORT"
 }
+
+# sandbox_cluster <role>: succeeds when the role's cluster exists and has a
+# node on SANDBOX_NETWORK. When that cannot be told, the script ends with
+# status 1.
+sandbox_cluster() {
+	local rc=0
+	cluster_exists "$1" || return 1
+	cluster_on_sandbox_network "$1" || rc=$?
+	# Status 2: the function printed why it cannot tell.
+	[ "$rc" -ne 2 ] || exit 1
+	[ "$rc" -eq 0 ]
+}
+
+# attached_roles: prints the roles of SANDBOX_PROFILE_CLUSTERS whose cluster
+# is one of the sandbox, separated by spaces. A kind cluster of the same name
+# on another Docker network is never given Flux.
+attached_roles() {
+	local role attached=''
+	for role in $SANDBOX_PROFILE_CLUSTERS; do
+		if sandbox_cluster "$role"; then
+			attached+=${attached:+ }$role
+		fi
+	done
+	printf '%s\n' "$attached"
+}
+
+# cluster_vars: prints the ConfigMap flux-system/cluster-vars. Its data holds
+# every scalar leaf of config_merged that is neither null nor empty, as a
+# string named by the path joined with _, in upper case, with - replaced by
+# _: network.subnet becomes NETWORK_SUBNET. The label
+# reconcile.fluxcd.io/watch makes Flux reconcile the stages that read it as
+# soon as a value changes.
+cluster_vars() {
+	local merged entries bad same
+	merged=$(config_merged) || exit 1
+	entries=$(yq -o=json '.' - <<<"$merged" | jq -c '
+		[paths(type != "object" and type != "array") as $p
+		 | getpath($p) as $value
+		 | select($value != null and $value != "")
+		 | {path: ($p | map(tostring) | join(".")),
+		    name: ($p | map(tostring) | join("_") | ascii_upcase | gsub("-"; "_")),
+		    value: ($value | tostring)}]')
+	bad=$(jq -r 'map(select(.name | test("^[A-Z_][A-Z0-9_]*$") | not))[0] // empty | "\(.path)\t\(.name)"' <<<"$entries")
+	[ -z "$bad" ] ||
+		die "config: ${bad%%$'\t'*} cannot be a Flux variable, ${bad#*$'\t'} does not match ^[A-Z_][A-Z0-9_]*\$"
+	same=$(jq -r 'group_by(.name) | map(select(length > 1))[0] // empty | "\(map(.path) | join(" and ")) become the same Flux variable \(.[0].name)"' <<<"$entries")
+	[ -z "$same" ] || die "config: $same"
+	jq '{apiVersion: "v1", kind: "ConfigMap",
+	     metadata: {name: "cluster-vars", namespace: "flux-system", labels: {"reconcile.fluxcd.io/watch": "Enabled"}},
+	     data: (map({key: .name, value}) | from_entries)}' <<<"$entries"
+}
+
+# ensure_cluster_vars: applies the output of cluster_vars.
+ensure_cluster_vars() {
+	local manifest
+	manifest=$(cluster_vars) || exit 1
+	log "applying the ConfigMap flux-system/cluster-vars"
+	_hub_apply "cannot apply the ConfigMap flux-system/cluster-vars on sandbox-management" <<<"$manifest"
+}
+
+# ensure_kubeconfig_secret <role>: writes the kubeconfig kind gives for the
+# inside of the Docker network into the Secret flux-system/kubeconfig-<role>,
+# key value, through which the stages of the role reach its cluster. The
+# kubeconfig is never written to a file.
+ensure_kubeconfig_secret() {
+	local role=$1 name kubeconfig manifest
+	name=$(cluster_name "$role")
+	kubeconfig=$(kind get kubeconfig --internal --name "$name" 2>/dev/null) ||
+		die "cannot read the internal kubeconfig of $name"
+	log "writing the Secret flux-system/kubeconfig-$role"
+	manifest=$(printf '%s\n' "$kubeconfig" | _hub_json -n flux-system create secret generic "kubeconfig-$role" \
+		--from-file=value=/dev/stdin --dry-run=client) ||
+		die "cannot write the Secret flux-system/kubeconfig-$role on sandbox-management: $manifest"
+	manifest=$(printf '%s\n' "$manifest" | jq '.metadata.labels["reconcile.fluxcd.io/watch"] = "Enabled"')
+	printf '%s\n' "$manifest" |
+		_hub_apply "cannot write the Secret flux-system/kubeconfig-$role on sandbox-management" || exit 1
+}
+
+# root_manifest <role>: prints the root Kustomization cluster-<role>. It
+# applies clusters/<role>/ with the modules the profile lists for the role as
+# components, which puts their stages on sandbox-management, and labels the
+# stages with the role. With prune, a module taken off the list loses its
+# stage, and the stage removes what it applied on its cluster.
+root_manifest() {
+	local role=$1 modules module
+	require_roles "$role"
+	modules=$(profile_modules "$role") || exit 1
+	cat <<EOT
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: cluster-$role
+  namespace: flux-system
+  labels:
+    sandbox.c5c3.io/cluster: $role
+spec:
+  interval: 10m
+  retryInterval: 1m
+  timeout: 2m
+  path: ./clusters/$role
+  prune: true
+  sourceRef:
+    kind: OCIRepository
+    name: sandbox
+EOT
+	if [ -n "$modules" ]; then
+		echo '  components:'
+		for module in $modules; do
+			printf '    - %s\n' "$module"
+		done
+	fi
+	cat <<EOT
+  commonMetadata:
+    labels:
+      sandbox.c5c3.io/cluster: $role
+EOT
+}
+
+# ensure_root <role>: applies the output of root_manifest.
+ensure_root() {
+	local manifest
+	manifest=$(root_manifest "$1") || exit 1
+	log "applying the root cluster-$1"
+	_hub_apply "cannot apply the root cluster-$1 on sandbox-management" <<<"$manifest"
+}
+
+# wait_stages: polls the Kustomizations of sandbox-management every 2 s until
+# the root and every stage of the profile's modules of each attached role is
+# Ready with SANDBOX_REVISION as its last applied revision, for at most
+# SANDBOX_STAGE_TIMEOUT seconds, by default 600. A stage that is Ready at an
+# older revision is not ready.
+wait_stages() {
+	local timeout attached role module modules start out pending='' failed='' name message
+	local -a names=()
+	timeout=$(_timeout SANDBOX_STAGE_TIMEOUT 600) || exit 1
+	attached=$(attached_roles) || exit 1
+	for role in $attached; do
+		names+=("cluster-$role")
+		modules=$(profile_modules "$role") || exit 1
+		for module in $modules; do
+			names+=("$role-$module")
+		done
+	done
+
+	log "waiting for ${#names[@]} roots and stages to be Ready at $SANDBOX_REVISION"
+	start=$SECONDS
+	while :; do
+		if out=$(_hub_json -n flux-system get kustomizations.kustomize.toolkit.fluxcd.io); then
+			failed=''
+			pending=$(jq -r --arg names "${names[*]}" --arg rev "$SANDBOX_REVISION" "$_HUB_READY"'
+				(.items // []) as $items
+				| ($names | split(" "))[] as $name
+				| [$items[] | select(.metadata.name == $name)][0] as $k
+				| if $k == null then [$name, "not found"]
+				  else ($k | ready) as [$status, $message]
+				  | select($status != "True" or $k.status.lastAppliedRevision != $rev)
+				  | [$name, $message] end
+				| @tsv' <<<"$out")
+			if [ -z "$pending" ]; then
+				return 0
+			fi
+		else
+			failed=$out
+		fi
+		[ $((SECONDS - start)) -lt "$timeout" ] || break
+		sleep 2
+	done
+
+	[ -z "$failed" ] || die "cannot read the stages of sandbox-management: $failed"
+	while IFS=$'\t' read -r name message; do
+		printf 'error: stage %s: %s\n' "$name" "$message" >&2
+	done <<<"$pending"
+	die "$(grep -c '' <<<"$pending") of ${#names[@]} stages are not Ready at $SANDBOX_REVISION after $timeout s; make status shows them"
+}
+
+# hub_sync: installs Flux on sandbox-management and makes it apply the
+# profile's modules to every attached cluster, then waits for their stages.
+# It stops before the first step when a stage depends on a stage of a
+# cluster that is not attached, because no root would create that stage.
+# Every step is safe to repeat; a failed step stops the run and leaves what
+# the steps before it applied.
+hub_sync() {
+	local attached role modules module dep stages=0
+	attached=$(attached_roles) || exit 1
+	for role in $attached; do
+		modules=$(profile_modules "$role") || exit 1
+		for module in $modules; do
+			# profile_load has read every stage.yaml of the profile.
+			for dep in $(yq '.spec.dependsOn // [] | .[].name' "$SANDBOX_ROOT/clusters/$role/$module/stage.yaml"); do
+				[[ " $attached " == *" ${dep%%-*} "* ]] ||
+					die "the stage $role-$module depends on $dep, but $(cluster_name "${dep%%-*}") is not part of the sandbox; run make up-${dep%%-*} first"
+			done
+		done
+	done
+	ensure_flux
+	ensure_cluster_vars
+	for role in $attached; do
+		if [ "$role" != management ]; then
+			ensure_kubeconfig_secret "$role"
+		fi
+	done
+	ensure_source
+	for role in $attached; do
+		ensure_root "$role"
+	done
+	wait_stages
+	for role in $attached; do
+		modules=$(profile_modules "$role") || exit 1
+		stages=$((stages + $(wc -w <<<"$modules")))
+	done
+	log "$stages stages Ready on $(wc -w <<<"$attached") clusters at $SANDBOX_REVISION"
+}

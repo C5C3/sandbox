@@ -250,3 +250,301 @@ source_answers() {
 		[ "$output" = "error: SANDBOX_SOURCE_TIMEOUT must be an integer of 1 or more, got '$value'" ]
 	done
 }
+
+# kustomization <name> <status> <message> <revision> [<role>]: prints a Flux
+# Kustomization with the Ready condition, the last applied revision and the
+# label of the role.
+kustomization() {
+	jq -n --arg name "$1" --arg status "$2" --arg message "$3" --arg rev "$4" --arg role "${5:-}" '
+		{kind: "Kustomization", metadata: ({name: $name} + if $role == "" then {} else {labels: {"sandbox.c5c3.io/cluster": $role}} end),
+		 status: {conditions: [{type: "Ready", status: $status, message: $message}], lastAppliedRevision: $rev}}'
+}
+
+# stages_answer <object>...: replaces hub_kubectl with a function that lists
+# the objects as the Kustomizations of flux-system.
+stages_answer() {
+	jq -s '{items: .}' <<<"$*" >"$BATS_TEST_TMPDIR/stages.json"
+	hub_kubectl() {
+		[ "$*" = "-n flux-system get kustomizations.kustomize.toolkit.fluxcd.io -o json" ] || return 1
+		cat "$BATS_TEST_TMPDIR/stages.json"
+	}
+}
+
+# ready_stages [<name>...]: prints a Ready Kustomization at the revision for
+# each root and stage of scaffold whose name is not given.
+ready_stages() {
+	local name
+	for name in cluster-management management-test cluster-storage storage-test cluster-compute compute-test; do
+		if [[ " $* " != *" $name "* ]]; then
+			kustomization "$name" True "Applied revision: latest@sha256:new" latest@sha256:new
+		fi
+	done
+}
+
+# scaffold_attached: loads scaffold with all three clusters attached and the
+# timeout of the stages at 2 s.
+scaffold_attached() {
+	profile_load
+	attached_roles() { echo "management storage compute"; }
+	export SANDBOX_REVISION=latest@sha256:new SANDBOX_STAGE_TIMEOUT=2
+}
+
+@test "cluster_vars prints every key of the configuration as a string in cluster-vars" {
+	run cluster_vars
+	[ "$status" -eq 0 ]
+	[ "$(yq '[.apiVersion, .kind, .metadata.name, .metadata.namespace] | join(" ")' - <<<"$output")" = "v1 ConfigMap cluster-vars flux-system" ]
+	[ "$(yq -o=json -I=0 '.metadata.labels' - <<<"$output")" = '{"reconcile.fluxcd.io/watch":"Enabled"}' ]
+	[ "$(yq -o=json -I=0 '.data' - <<<"$output")" = '{"NETWORK_SUBNET":"172.30.0.0/16","ADDRESSES_GATEWAY":"172.30.255.10","REGISTRY_IMAGE":"registry:3","SWITCHES_HYPERVISOR_NODES":"1","UPSTREAM_COBALTCORE":"15a0323e243c7f53b91200f193a58b5b41d41f6a","FLUX_OPERATOR":"0.63.1"}' ]
+	[ "$(yq '[.data[] | tag] | unique | join(" ")' - <<<"$output")" = '!!str' ]
+}
+
+@test "cluster_vars leaves out null and empty keys and keeps false" {
+	config_with '.registry.mirror = null | .addresses.extra = "" | .switches.ui = false'
+	run cluster_vars
+	[ "$status" -eq 0 ]
+	[ "$(yq '.data | has("REGISTRY_MIRROR") or has("ADDRESSES_EXTRA")' - <<<"$output")" = false ]
+	[ "$(yq -o=json '.data.SWITCHES_UI' - <<<"$output")" = '"false"' ]
+}
+
+@test "cluster_vars fails for a key that cannot be a Flux variable" {
+	config_with '.addresses["my key"] = "x"'
+	run cluster_vars
+	[ "$status" -eq 1 ]
+	[ "$output" = 'error: config: addresses.my key cannot be a Flux variable, ADDRESSES_MY KEY does not match ^[A-Z_][A-Z0-9_]*$' ]
+}
+
+@test "cluster_vars fails for two keys that become the same Flux variable" {
+	profile_with $'clusters: [management]\nswitches:\n  hypervisor_nodes: 2'
+	profile_load
+	run cluster_vars
+	[ "$status" -eq 1 ]
+	[ "$output" = 'error: config: switches.hypervisor-nodes and switches.hypervisor_nodes become the same Flux variable SWITCHES_HYPERVISOR_NODES' ]
+}
+
+@test "cluster_vars carries the switches of the profile" {
+	profile_with $'clusters: [management]\nswitches:\n  hypervisor-nodes: 2'
+	profile_load
+	run cluster_vars
+	[ "$status" -eq 0 ]
+	[ "$(yq -o=json '.data.SWITCHES_HYPERVISOR_NODES' - <<<"$output")" = '"2"' ]
+}
+
+@test "cluster_vars fails with the message of config_load for a missing configuration" {
+	export SANDBOX_CONFIG=$BATS_TEST_TMPDIR/missing.yaml
+	run cluster_vars
+	[ "$status" -eq 1 ]
+	[ "$output" = "error: config: $SANDBOX_CONFIG not found" ]
+}
+
+@test "root_manifest prints the root of storage with the modules of scaffold as components" {
+	profile_load
+	run root_manifest storage
+	[ "$status" -eq 0 ]
+	[ "$(yq '[.apiVersion, .kind, .metadata.name, .metadata.namespace] | join(" ")' - <<<"$output")" = "kustomize.toolkit.fluxcd.io/v1 Kustomization cluster-storage flux-system" ]
+	[ "$(yq -o=json -I=0 '[.spec.path, .spec.prune, .spec.components, .spec.sourceRef]' - <<<"$output")" = \
+		'["./clusters/storage",true,["test"],{"kind":"OCIRepository","name":"sandbox"}]' ]
+	[ "$(yq '.metadata.labels["sandbox.c5c3.io/cluster"] + " " + .spec.commonMetadata.labels["sandbox.c5c3.io/cluster"]' - <<<"$output")" = "storage storage" ]
+	[ "$(yq '.spec | has("kubeConfig")' - <<<"$output")" = false ]
+}
+
+@test "root_manifest prints no components for a cluster without modules" {
+	profile_with $'clusters: [management, storage]\nmodules:\n  management: [test]'
+	profile_load
+	run root_manifest storage
+	[ "$status" -eq 0 ]
+	[ "$(yq '.spec | has("components")' - <<<"$output")" = false ]
+	[ "$(yq '.spec.path' - <<<"$output")" = ./clusters/storage ]
+}
+
+@test "root_manifest fails for a word that is not a role" {
+	profile_load
+	run root_manifest network
+	[ "$status" -eq 1 ]
+	[ "$output" = "error: unknown cluster role 'network', expected management, storage or compute" ]
+}
+
+@test "wait_stages returns when every root and stage is Ready at the revision" {
+	scaffold_attached
+	stages_answer "$(ready_stages)"
+	run wait_stages
+	[ "$status" -eq 0 ]
+}
+
+@test "wait_stages names a stage that is not Ready and counts the roots and stages" {
+	scaffold_attached
+	stages_answer "$(ready_stages storage-test)" "$(kustomization storage-test False $'Secret "kubeconfig-storage" not found\ndetails' latest@sha256:old)"
+	run wait_stages
+	[ "$status" -eq 1 ]
+	[ "${lines[-2]}" = 'error: stage storage-test: Secret "kubeconfig-storage" not found' ]
+	[ "${lines[-1]}" = "error: 1 of 6 stages are not Ready at latest@sha256:new after 2 s; make status shows them" ]
+}
+
+@test "wait_stages names a stage that does not exist or has no Ready condition" {
+	scaffold_attached
+	stages_answer "$(ready_stages storage-test compute-test)" '{"metadata": {"name": "compute-test"}}'
+	run wait_stages
+	[ "$status" -eq 1 ]
+	[ "${lines[-3]}" = "error: stage storage-test: not found" ]
+	[ "${lines[-2]}" = "error: stage compute-test: no Ready condition" ]
+	[ "${lines[-1]}" = "error: 2 of 6 stages are not Ready at latest@sha256:new after 2 s; make status shows them" ]
+}
+
+@test "wait_stages does not take a stage that is Ready at another revision" {
+	scaffold_attached
+	stages_answer "$(ready_stages compute-test)" "$(kustomization compute-test True "Applied revision: latest@sha256:old" latest@sha256:old)"
+	run wait_stages
+	[ "$status" -eq 1 ]
+	[ "${lines[-2]}" = "error: stage compute-test: Applied revision: latest@sha256:old" ]
+	[[ ${lines[-1]} == "error: 1 of 6 stages are not Ready"* ]]
+}
+
+@test "wait_stages fails with the last line of kubectl when it cannot read the stages" {
+	scaffold_attached
+	hub_kubectl() {
+		printf 'E1124 memcache.go\nThe connection to the server 127.0.0.1:40001 was refused\n' >&2
+		return 1
+	}
+	run wait_stages
+	[ "$status" -eq 1 ]
+	[ "${lines[-1]}" = "error: cannot read the stages of sandbox-management: The connection to the server 127.0.0.1:40001 was refused" ]
+}
+
+@test "wait_stages waits only for the attached clusters" {
+	scaffold_attached
+	attached_roles() { echo management; }
+	stages_answer "$(kustomization cluster-management True ok latest@sha256:new)" "$(kustomization management-test True ok latest@sha256:new)"
+	run wait_stages
+	[ "$status" -eq 0 ]
+}
+
+@test "ensure_kubeconfig_secret fails when kind cannot read the internal kubeconfig" {
+	run ensure_kubeconfig_secret storage
+	[ "$status" -eq 1 ]
+	[ "$output" = "error: cannot read the internal kubeconfig of sandbox-storage" ]
+}
+
+@test "ensure_kubeconfig_secret writes the internal kubeconfig into a watched Secret" {
+	kind() {
+		[ "$*" = "get kubeconfig --internal --name sandbox-storage" ] || return 1
+		printf 'apiVersion: v1\nclusters:\n- cluster:\n    server: https://sandbox-storage-control-plane:6443\n'
+	}
+	hub_kubectl() {
+		case $* in
+		"-n flux-system create secret generic kubeconfig-storage --from-file=value=/dev/stdin --dry-run=client -o json")
+			jq -n --arg value "$(base64 -w0)" '{apiVersion: "v1", kind: "Secret", metadata: {name: "kubeconfig-storage", namespace: "flux-system"}, data: {value: $value}}' ;;
+		"apply --server-side --force-conflicts --field-manager=sandbox -f -") cat >"$BATS_TEST_TMPDIR/applied.json" ;;
+		*) return 1 ;;
+		esac
+	}
+	run ensure_kubeconfig_secret storage
+	[ "$status" -eq 0 ]
+	[ "$(jq -r '.metadata.labels["reconcile.fluxcd.io/watch"]' "$BATS_TEST_TMPDIR/applied.json")" = Enabled ]
+	[ "$(jq -r '.data.value | @base64d' "$BATS_TEST_TMPDIR/applied.json")" = "$(kind get kubeconfig --internal --name sandbox-storage)" ]
+}
+
+@test "ensure_kubeconfig_secret hands a kubeconfig larger than a pipe buffer to no file" {
+	kind() {
+		printf 'apiVersion: v1\n# '
+		head -c 200000 /dev/zero | tr '\0' a
+		echo
+	}
+	# A command whose stdin is a regular file notes its name in files.
+	jq() {
+		[ ! -f /dev/stdin ] || echo jq >>"$BATS_TEST_TMPDIR/files"
+		command jq "$@"
+	}
+	hub_kubectl() {
+		[ ! -f /dev/stdin ] || echo "kubectl $1" >>"$BATS_TEST_TMPDIR/files"
+		case $* in
+		"-n flux-system create secret generic kubeconfig-storage --from-file=value=/dev/stdin --dry-run=client -o json")
+			base64 -w0 | command jq -R '{apiVersion: "v1", kind: "Secret", metadata: {name: "kubeconfig-storage", namespace: "flux-system"}, data: {value: .}}' ;;
+		"apply --server-side --force-conflicts --field-manager=sandbox -f -") cat >"$BATS_TEST_TMPDIR/applied.json" ;;
+		*) return 1 ;;
+		esac
+	}
+	run ensure_kubeconfig_secret storage
+	[ "$status" -eq 0 ]
+	[ ! -e "$BATS_TEST_TMPDIR/files" ]
+	[ "$(jq -r '.data.value | @base64d' "$BATS_TEST_TMPDIR/applied.json")" = "$(kind)" ]
+}
+
+@test "ensure_kubeconfig_secret fails with the last line of kubectl when it cannot write the Secret" {
+	kind() { echo 'apiVersion: v1'; }
+	hub_kubectl() {
+		case $1 in
+		-n) echo '{"kind": "Secret"}' ;;
+		apply) printf 'Warning: x\nError from server (Forbidden): secrets is forbidden\n' >&2; return 1 ;;
+		esac
+	}
+	run ensure_kubeconfig_secret storage
+	[ "$status" -eq 1 ]
+	[ "${lines[-1]}" = "error: cannot write the Secret flux-system/kubeconfig-storage on sandbox-management: Error from server (Forbidden): secrets is forbidden" ]
+}
+
+@test "attached_roles leaves out a missing cluster and one on another Docker network" {
+	export SANDBOX_PROFILE_CLUSTERS="management storage compute"
+	kind() {
+		case $* in
+		"get clusters") printf '%s\n' sandbox-management sandbox-storage other ;;
+		"get nodes --name sandbox-management") echo sandbox-management-control-plane ;;
+		"get nodes --name sandbox-storage") echo sandbox-storage-control-plane ;;
+		*) return 1 ;;
+		esac
+	}
+	docker() {
+		case ${!#} in
+		sandbox-management-control-plane) echo 'cobaltcore-sandbox ' ;;
+		sandbox-storage-control-plane) echo 'kind ' ;;
+		*) return 1 ;;
+		esac
+	}
+	run attached_roles
+	[ "$status" -eq 0 ]
+	[ "$output" = management ]
+}
+
+@test "sandbox_cluster ends the script when it cannot tell the network of a cluster" {
+	kind() {
+		case $* in
+		"get clusters") echo sandbox-storage ;;
+		*) return 1 ;;
+		esac
+	}
+	run sandbox_cluster storage
+	[ "$status" -eq 1 ]
+	[ "$output" = "error: cannot list the nodes of kind cluster sandbox-storage" ]
+}
+
+@test "hub_sync writes no Secret for management and counts the module stages of the attached clusters" {
+	scaffold_attached
+	attached_roles() { echo "management storage"; }
+	ensure_flux() { echo ensure_flux >>"$BATS_TEST_TMPDIR/steps"; }
+	ensure_cluster_vars() { echo ensure_cluster_vars >>"$BATS_TEST_TMPDIR/steps"; }
+	ensure_kubeconfig_secret() { echo "ensure_kubeconfig_secret $1" >>"$BATS_TEST_TMPDIR/steps"; }
+	ensure_source() { echo ensure_source >>"$BATS_TEST_TMPDIR/steps"; }
+	ensure_root() { echo "ensure_root $1" >>"$BATS_TEST_TMPDIR/steps"; }
+	wait_stages() { echo wait_stages >>"$BATS_TEST_TMPDIR/steps"; }
+	run hub_sync
+	[ "$status" -eq 0 ]
+	[ "$(<"$BATS_TEST_TMPDIR/steps")" = "ensure_flux
+ensure_cluster_vars
+ensure_kubeconfig_secret storage
+ensure_source
+ensure_root management
+ensure_root storage
+wait_stages" ]
+	[[ ${lines[-1]} == *": 2 stages Ready on 2 clusters at latest@sha256:new" ]]
+}
+
+@test "hub_sync stops before Flux when a stage depends on a stage of a cluster that is not attached" {
+	mkdir -- "$BATS_TEST_TMPDIR/tree"
+	cp -R -- "$SANDBOX_ROOT/clusters" "$SANDBOX_ROOT/profiles" "$BATS_TEST_TMPDIR/tree/"
+	SANDBOX_ROOT=$BATS_TEST_TMPDIR/tree
+	yq -i '.spec.dependsOn = [{"name": "storage-test"}]' "$SANDBOX_ROOT/clusters/compute/test/stage.yaml"
+	scaffold_attached
+	attached_roles() { echo "management compute"; }
+	ensure_flux() { echo "unit test called ensure_flux" >&2; return 1; }
+	run hub_sync
+	[ "$status" -eq 1 ]
+	[ "$output" = "error: the stage compute-test depends on storage-test, but sandbox-storage is not part of the sandbox; run make up-storage first" ]
+}
