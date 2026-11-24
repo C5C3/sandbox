@@ -18,6 +18,7 @@ Each file in this directory records one decision with its context, the alternati
 | [ADR-0012](0012-external-clusters-over-a-vpn.md) | Connect external clusters over a VPN that routes the Docker subnet | Accepted |
 | [ADR-0013](0013-move-the-upstream-pin-by-scheduled-pull-request.md) | Move the upstream pin by a scheduled pull request gated on validation | Accepted |
 | [ADR-0014](0014-16-gib-host-for-the-profiles-up-to-full.md) | Target a 16 GiB host for the profiles up to full | Accepted |
+| [ADR-0015](0015-select-modules-through-one-root-kustomization-per-cluster.md) | Select modules through one root Kustomization per cluster | Accepted |
 
 ## Points to prove first
 
