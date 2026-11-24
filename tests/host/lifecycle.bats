@@ -108,6 +108,17 @@ ready_at() {
 	[ "$(mgmt_kubectl -n flux-system get "$1" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status} {.status.artifact.revision}{.status.lastAppliedRevision}')" = "True $2" ]
 }
 
+# pin: prints upstream.cobaltcore of config.yaml.
+pin() {
+	yq '.upstream.cobaltcore' "$ROOT/config.yaml"
+}
+
+# upstream_record: prints the annotation sandbox.c5c3.io/upstream of the
+# source.
+upstream_record() {
+	mgmt_kubectl -n flux-system get ocirepository sandbox -o jsonpath='{.metadata.annotations.sandbox\.c5c3\.io/upstream}'
+}
+
 # status_is <object> <ready>: make status shows the object with the READY
 # value.
 status_is() {
@@ -151,7 +162,7 @@ setup_file() {
 }
 
 teardown_file() {
-	rm -f "$ROOT/push-marker.tmp"
+	rm -f "$ROOT/push-marker.tmp" "$ROOT/vendor/cobaltcore/deploy/local.tmp"
 	if [ -f "$BATS_FILE_TMPDIR/foreign-network" ]; then
 		docker network rm cobaltcore-sandbox >/dev/null
 	fi
@@ -262,6 +273,12 @@ export KUBECONFIG=$KUBECONFIG_DIR/compute.yaml  # sandbox-compute" ]
 	[[ ${lines[-3]} == "export KUBECONFIG="* ]]
 }
 
+@test "make up checked out upstream at the pin and recorded it on the source" {
+	[ "$(git --git-dir="$ROOT/vendor/cobaltcore/.git" rev-parse HEAD)" = "$(pin)" ]
+	[ -f "$ROOT/vendor/cobaltcore/deploy/README.md" ]
+	[ "$(upstream_record)" = "$(pin)" ]
+}
+
 @test "the FluxInstance runs three controllers on 2.10 with strict substitution" {
 	run mgmt_kubectl -n flux-system get fluxinstance flux \
 		-o jsonpath='{.status.conditions[?(@.type=="Ready")].status} {.status.lastAppliedRevision}'
@@ -326,6 +343,7 @@ export KUBECONFIG=$KUBECONFIG_DIR/compute.yaml  # sandbox-compute" ]
 			[[ $output =~ (^|$'\n')$role\ +$object\ +True\  ]]
 		done
 	done
+	[ "${lines[-2]}" = "status: upstream $(pin)" ]
 	[ "${lines[-1]}" = "status: 8 of 8 ready" ]
 }
 
@@ -337,6 +355,8 @@ export KUBECONFIG=$KUBECONFIG_DIR/compute.yaml  # sandbox-compute" ]
 	[ -f "$BATS_TEST_TMPDIR/artifact/clusters/management/kustomization.yaml" ]
 	[ ! -e "$BATS_TEST_TMPDIR/artifact/.sandbox" ]
 	[ ! -e "$BATS_TEST_TMPDIR/artifact/.git" ]
+	[ -f "$BATS_TEST_TMPDIR/artifact/vendor/cobaltcore/deploy/README.md" ]
+	[ ! -e "$BATS_TEST_TMPDIR/artifact/vendor/cobaltcore/.git" ]
 }
 
 @test "make push publishes a changed tree and Flux applies it within 120 s" {
@@ -354,6 +374,20 @@ export KUBECONFIG=$KUBECONFIG_DIR/compute.yaml  # sandbox-compute" ]
 	[ -f "$BATS_TEST_TMPDIR/artifact/push-marker.tmp" ]
 	eventually 120 ready_at ocirepository/sandbox "$revision"
 	eventually 120 ready_at kustomization/compute-test "$revision"
+}
+
+@test "make push records a changed checkout, and make up at another pin keeps it and every container" {
+	local before
+	touch "$ROOT/vendor/cobaltcore/deploy/local.tmp"
+	run sb_make push
+	[ "$status" -eq 0 ]
+	[ "$(upstream_record)" = "$(pin)-modified" ]
+	before=$(container_ids)
+	run sb_make up CONFIG="$(config_copy '.upstream.cobaltcore = "bbb35e61e8df6b0e215c6a04732f2ad78759fe76"')"
+	failed_with "vendor: vendor/cobaltcore is at $(pin) with local changes, the configuration pins bbb35e61e8df6b0e215c6a04732f2ad78759fe76; run make vendor to discard them"
+	[ "$(container_ids)" = "$before" ]
+	[ -f "$ROOT/vendor/cobaltcore/deploy/local.tmp" ]
+	rm "$ROOT/vendor/cobaltcore/deploy/local.tmp"
 }
 
 @test "a broken kubeconfig Secret shows in make status and make up repairs it" {
@@ -472,11 +506,12 @@ export KUBECONFIG=$KUBECONFIG_DIR/compute.yaml  # sandbox-compute" ]
 	docker container inspect "${CONTAINERS[@]}" >/dev/null
 }
 
-@test "make down removes the sandbox and leaves no new volume" {
+@test "make down removes the sandbox, leaves no new volume and keeps the checkout of upstream" {
 	local container role
 	run sb_make down
 	[ "$status" -eq 0 ]
 	[ "${lines[-1]}" = "down: nothing left" ]
+	[ -d "$ROOT/vendor/cobaltcore/.git" ]
 	for container in "${CONTAINERS[@]}"; do
 		absent_container "$container"
 	done
