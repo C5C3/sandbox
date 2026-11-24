@@ -8,6 +8,10 @@ host. It rebuilds the lab of the upstream
 splits it across three clusters: one for management and control plane, one for
 storage, one for compute.
 
+The idea for this sandbox and its implementation come out of the
+[IPCEI-CIS Hackathon Potsdam](https://apeirora.eu/content/news/apeirora-ipcei-cis-hackathon/)
+of the IPCEI-CIS and NeoNephos community, November 24 to 26, 2026.
+
 > **Status: specification.** Nothing in this repository is implemented yet.
 > This README describes what is to be built, which upstream material it builds
 > on, and which points have to be proven first. It was written against
@@ -723,5 +727,6 @@ proposals. Each becomes an ADR under `docs/adr/`.
 - Sketches: [Storage Cluster](https://c5c3.github.io/cobaltcore/future/storage-cluster.html),
   [Hypervisor Cluster](https://c5c3.github.io/cobaltcore/future/hypervisor-cluster.html)
 - Playground: [repository](https://github.com/C5C3/playground)
+- Origin: [IPCEI-CIS Hackathon Potsdam, November 24-26: From Bare Metal Up](https://apeirora.eu/content/news/apeirora-ipcei-cis-hackathon/)
 - Upstream issues: [cobaltcore#1339](https://github.com/C5C3/cobaltcore/issues/1339),
   Ceph RBD backends on kind and in CI
