@@ -1,0 +1,75 @@
+name: upstream-pin
+
+# Moves upstream.cobaltcore of config.yaml to upstream main and proposes the
+# move as the pull request of the branch upstream-pin, with the result of
+# make validate. The logic is in scripts/pin.sh.
+
+on:
+  schedule:
+    - cron: '23 4 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: write
+
+concurrency: upstream-pin
+
+jobs:
+  pin:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        # bash -eo pipefail: the validation step reads the status of make,
+        # not of tee.
+        shell: bash
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install the validation tools
+        run: scripts/install-validate-tools.sh
+
+      - name: Move the pin to upstream main
+        id: move
+        run: |
+          old=$(yq '.upstream.cobaltcore' config.yaml)
+          scripts/pin.sh move
+          new=$(yq '.upstream.cobaltcore' config.yaml)
+          moved=false
+          if [ "$old" != "$new" ]; then moved=true; fi
+          {
+            echo "old=$old"
+            echo "new=$new"
+            echo "moved=$moved"
+          } >>"$GITHUB_OUTPUT"
+
+      - name: Check out upstream at the new pin
+        if: steps.move.outputs.moved == 'true'
+        run: make vendor
+
+      # The step succeeds either way: the pull request shows the result.
+      - name: Validate against the new checkout
+        id: validate
+        if: steps.move.outputs.moved == 'true'
+        run: |
+          if make validate 2>&1 | tee "$RUNNER_TEMP/validate.log"; then
+            echo result=passed >>"$GITHUB_OUTPUT"
+          else
+            echo result=failed >>"$GITHUB_OUTPUT"
+          fi
+
+      - name: Propose the move
+        if: steps.move.outputs.moved == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OLD: ${{ steps.move.outputs.old }}
+          NEW: ${{ steps.move.outputs.new }}
+          RESULT: ${{ steps.validate.outputs.result }}
+        run: |
+          gh auth setup-git
+          scripts/pin.sh propose "$OLD" "$NEW" "$RESULT" "$RUNNER_TEMP/validate.log"
