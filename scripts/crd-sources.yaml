@@ -1,0 +1,15 @@
+# The JSON schemas that make validate checks the kinds of the tree against,
+# beside the schemas of Kubernetes. An entry has a name and exactly one of
+# schemas, the https:// URL of a .tar.gz of JSON schemas, and path, a glob
+# of CRD files relative to the tree. A kind without a schema fails the
+# validation, so the package that adds the first object of a kind adds its
+# source here.
+sources:
+  # The version of the FluxInstance in flux/flux-instance.yaml.
+  - name: flux
+    schemas: https://github.com/fluxcd/flux2/releases/download/v2.10.0/crd-schemas.tar.gz
+  # flux.operator of config.yaml.
+  - name: flux-operator
+    schemas: https://github.com/controlplaneio-fluxcd/flux-operator/releases/download/v0.63.1/crd-schemas.tar.gz
+  - name: cobaltcore
+    path: vendor/cobaltcore/operators/*/config/crd/bases/*.yaml
