@@ -112,6 +112,7 @@ tool_version() {
 	kubectl) echo "Client Version: v1.37.0" ;;
 	helm) echo "v3.22.0+g144ca65" ;;
 	flux) echo "flux version 2.9.5" ;;
+	git) echo "git version 2.43.0" ;;
 	yq) echo "yq (https://github.com/mikefarah/yq/) version v4.44.3" ;;
 	jq) echo "jq-1.7.1" ;;
 	openstack) echo "openstack 7.1.0" ;;
