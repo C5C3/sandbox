@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: settings
+data:
+  cluster: ${CLUSTER}
+  subnet: ${NETWORK_SUBNET}

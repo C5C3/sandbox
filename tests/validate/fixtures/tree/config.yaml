@@ -1,0 +1,15 @@
+# The configuration of the fixture tree of tests/validate/validate.bats. Each
+# test replaces upstream.cobaltcore with the commit it makes of
+# vendor/cobaltcore.
+network:
+  subnet: 172.30.0.0/16
+addresses:
+  gateway: 172.30.255.10
+registry:
+  image: registry:3
+switches:
+  hypervisor-nodes: 1
+upstream:
+  cobaltcore: 15a0323e243c7f53b91200f193a58b5b41d41f6a
+flux:
+  operator: 0.63.1
