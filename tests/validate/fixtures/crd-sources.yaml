@@ -1,0 +1,7 @@
+# The schema sources of the fixture tree: the schemas of Flux, for the
+# stage, and the CRD of the vendored Widget.
+sources:
+  - name: flux
+    schemas: https://github.com/fluxcd/flux2/releases/download/v2.10.0/crd-schemas.tar.gz
+  - name: cobaltcore
+    path: vendor/cobaltcore/operators/*/config/crd/bases/*.yaml

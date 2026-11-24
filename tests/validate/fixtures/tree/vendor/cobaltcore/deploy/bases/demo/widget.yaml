@@ -1,0 +1,17 @@
+apiVersion: demo.c5c3.io/v1
+kind: Widget
+metadata:
+  name: demo
+spec:
+  note: null
+  properties:
+    size: 1
+  extra:
+    any: key
+    nested:
+      free: true
+  nested:
+    inner:
+      level: 2
+  items:
+    - name: a
