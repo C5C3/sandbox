@@ -149,6 +149,7 @@ status_host() {
 management FluxInstance/flux True done
 management OCIRepository/sandbox True stored
 management Kustomization/cluster-management False kustomize build failed
+status: upstream not recorded
 status: 2 of 3 ready" ]
 }
 
@@ -167,5 +168,33 @@ status: 2 of 3 ready" ]
 	[ "$status" -eq 0 ]
 	[ "$(printf '%s\n' "${lines[@]}" | tr -s ' ')" = "CLUSTER OBJECT READY MESSAGE
 management - - not attached to the hub, run make up-management
+status: upstream not recorded
 status: 0 of 0 ready" ]
+}
+
+@test "status.sh prints the record of upstream from the annotation of the source" {
+	local record
+	status_host
+	kubectl() {
+		case $* in
+		*" get crd "*) printf 'customresourcedefinition.apiextensions.k8s.io/%s\n' a b c ;;
+		*" -n flux-system get "*) cat "$BATS_TEST_TMPDIR/objects.json" ;;
+		*) return 1 ;;
+		esac
+	}
+	export -f kubectl
+	for record in 15a0323e243c7f53b91200f193a58b5b41d41f6a 15a0323e243c7f53b91200f193a58b5b41d41f6a-modified; do
+		object OCIRepository sandbox True stored | jq -s --arg record "$record" \
+			'{kind: "List", items: map(.metadata.annotations["sandbox.c5c3.io/upstream"] = $record)}' >"$BATS_TEST_TMPDIR/objects.json"
+		run "$BATS_TEST_TMPDIR/scripts/status.sh"
+		[ "$status" -eq 0 ]
+		[ "${lines[-2]}" = "status: upstream $record" ]
+		[ "${lines[-1]}" = "status: 1 of 1 ready" ]
+	done
+
+	object OCIRepository sandbox True stored | jq -s \
+		'{kind: "List", items: map(.metadata.annotations["sandbox.c5c3.io/upstream"] = "")}' >"$BATS_TEST_TMPDIR/objects.json"
+	run "$BATS_TEST_TMPDIR/scripts/status.sh"
+	[ "$status" -eq 0 ]
+	[ "${lines[-2]}" = "status: upstream not recorded" ]
 }

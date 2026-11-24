@@ -2,15 +2,19 @@
 # Usage: push.sh
 #
 # Pushes the working tree to the registry of the sandbox and asks Flux on
-# sandbox-management to fetch it. It reads no configuration and no profile,
-# runs no host check and does not wait for the stages; make status shows
-# them. A changed profile is applied by make up, not by a push.
+# sandbox-management to fetch it, recording the commit of vendor/cobaltcore
+# in the annotation sandbox.c5c3.io/upstream of the source. It reads no
+# configuration and no profile, runs no host check and does not wait for the
+# stages; make status shows them. A changed profile is applied by make up,
+# not by a push.
 set -euo pipefail
 
 # shellcheck source=lib/common.sh
 . "$(dirname -- "${BASH_SOURCE[0]}")/lib/common.sh"
 # shellcheck source=lib/hub.sh
 . "$SANDBOX_ROOT/scripts/lib/hub.sh"
+# shellcheck source=lib/vendor.sh
+. "$SANDBOX_ROOT/scripts/lib/vendor.sh"
 
 push_artifact
 
