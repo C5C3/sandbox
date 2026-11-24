@@ -1,6 +1,7 @@
 # shellcheck shell=bash
 # Flux on sandbox-management, the hub that applies the stages of all three
-# clusters. Source scripts/lib/common.sh and scripts/lib/profile.sh first.
+# clusters. Source scripts/lib/common.sh first, and scripts/lib/profile.sh
+# for the functions that read the profile.
 #
 # The command layer applies the FluxInstance, the source, cluster-vars, the
 # kubeconfig Secrets and one root Kustomization per cluster. Each apply is a
