@@ -1,17 +1,25 @@
 #!/usr/bin/env bash
-# Usage: up.sh <role>...
+# Usage: up.sh [<role>...]
 #
-# Checks the host, then creates the Docker network, the registry and the kind
-# clusters of the given roles. Each step creates its object or checks that the
-# existing one matches the configuration, so a second run continues where a
-# failed one stopped. A mismatch is not repaired: the sandbox is rebuilt with
-# make down.
+# Loads the profile that SANDBOX_PROFILE names, checks the host, then creates
+# the Docker network, the registry and the kind clusters of the given roles,
+# or of the profile's clusters when none is given. When the management
+# cluster exists, it installs Flux there, pushes the working tree and has
+# Flux apply the profile's modules to every cluster of the sandbox.
+#
+# Each step creates its object or checks that the existing one matches the
+# configuration, so a second run continues where a failed one stopped. A
+# mismatch is not repaired: the sandbox is rebuilt with make down.
 set -euo pipefail
 
 # shellcheck source=lib/common.sh
 . "$(dirname -- "${BASH_SOURCE[0]}")/lib/common.sh"
 # shellcheck source=lib/preflight.sh
 . "$SANDBOX_ROOT/scripts/lib/preflight.sh"
+# shellcheck source=lib/profile.sh
+. "$SANDBOX_ROOT/scripts/lib/profile.sh"
+# shellcheck source=lib/hub.sh
+. "$SANDBOX_ROOT/scripts/lib/hub.sh"
 
 ensure_network() {
 	local out subnet
@@ -99,15 +107,39 @@ ensure_cluster() {
 		die "nodes of $name are not Ready after 300 s"
 }
 
-[ "$#" -gt 0 ] || die "usage: up.sh <role>..."
-require_roles "$@"
+profile_load
+if [ "$#" -gt 0 ]; then
+	require_roles "$@"
+	for role in "$@"; do
+		[[ " $SANDBOX_PROFILE_CLUSTERS " == *" $role "* ]] ||
+			die "the profile $SANDBOX_PROFILE does not list the cluster $role"
+	done
+else
+	read -ra roles <<<"$SANDBOX_PROFILE_CLUSTERS"
+	set -- "${roles[@]}"
+fi
 preflight_run "$@" || die "host check failed, nothing was created"
 config_load
+# cluster_vars fails for a key of the configuration that cannot be a Flux
+# variable or that becomes the same Flux variable as another key, so the run
+# stops before anything is created.
+cluster_vars >/dev/null
+for role in "${SANDBOX_ROLES[@]}"; do
+	if [[ " $SANDBOX_PROFILE_CLUSTERS " != *" $role "* ]] && sandbox_cluster "$role"; then
+		die "$(cluster_name "$role") exists, the profile $SANDBOX_PROFILE does not list it; run make down first"
+	fi
+done
 ensure_network
 ensure_registry
 for role in "$@"; do
 	ensure_cluster "$role"
 done
+attached=$(attached_roles)
+if [[ " $attached " == *" management "* ]]; then
+	hub_sync
+else
+	log "sandbox-management does not exist, Flux applies nothing until make up-management has run"
+fi
 for role in "$@"; do
 	printf 'export KUBECONFIG=%s  # %s\n' "$(kubeconfig_path "$role")" "$(cluster_name "$role")"
 done
