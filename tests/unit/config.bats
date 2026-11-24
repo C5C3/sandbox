@@ -11,6 +11,7 @@ setup() {
 	[ "$SANDBOX_GATEWAY_ADDRESS" = 172.30.255.10 ]
 	[ "$SANDBOX_REGISTRY_IMAGE" = registry:3 ]
 	[ "$SANDBOX_HYPERVISOR_NODES" = 1 ]
+	[ "$SANDBOX_FLUX_OPERATOR_VERSION" = 0.63.1 ]
 }
 
 @test "config_load fails on a zero-length file at network.subnet" {
@@ -22,7 +23,7 @@ setup() {
 }
 
 @test "config_load fails for each key that is absent" {
-	for key in network.subnet addresses.gateway registry.image switches.hypervisor-nodes; do
+	for key in network.subnet addresses.gateway registry.image switches.hypervisor-nodes flux.operator; do
 		config_with "del(.${key%%.*}[\"${key#*.}\"])"
 		run config_load
 		[ "$status" -eq 1 ]
@@ -81,4 +82,20 @@ setup() {
 	config_with '.switches["hypervisor-nodes"] = 2'
 	config_load
 	[ "$SANDBOX_HYPERVISOR_NODES" = 2 ]
+}
+
+@test "config_load rejects a flux-operator version that is not three numbers" {
+	for operator in latest 0.63 v0.63.1; do
+		config_with ".flux.operator = \"$operator\""
+		run config_load
+		[ "$status" -eq 1 ]
+		[ "$output" = "error: config: flux.operator '$operator' is not a version" ]
+	done
+}
+
+@test "config_load treats an empty flux-operator version as not set" {
+	config_with '.flux.operator = ""'
+	run config_load
+	[ "$status" -eq 1 ]
+	[ "$output" = "error: config: flux.operator is not set" ]
 }

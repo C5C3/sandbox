@@ -67,15 +67,16 @@ kind_config() {
 
 # config_load: reads the configuration file that SANDBOX_CONFIG names, by
 # default config.yaml in the repository root, and exports SANDBOX_SUBNET,
-# SANDBOX_GATEWAY_ADDRESS, SANDBOX_REGISTRY_IMAGE and SANDBOX_HYPERVISOR_NODES.
-# A missing key is an error; no script carries a default for these four.
+# SANDBOX_GATEWAY_ADDRESS, SANDBOX_REGISTRY_IMAGE, SANDBOX_HYPERVISOR_NODES and
+# SANDBOX_FLUX_OPERATOR_VERSION. A missing key is an error; no script carries
+# a default for these five.
 config_load() {
 	local path=${SANDBOX_CONFIG:-$SANDBOX_ROOT/config.yaml}
-	local key value subnet gateway nodes
+	local key value subnet gateway nodes operator
 	local -A values=()
 
 	[ -f "$path" ] || die "config: $path not found"
-	for key in network.subnet addresses.gateway registry.image switches.hypervisor-nodes; do
+	for key in network.subnet addresses.gateway registry.image switches.hypervisor-nodes flux.operator; do
 		# The bracket form reads a key with a hyphen, such as hypervisor-nodes.
 		if ! value=$(yq ".${key%%.*}[\"${key#*.}\"] // \"\"" "$path" 2>&1); then
 			value=${value%%$'\n'*}
@@ -85,6 +86,7 @@ config_load() {
 		values[$key]=$value
 	done
 	subnet=${values[network.subnet]} gateway=${values[addresses.gateway]} nodes=${values[switches.hypervisor-nodes]}
+	operator=${values[flux.operator]}
 
 	[[ $subnet =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}$ ]] ||
 		die "config: network.subnet '$subnet' is not an IPv4 CIDR"
@@ -92,11 +94,14 @@ config_load() {
 		die "config: addresses.gateway '$gateway' is not an IPv4 address"
 	[[ $nodes =~ ^[1-9][0-9]*$ ]] ||
 		die "config: switches.hypervisor-nodes must be an integer of 1 or more, got '$nodes'"
+	[[ $operator =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] ||
+		die "config: flux.operator '$operator' is not a version"
 
 	export SANDBOX_SUBNET=$subnet
 	export SANDBOX_GATEWAY_ADDRESS=$gateway
 	export SANDBOX_REGISTRY_IMAGE=${values[registry.image]}
 	export SANDBOX_HYPERVISOR_NODES=$nodes
+	export SANDBOX_FLUX_OPERATOR_VERSION=$operator
 }
 
 # cluster_exists <role>: succeeds when kind lists the role's cluster.
