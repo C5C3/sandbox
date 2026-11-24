@@ -145,7 +145,7 @@ ensure_source() {
 		if out=$(_hub_json -n flux-system get ocirepositories.source.toolkit.fluxcd.io sandbox); then
 			out=$(jq -r --arg rev "$SANDBOX_REVISION" -L "$SANDBOX_ROOT/scripts/lib" 'include "ready";
 				ready as [$status, $message]
-				| [$status == "True" and .status.artifact.revision == $rev, $message] | @tsv' <<<"$out")
+				| "\($status == "True" and .status.artifact.revision == $rev)\t\($message)"' <<<"$out")
 			ready=${out%%$'\t'*} message=${out#*$'\t'}
 			if [ "$ready" = true ]; then
 				return 0
@@ -315,7 +315,7 @@ wait_stages() {
 				  else ($k | ready) as [$status, $message]
 				  | select($status != "True" or $k.status.lastAppliedRevision != $rev)
 				  | [$name, $message] end
-				| @tsv' <<<"$out")
+				| join("\t")' <<<"$out")
 			if [ -z "$pending" ]; then
 				return 0
 			fi

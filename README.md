@@ -318,13 +318,16 @@ that deploys them.
 
 - **Flux on the management cluster, as hub.** The management cluster runs the
   flux-operator and a `FluxInstance` and reconciles `clusters/<cluster>/` for
-  all three clusters. A stage is a Flux `Kustomization` with `dependsOn`,
-  `wait` and health checks, as on the playground. Stages of the storage and
-  compute clusters name a kubeconfig Secret in `spec.kubeConfig`, and Helm
-  releases for those clusters are `HelmRelease` objects on the management
-  cluster with the same field. Two clusters run without Flux controllers,
-  which saves memory, and the hvo release reads its values straight from the
-  Secret the ControlPlane writes on the management cluster.
+  all three clusters. The command layer applies the `FluxInstance`, the
+  `OCIRepository` `sandbox` and one root `Kustomization` `cluster-<role>` per
+  cluster, which applies the stages the profile selects. A stage is a Flux
+  `Kustomization` with `dependsOn`, `wait` and health checks, as on the
+  playground. Stages of the storage and compute clusters name a kubeconfig
+  Secret in `spec.kubeConfig`, and Helm releases for those clusters are
+  `HelmRelease` objects on the management cluster with the same field. Two
+  clusters run without Flux controllers, which saves memory, and the hvo
+  release reads its values straight from the Secret the ControlPlane writes on
+  the management cluster.
 - **Source from the working tree.** A small registry container on the Docker
   network holds the repository as an OCI artifact. `make push` packages the
   working tree and pushes it, and Flux follows the tag. Changes are tested
@@ -354,10 +357,18 @@ that deploys them.
 
 ## Modules
 
-A module is one directory with a kustomization and one Flux `Kustomization`
-that names its dependencies. A cluster enables a module by listing it. The
-modules of the storage and compute clusters are applied from the management
-cluster. The table is the planned set; M marks the milestone that builds it.
+A module of a cluster is the directory `clusters/<role>/<module>/` with two
+files: `kustomization.yaml`, a kustomize Component whose only resource is
+`stage.yaml`, and `stage.yaml`, one Flux `Kustomization` `<role>-<module>`
+that names its dependencies in `dependsOn`. The manifests of the module are a
+directory of the tree that the stage names in `spec.path`, such as
+`infrastructure/test`. A cluster enables a module when the profile lists it,
+which puts the module into `spec.components` of the root `cluster-<role>`.
+The stages of the storage and compute clusters run on the management cluster
+and reach their cluster through the Secret `kubeconfig-<role>`. The module
+`test` writes the ConfigMap `sandbox-test/hub` on each cluster and is the
+check of the hub. The table is the planned set; M marks the milestone that
+builds it.
 
 ### On sandbox-management
 
@@ -411,6 +422,16 @@ cluster. The table is the planned set; M marks the milestone that builds it.
 
 A profile is a named selection of clusters, modules and switches. It is a
 convenience on top of the module lists, not a second mechanism.
+
+A profile is the file `profiles/<name>.yaml` with three keys. `clusters` lists
+the clusters it runs and must list `management`, where Flux runs. `modules`
+maps a cluster to the list of its modules, in any order, because `dependsOn`
+orders them. The optional `switches` maps a key of `switches` in the
+configuration to a value, which replaces the value of the configuration.
+`make up` without `PROFILE` uses `scaffold`, which runs the module `test` on
+all three clusters. The module lists reach Flux through the roots on the
+management cluster, not through the artifact, so a changed profile is applied
+by `make up`, not by `make push`.
 
 | Profile | Clusters | What runs | Evaluates |
 | --- | --- | --- | --- |
@@ -526,9 +547,10 @@ Proposed, following the playground:
 
 ```text
 clusters/
-  management/        Flux entry point: sources, stages, cluster-vars
-  storage/           Stages the management cluster applies to sandbox-storage
-  compute/           Stages the management cluster applies to sandbox-compute
+  management/        One directory per module with its stage, for sandbox-management
+  storage/           One directory per module with its stage, for sandbox-storage
+  compute/           One directory per module with its stage, for sandbox-compute
+flux/                The FluxInstance and the source, applied by make up
 infrastructure/      Stages every cluster may use: crds, controllers,
                      loadbalancer, pki, gateway, openbao, objectstore, ...
 platform/            The c5c3-operator and the sizing profile
@@ -551,12 +573,12 @@ vendor/              Upstream checkout, ignored by Git
 ## Planned command surface
 
 ```bash
-make up PROFILE=full        # network, registry, clusters, Flux, wait until ready
+make up PROFILE=full        # network, registry, clusters, Flux, wait until ready; without PROFILE the profile scaffold
 make up-management          # one cluster at a time
 make up-storage
 make up-compute
-make push                   # publish the working tree to Flux
-make status                 # Flux stages and the conditions that matter, per cluster
+make push                   # publish the working tree and ask Flux to fetch it; does not wait
+make status                 # the FluxInstance, the source, the roots and the stages, per cluster
 make footprint              # memory requests and working set, per cluster and in total
 make env                    # print OS_* variables, write sandbox-ca.pem
 make verify                 # the checks of the milestones the profile covers
@@ -569,7 +591,10 @@ make down                   # delete clusters, registry, network, loop devices
 
 `make up` writes one kubeconfig per cluster to
 `.sandbox/kubeconfig/<role>.yaml` and prints the `export KUBECONFIG=` line for
-each. `CONFIG=<file>` selects another configuration file.
+each. `CONFIG=<file>` selects another configuration file. `make up` waits up
+to 600 s for the stages, and `SANDBOX_STAGE_TIMEOUT=<seconds>` changes that;
+`SANDBOX_SOURCE_TIMEOUT=<seconds>` does the same for the source, by default
+120 s.
 
 `make verify` is the quick start turned into a script: each milestone below
 lists the checks it adds.
@@ -594,11 +619,11 @@ the host before anything is created. They print one line per check, with the
 version of each tool found, and stop only for what the clusters being created
 need. Every cluster needs Linux on x86-64, cgroup v2, a reachable rootful
 Docker, `fs.inotify.max_user_instances` at 512 or more, `docker`, `kind`,
-`kubectl`, `jq`, `yq` v4.40.1 or newer and a valid configuration file.
-`sandbox-storage` also needs the module `loop`, and `sandbox-compute` the
-modules `openvswitch`, `geneve` and `vhost_net`. `/dev/kvm`, the resolver's
-answer for a nip.io name, `helm`, `flux` and the OpenStack CLI with its
-plugins are reported as warnings.
+`kubectl`, `jq`, `helm`, `flux`, `yq` v4.40.1 or newer and a valid
+configuration file. `sandbox-storage` also needs the module `loop`, and
+`sandbox-compute` the modules `openvswitch`, `geneve` and `vhost_net`.
+`/dev/kvm`, the resolver's answer for a nip.io name and the OpenStack CLI with
+its plugins are reported as warnings.
 
 ## Footprint
 
