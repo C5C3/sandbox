@@ -28,7 +28,7 @@ The host's resolver must answer `*.nip.io` names with private addresses. Resolve
 
 `sandbox-ca.pem` is what a workstation passes as `OS_CACERT`.
 
-Nothing binds a port on a host interface. The sandbox is reachable from the host only, and a remote workstation needs an SSH tunnel or a route to the Docker subnet.
+Nothing binds a port on a host interface that another machine reaches: the only published ports are the API servers of the kind clusters, which kind binds to `127.0.0.1`. The sandbox is reachable from the host only, and a remote workstation needs an SSH tunnel or a route to the Docker subnet.
 
 Every address comes from one configuration file and reaches the manifests through Flux `postBuild` substitution from a `cluster-vars` ConfigMap, as on C5C3/playground. No manifest carries a literal address.
 
