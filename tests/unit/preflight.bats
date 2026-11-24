@@ -6,7 +6,7 @@ setup() {
 	healthy_host
 }
 
-COMMON_CHECKS="os,cgroup,docker,inotify,tool docker,tool kind,tool kubectl,tool jq,tool yq,tool helm,tool flux,tool openstack,plugin osc-placement,plugin python-barbicanclient,config,resolver"
+COMMON_CHECKS="os,cgroup,docker,inotify,tool docker,tool kind,tool kubectl,tool jq,tool helm,tool flux,tool yq,tool openstack,plugin osc-placement,plugin python-barbicanclient,config,resolver"
 
 @test "a healthy host passes every check of the three roles" {
 	run preflight_run management storage compute
@@ -78,12 +78,14 @@ COMMON_CHECKS="os,cgroup,docker,inotify,tool docker,tool kind,tool kubectl,tool 
 	done
 }
 
-@test "a missing required tool fails" {
-	for missing in docker kind kubectl jq yq; do
+@test "a missing required tool fails for every role" {
+	for missing in docker kind kubectl jq helm flux yq; do
 		probe_tool() { [ "$1" != "$missing" ] && tool_version "$1"; }
-		run preflight_run management
-		[ "$status" -eq 1 ]
-		[[ $output == *"FAIL tool $missing: not found in PATH"* ]]
+		for role in management storage compute; do
+			run preflight_run "$role"
+			[ "$status" -eq 1 ]
+			[[ $output == *"FAIL tool $missing: not found in PATH"* ]]
+		done
 	done
 }
 
@@ -118,13 +120,11 @@ COMMON_CHECKS="os,cgroup,docker,inotify,tool docker,tool kind,tool kubectl,tool 
 	[[ $output == *"warn resolver: not checked, the configuration is unusable"* ]]
 }
 
-@test "a missing optional tool only warns, and a missing openstack skips its plugins" {
-	for missing in helm flux openstack; do
-		probe_tool() { [ "$1" != "$missing" ] && tool_version "$1"; }
-		run preflight_run management
-		[ "$status" -eq 0 ]
-		[[ $output == *"warn tool $missing: not found in PATH"* ]]
-	done
+@test "a missing openstack only warns and skips its plugins" {
+	probe_tool() { [ "$1" != openstack ] && tool_version "$1"; }
+	run preflight_run management
+	[ "$status" -eq 0 ]
+	[[ $output == *"warn tool openstack: not found in PATH"* ]]
 	[[ $output != *plugin* ]]
 }
 
