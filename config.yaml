@@ -1,0 +1,15 @@
+network:
+  # Read by scripts/up.sh: the subnet of the Docker network cobaltcore-sandbox.
+  subnet: 172.30.0.0/16
+addresses:
+  # Read by the resolver check of scripts/lib/preflight.sh, and by the Gateway of #7.
+  gateway: 172.30.255.10
+registry:
+  # Read by scripts/up.sh: the image of the container sandbox-registry.
+  image: registry:3
+switches:
+  # Read by kind_config in scripts/lib/common.sh: the worker nodes of sandbox-compute.
+  hypervisor-nodes: 1
+upstream:
+  # Read by make vendor of #5; nothing reads it yet.
+  cobaltcore: 15a0323e243c7f53b91200f193a58b5b41d41f6a
