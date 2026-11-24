@@ -683,25 +683,28 @@ issue. Points 1, 5 and 7 are the likely candidates.
 
 ## Design decisions
 
-D10 to D14 were decided by the repository owner on 2026-11-24. D1 to D9 are
-proposals. Each becomes an ADR under `docs/adr/`.
+All fourteen decisions are accepted. D10 to D14 were decided by the
+repository owner on 2026-11-24, and D1 to D9 were accepted on the same day.
+This table is the overview. Each decision is recorded as an ADR under
+[`docs/adr/`](docs/adr/README.md), linked from the first column, and a
+decision that changes is changed there by a new ADR.
 
 | # | Decision | Reason | Alternative not taken |
 | --- | --- | --- | --- |
-| D1 | Three kind clusters on one Docker network of their own | Dedicated clusters per role as required; one network lets every cluster and the host reach every published address | One multi-node cluster with node pools per role: no cluster boundary, so nothing of the attachment contract is evaluated |
-| D2 | Flux on the management cluster as hub, stages per module, following the playground; the other clusters are deployed through kubeconfig Secrets | Modules need ordering, health gates and pruning; one Flux instead of three saves memory (D14) and is the management cluster upstream sketches | Flux on every cluster: independent clusters, more memory. Driving upstream's `make deploy-infra` with an own overlay: closest to the quick start for one cluster, but no modules, and its Ceph path puts Ceph into the same cluster |
-| D3 | The Flux source is an OCI artifact of the working tree in a local registry | Iterating without commits; no Git credentials in the clusters | Git sync from GitHub as on the playground: fits a long-lived shared environment, not a local sandbox |
-| D4 | Upstream is vendored at a pinned commit and referenced by path | One revision for all stages, no copies to keep in step | Remote references per stage |
-| D5 | Published addresses are MetalLB addresses with nip.io names and one sandbox CA, on port 443 | The same URL works from the workstation, from every cluster and through the VPN of D12; matches the upstream lab's Gateway instead of the kind quick start's port 8443 | `127-0-0-1.nip.io` with host port mappings: not reachable from other clusters |
-| D6 | The path to `full` uses a brownfield RabbitMQ with TLS from the first milestone | Required for a compute cluster and immutable afterwards | Starting on the managed bus and rebuilding the ControlPlane at milestone 4 |
-| D7 | Ceph client keys travel through the management cluster's OpenBao | The hand-off upstream designed (`PushSecret`, `ExternalSecret`), and the same path an external Ceph can use | Copying Secrets between clusters with a script: simpler, but not what a site would run |
-| D8 | The storage cluster has one node and, by default, one OSD with single-replica pools | No HA required; lowest footprint (D14) | Three OSDs with two replicas, as a switch; three nodes with failure domain `host`, as the lab |
-| D9 | Resource names follow the upstream guides (`controlplane`, `controlplane-ovn`, `openstack`, `ceph1`, `cephbk`) | Upstream commands and troubleshooting tables apply unchanged | Sandbox-specific names |
-| D10 | Beside a compute cluster six of the seven order kinds are enough; `RabbitMQVhost` is evaluated on the `controlplane` profile | The TLS bus a compute cluster needs is a brownfield bus, which serves no vhost orders | Waiting for an upstream change before building the compute cluster |
-| D11 | Orders run from namespaces on the management cluster only | No fourth cluster, no published database and bus | A workload cluster for Part 2 of the orders quick start |
-| D12 | External clusters reach the sandbox over a VPN that routes the Docker subnet | One address plan for kind and external clusters; nothing is published on a host interface | The host's address with published ports; a routed subnet without a VPN |
-| D13 | The upstream pin moves by a scheduled pull request, and a passing validation is the gate | Stays close to upstream without changing under a running evaluation; a break at render time is caught before the merge | Moving the pin by hand; following upstream `main` directly |
-| D14 | 16 GiB of host memory is the target for the profiles up to `full`; `parity` may need more | A sandbox should run on a common workstation | One profile sized for parity only |
+| [D1](docs/adr/0001-three-kind-clusters-on-one-docker-network.md) | Three kind clusters on one Docker network of their own | Dedicated clusters per role as required; one network lets every cluster and the host reach every published address | One multi-node cluster with node pools per role: no cluster boundary, so nothing of the attachment contract is evaluated |
+| [D2](docs/adr/0002-flux-on-the-management-cluster-as-hub.md) | Flux on the management cluster as hub, stages per module, following the playground; the other clusters are deployed through kubeconfig Secrets | Modules need ordering, health gates and pruning; one Flux instead of three saves memory (D14) and is the management cluster upstream sketches | Flux on every cluster: independent clusters, more memory. Driving upstream's `make deploy-infra` with an own overlay: closest to the quick start for one cluster, but no modules, and its Ceph path puts Ceph into the same cluster |
+| [D3](docs/adr/0003-oci-artifact-of-the-working-tree.md) | The Flux source is an OCI artifact of the working tree in a local registry | Iterating without commits; no Git credentials in the clusters | Git sync from GitHub as on the playground: fits a long-lived shared environment, not a local sandbox |
+| [D4](docs/adr/0004-vendor-upstream-at-a-pinned-commit.md) | Upstream is vendored at a pinned commit and referenced by path | One revision for all stages, no copies to keep in step | Remote references per stage |
+| [D5](docs/adr/0005-metallb-addresses-nip-io-names-one-ca-port-443.md) | Published addresses are MetalLB addresses with nip.io names and one sandbox CA, on port 443 | The same URL works from the workstation, from every cluster and through the VPN of D12; matches the upstream lab's Gateway instead of the kind quick start's port 8443 | `127-0-0-1.nip.io` with host port mappings: not reachable from other clusters |
+| [D6](docs/adr/0006-brownfield-rabbitmq-with-tls-from-milestone-1.md) | The path to `full` uses a brownfield RabbitMQ with TLS from the first milestone | Required for a compute cluster and immutable afterwards | Starting on the managed bus and rebuilding the ControlPlane at milestone 4 |
+| [D7](docs/adr/0007-ceph-client-keys-through-openbao.md) | Ceph client keys travel through the management cluster's OpenBao | The hand-off upstream designed (`PushSecret`, `ExternalSecret`), and the same path an external Ceph can use | Copying Secrets between clusters with a script: simpler, but not what a site would run |
+| [D8](docs/adr/0008-one-storage-node-one-osd-single-replica-pools.md) | The storage cluster has one node and, by default, one OSD with single-replica pools | No HA required; lowest footprint (D14) | Three OSDs with two replicas, as a switch; three nodes with failure domain `host`, as the lab |
+| [D9](docs/adr/0009-resource-names-of-the-upstream-guides.md) | Resource names follow the upstream guides (`controlplane`, `controlplane-ovn`, `openstack`, `ceph1`, `cephbk`) | Upstream commands and troubleshooting tables apply unchanged | Sandbox-specific names |
+| [D10](docs/adr/0010-six-of-seven-order-kinds-beside-a-compute-cluster.md) | Beside a compute cluster six of the seven order kinds are enough; `RabbitMQVhost` is evaluated on the `controlplane` profile | The TLS bus a compute cluster needs is a brownfield bus, which serves no vhost orders | Waiting for an upstream change before building the compute cluster |
+| [D11](docs/adr/0011-orders-on-the-management-cluster-only.md) | Orders run from namespaces on the management cluster only | No fourth cluster, no published database and bus | A workload cluster for Part 2 of the orders quick start |
+| [D12](docs/adr/0012-external-clusters-over-a-vpn.md) | External clusters reach the sandbox over a VPN that routes the Docker subnet | One address plan for kind and external clusters; nothing is published on a host interface | The host's address with published ports; a routed subnet without a VPN |
+| [D13](docs/adr/0013-move-the-upstream-pin-by-scheduled-pull-request.md) | The upstream pin moves by a scheduled pull request, and a passing validation is the gate | Stays close to upstream without changing under a running evaluation; a break at render time is caught before the merge | Moving the pin by hand; following upstream `main` directly |
+| [D14](docs/adr/0014-16-gib-host-for-the-profiles-up-to-full.md) | 16 GiB of host memory is the target for the profiles up to `full`; `parity` may need more | A sandbox should run on a common workstation | One profile sized for parity only |
 
 ## References
 
