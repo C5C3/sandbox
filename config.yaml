@@ -1,3 +1,5 @@
+# Every scalar key also reaches the stages as a Flux variable through
+# cluster_vars in scripts/lib/hub.sh, so this file never holds a credential.
 network:
   # Read by scripts/up.sh: the subnet of the Docker network cobaltcore-sandbox.
   subnet: 172.30.0.0/16
@@ -11,7 +13,7 @@ switches:
   # Read by kind_config in scripts/lib/common.sh: the worker nodes of sandbox-compute.
   hypervisor-nodes: 1
 upstream:
-  # Read by make vendor of #5; nothing reads it yet.
+  # Read by make vendor of #5; until then only cluster_vars in scripts/lib/hub.sh reads it.
   cobaltcore: 15a0323e243c7f53b91200f193a58b5b41d41f6a
 flux:
   # Read by ensure_flux in scripts/lib/hub.sh: the version of the chart flux-operator.
