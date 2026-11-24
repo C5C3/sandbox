@@ -16,7 +16,7 @@ def roles: ["management", "storage", "compute"];
 
 def role_label: .metadata.labels["sandbox.c5c3.io/cluster"] // "";
 
-def row($cluster): [$cluster, "\(.kind)/\(.metadata.name)"] + ready | @tsv;
+def row($cluster): [$cluster, "\(.kind)/\(.metadata.name)"] + ready | join("\t");
 
 def of_kind($kind): map(select(.kind == $kind)) | sort_by(.metadata.name)[];
 
@@ -28,7 +28,7 @@ def of_kind($kind): map(select(.kind == $kind)) | sort_by(.metadata.name)[];
   (roles[] as $role
    | ([$kustomizations[] | select(.metadata.name == "cluster-\($role)")][0]) as $root
    | (if $root != null then $root | row($role)
-      elif any($existing[]; . == $role) then [$role, "-", "-", "not attached to the hub, run make up-\($role)"] | @tsv
+      elif any($existing[]; . == $role) then [$role, "-", "-", "not attached to the hub, run make up-\($role)"] | join("\t")
       else empty end),
      ($kustomizations
       | map(select(role_label == $role and .metadata.name != "cluster-\($role)"))

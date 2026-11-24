@@ -61,6 +61,12 @@ hub_objects() {
 	[ "$output" = "$(printf 'management\tFluxInstance/flux\tUnknown\tno Ready condition\nmanagement\tOCIRepository/sandbox\tFalse\tfailed to pull')" ]
 }
 
+@test "status.jq keeps the quotes and backslashes of a message and turns a tab into a space" {
+	rows_of "{\"items\": [$(object OCIRepository sandbox False $'json: cannot unmarshal \\"value\\"\tinto struct')]}" ""
+	[ "$status" -eq 0 ]
+	[ "$output" = "$(printf 'management\tOCIRepository/sandbox\tFalse\t%s' 'json: cannot unmarshal \"value\" into struct')" ]
+}
+
 @test "status.jq prints an existing cluster without a root as not attached" {
 	rows_of "$(object Kustomization cluster-management True ok management | jq -s '{items: .}')" "management compute"
 	[ "$status" -eq 0 ]
