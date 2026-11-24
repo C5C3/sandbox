@@ -4,6 +4,8 @@
 
 # shellcheck source=../../scripts/lib/common.sh
 . "$BATS_TEST_DIRNAME/../../scripts/lib/common.sh"
+# shellcheck source=../../scripts/lib/preflight.sh
+. "$BATS_TEST_DIRNAME/../../scripts/lib/preflight.sh"
 
 # Every test starts without a configuration, whatever the caller exported.
 unset SANDBOX_CONFIG SANDBOX_SUBNET SANDBOX_GATEWAY_ADDRESS \
@@ -24,4 +26,47 @@ kind() {
 config_with() {
 	export SANDBOX_CONFIG=$BATS_TEST_TMPDIR/config.yaml
 	yq "$1" "$SANDBOX_ROOT/config.yaml" >"$SANDBOX_CONFIG"
+}
+
+# tool_version <name>: prints a version line of the tool as probe_tool does.
+tool_version() {
+	case $1 in
+	docker) echo "Docker version 27.3.1, build ce12230" ;;
+	kind) echo "kind v0.33.0 go1.26.7 linux/amd64" ;;
+	kubectl) echo "Client Version: v1.37.0" ;;
+	helm) echo "v3.22.0+g144ca65" ;;
+	flux) echo "flux version 2.9.5" ;;
+	yq) echo "yq (https://github.com/mikefarah/yq/) version v4.44.3" ;;
+	jq) echo "jq-1.7.1" ;;
+	openstack) echo "openstack 7.1.0" ;;
+	*) return 1 ;;
+	esac
+}
+
+# healthy_host: replaces every probe of the host check so that every check
+# passes, with the committed config.yaml. A test then replaces the one probe
+# it is about.
+healthy_host() {
+	probe_os() { echo "Linux x86_64"; }
+	probe_cgroup_fstype() { echo cgroup2fs; }
+	probe_docker_security() { echo '["name=seccomp,profile=builtin","name=cgroupns"]'; }
+	probe_inotify_instances() { echo 512; }
+	probe_tool() { tool_version "$1"; }
+	probe_openstack_plugin() { return 0; }
+	probe_module() { return 0; }
+	probe_kvm() { return 0; }
+	probe_resolve() { echo 172.30.255.10; }
+	export SANDBOX_CONFIG=$SANDBOX_ROOT/config.yaml
+}
+
+# check_ids: prints the ids of the check lines in $output, comma-separated.
+check_ids() {
+	local line ids=()
+	for line in "${lines[@]}"; do
+		if [[ $line =~ ^(ok|warn|FAIL)\ ([^:]+): ]]; then
+			ids+=("${BASH_REMATCH[2]}")
+		fi
+	done
+	local IFS=,
+	printf '%s\n' "${ids[*]}"
 }
