@@ -423,11 +423,11 @@ builds it.
 A profile is a named selection of clusters, modules and switches. It is a
 convenience on top of the module lists, not a second mechanism.
 
-A profile is the file `profiles/<name>.yaml` with three keys. `clusters` lists
-the clusters it runs and must list `management`, where Flux runs. `modules`
-maps a cluster to the list of its modules, in any order, because `dependsOn`
-orders them. The optional `switches` maps a key of `switches` in the
-configuration to a value, which replaces the value of the configuration.
+Each profile is the file `profiles/<name>.yaml` with three keys. `clusters`
+lists the clusters it runs and must list `management`, where Flux runs.
+`modules` maps a cluster to the list of its modules, in any order, because
+`dependsOn` orders them. The optional `switches` maps a key of `switches` in
+the configuration to a value, which replaces the value of the configuration.
 `make up` without `PROFILE` uses `scaffold`, which runs the module `test` on
 all three clusters. The module lists reach Flux through the roots on the
 management cluster, not through the artifact, so a changed profile is applied
