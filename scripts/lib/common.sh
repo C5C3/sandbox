@@ -98,3 +98,85 @@ config_load() {
 	export SANDBOX_REGISTRY_IMAGE=${values[registry.image]}
 	export SANDBOX_HYPERVISOR_NODES=$nodes
 }
+
+# cluster_exists <role>: succeeds when kind lists the role's cluster.
+cluster_exists() {
+	local out
+	out=$(kind get clusters 2>&1) || die "cannot list kind clusters: ${out%%$'\n'*}"
+	grep -qxF -- "$(cluster_name "$1")" <<<"$out"
+}
+
+# network_exists <name>: succeeds when Docker has a network of that name.
+network_exists() {
+	local out
+	out=$(docker network ls --format '{{.Name}}' 2>&1) || die "cannot list Docker networks: ${out%%$'\n'*}"
+	grep -qxF -- "$1" <<<"$out"
+}
+
+# container_exists <name>: succeeds when Docker has a container of that name,
+# running or not.
+container_exists() {
+	local out
+	out=$(docker ps -a --format '{{.Names}}' 2>&1) || die "cannot list Docker containers: ${out%%$'\n'*}"
+	grep -qxF -- "$1" <<<"$out"
+}
+
+# created_by_sandbox <network|container> <name>: succeeds when the existing
+# object carries the label SANDBOX_LABEL.
+created_by_sandbox() {
+	local labels=.Labels value
+	if [ "$1" = container ]; then
+		labels=.Config.Labels
+	fi
+	value=$(docker "$1" inspect -f "{{index $labels \"${SANDBOX_LABEL%%=*}\"}}" "$2") ||
+		die "cannot inspect Docker $1 $2"
+	[ "$value" = "${SANDBOX_LABEL#*=}" ]
+}
+
+# cluster_on_sandbox_network <role>: returns 0 when a node of the role's
+# cluster is attached to SANDBOX_NETWORK and 1 when none is. up.sh creates
+# every cluster there, so a cluster of the same name with no node on it is not
+# one of the sandbox. Any node counts, because an interrupted kind create or
+# delete can leave the workers without the control-plane node. When kind
+# cannot list the nodes or Docker cannot inspect one, it prints an error and
+# returns 2, so a caller can record the error and go on.
+cluster_on_sandbox_network() {
+	local name out node networks
+	name=$(cluster_name "$1")
+	if ! out=$(kind get nodes --name "$name"); then
+		printf 'error: cannot list the nodes of kind cluster %s\n' "$name" >&2
+		return 2
+	fi
+	for node in $out; do
+		if ! networks=$(docker container inspect -f '{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}' "$node"); then
+			printf 'error: cannot inspect Docker container %s\n' "$node" >&2
+			return 2
+		fi
+		if [[ " $networks" == *" $SANDBOX_NETWORK "* ]]; then
+			return 0
+		fi
+	done
+	return 1
+}
+
+# prepare_kubeconfig_dir: creates the directory of the kubeconfig files, which
+# hold cluster-admin credentials, with mode 700.
+prepare_kubeconfig_dir() {
+	mkdir -p -- "$SANDBOX_STATE_DIR/kubeconfig"
+	chmod 700 -- "$SANDBOX_STATE_DIR/kubeconfig"
+}
+
+# restore_kubeconfig <role>: writes the kubeconfig file of an existing cluster
+# when it is missing.
+restore_kubeconfig() {
+	local path
+	path=$(kubeconfig_path "$1")
+	if [ -f "$path" ]; then
+		return 0
+	fi
+	prepare_kubeconfig_dir
+	log "restoring $path"
+	kind export kubeconfig --name "$(cluster_name "$1")" --kubeconfig "$path" ||
+		die "kind could not export the kubeconfig of $(cluster_name "$1")"
+	chmod 600 -- "$path"
+}
