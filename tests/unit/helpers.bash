@@ -9,7 +9,7 @@
 
 # Every test starts without a configuration, whatever the caller exported.
 unset SANDBOX_CONFIG SANDBOX_SUBNET SANDBOX_GATEWAY_ADDRESS \
-	SANDBOX_REGISTRY_IMAGE SANDBOX_HYPERVISOR_NODES
+	SANDBOX_REGISTRY_IMAGE SANDBOX_HYPERVISOR_NODES SANDBOX_FLUX_OPERATOR_VERSION
 
 # A unit test that reaches Docker or kind fails instead of touching the host.
 docker() {

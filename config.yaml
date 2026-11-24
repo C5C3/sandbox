@@ -13,3 +13,6 @@ switches:
 upstream:
   # Read by make vendor of #5; nothing reads it yet.
   cobaltcore: 15a0323e243c7f53b91200f193a58b5b41d41f6a
+flux:
+  # Read by ensure_flux in scripts/lib/hub.sh: the version of the chart flux-operator.
+  operator: 0.63.1
