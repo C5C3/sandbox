@@ -1,0 +1,11 @@
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: OCIRepository
+metadata:
+  name: sandbox
+  namespace: flux-system
+spec:
+  interval: 1m
+  url: oci://sandbox-registry:5000/sandbox
+  insecure: true
+  ref:
+    tag: latest
