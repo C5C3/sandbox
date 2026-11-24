@@ -1,7 +1,8 @@
 # shellcheck shell=bash
 # Flux on sandbox-management, the hub that applies the stages of all three
-# clusters. Source scripts/lib/common.sh first, and scripts/lib/profile.sh
-# for the functions that read the profile.
+# clusters. Source scripts/lib/common.sh first, scripts/lib/profile.sh for
+# the functions that read the profile, and scripts/lib/vendor.sh for
+# push_artifact.
 #
 # The command layer applies the FluxInstance, the source, cluster-vars, the
 # kubeconfig Secrets and one root Kustomization per cluster. Each apply is a
@@ -48,11 +49,15 @@ _hub_apply() {
 }
 
 # _request_fetch: asks Flux to fetch the tag of the OCIRepository sandbox now
-# rather than at its next interval.
+# rather than at its next interval, and records SANDBOX_UPSTREAM_RECORD, the
+# checkout of upstream in what push_artifact pushed, in the annotation
+# sandbox.c5c3.io/upstream. The apply of flux/source.yaml leaves the
+# annotation alone, because it does not set it.
 _request_fetch() {
 	local out
 	out=$(hub_kubectl -n flux-system annotate --overwrite ocirepositories.source.toolkit.fluxcd.io sandbox \
-		"reconcile.fluxcd.io/requestedAt=$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)" 2>&1) ||
+		"reconcile.fluxcd.io/requestedAt=$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)" \
+		"sandbox.c5c3.io/upstream=$SANDBOX_UPSTREAM_RECORD" 2>&1) ||
 		die "cannot ask Flux to fetch the artifact: $(_last_line "$out")"
 }
 
@@ -84,7 +89,8 @@ ensure_flux() {
 
 # push_artifact: pushes the working tree, without .git/ and .sandbox/, to
 # oci://<address of sandbox-registry>:5000/sandbox:latest and sets
-# SANDBOX_REVISION to latest@sha256:<digest> of what it pushed.
+# SANDBOX_REVISION to latest@sha256:<digest> of what it pushed and
+# SANDBOX_UPSTREAM_RECORD to the record of vendor/cobaltcore in it.
 push_artifact() {
 	local address url revision commit branch out errfile digest
 	command -v flux >/dev/null || die 'flux not found in PATH, see "Host requirements" in the README'
@@ -92,6 +98,9 @@ push_artifact() {
 		[ "$(docker container inspect -f '{{.State.Running}}' "$SANDBOX_REGISTRY")" != true ]; then
 		die "container $SANDBOX_REGISTRY does not run; run make up first"
 	fi
+	SANDBOX_UPSTREAM_RECORD=$(vendor_record) ||
+		die "$SANDBOX_VENDOR_DIR is not a checkout of upstream; run make vendor"
+	export SANDBOX_UPSTREAM_RECORD
 	# The host reaches the registry at its address on the Docker network; the
 	# registry publishes no port.
 	address=$(docker inspect -f "{{(index .NetworkSettings.Networks \"$SANDBOX_NETWORK\").IPAddress}}" "$SANDBOX_REGISTRY") ||
@@ -105,11 +114,12 @@ push_artifact() {
 	fi
 
 	# --ignore-paths replaces the default list of flux, so it names .git/
-	# again. .sandbox/ holds the cluster-admin kubeconfigs of all three
-	# clusters, and the registry serves plain HTTP without authentication to
-	# everything on the Docker network. Git's ignore rules do not apply:
-	# vendor/ is ignored by Git and travels in the artifact.
-	log "pushing the working tree to $url"
+	# again, which also leaves out vendor/cobaltcore/.git. .sandbox/ holds
+	# the cluster-admin kubeconfigs of all three clusters, and the registry
+	# serves plain HTTP without authentication to everything on the Docker
+	# network. Git's ignore rules do not apply: vendor/ is ignored by Git and
+	# travels in the artifact.
+	log "pushing the working tree to $url, upstream at $SANDBOX_UPSTREAM_RECORD"
 	errfile=$(mktemp)
 	if ! out=$(flux push artifact "$url" --path "$SANDBOX_ROOT" --source "$SANDBOX_ROOT" --revision "$revision" \
 		--ignore-paths "$SANDBOX_ARTIFACT_IGNORE" --insecure-registry --output json 2>"$errfile"); then

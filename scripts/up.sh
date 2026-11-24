@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # Usage: up.sh [<role>...]
 #
-# Loads the profile that SANDBOX_PROFILE names, checks the host, then creates
-# the Docker network, the registry and the kind clusters of the given roles,
-# or of the profile's clusters when none is given. When the management
-# cluster exists, it installs Flux there, pushes the working tree and has
-# Flux apply the profile's modules to every cluster of the sandbox.
+# Loads the profile that SANDBOX_PROFILE names, checks the host and checks
+# out vendor/cobaltcore at the pin of the configuration, then creates the
+# Docker network, the registry and the kind clusters of the given roles, or
+# of the profile's clusters when none is given. When the management cluster
+# exists, it installs Flux there, pushes the working tree and has Flux apply
+# the profile's modules to every cluster of the sandbox.
 #
 # Each step creates its object or checks that the existing one matches the
 # configuration, so a second run continues where a failed one stopped. A
@@ -20,6 +21,8 @@ set -euo pipefail
 . "$SANDBOX_ROOT/scripts/lib/profile.sh"
 # shellcheck source=lib/hub.sh
 . "$SANDBOX_ROOT/scripts/lib/hub.sh"
+# shellcheck source=lib/vendor.sh
+. "$SANDBOX_ROOT/scripts/lib/vendor.sh"
 
 ensure_network() {
 	local out subnet
@@ -129,6 +132,9 @@ for role in "${SANDBOX_ROLES[@]}"; do
 		die "$(cluster_name "$role") exists, the profile $SANDBOX_PROFILE does not list it; run make down first"
 	fi
 done
+# A checkout with local changes at another commit stops the run here, before
+# anything is created; so does a failed fetch.
+ensure_vendor
 ensure_network
 ensure_registry
 for role in "$@"; do

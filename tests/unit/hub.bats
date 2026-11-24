@@ -8,8 +8,10 @@ setup() {
 }
 
 # registry_runs: replaces docker with a function that lists sandbox-registry
-# as a running container at 172.30.0.2.
+# as a running container at 172.30.0.2, and makes vendor/cobaltcore in the
+# test's directory a checkout of upstream.
 registry_runs() {
+	vendor_checkout
 	docker() {
 		case $* in
 		"ps -a --format {{.Names}}") echo sandbox-registry ;;
@@ -126,6 +128,30 @@ source_answers() {
 	run push_artifact
 	[ "$status" -eq 1 ]
 	[ "$output" = "error: container sandbox-registry does not run; run make up first" ]
+}
+
+@test "push_artifact fails without a checkout of upstream and does not push" {
+	registry_runs
+	SANDBOX_VENDOR_DIR=$BATS_TEST_TMPDIR/missing/cobaltcore
+	flux() { touch "$BATS_TEST_TMPDIR/flux.called"; }
+	run push_artifact
+	[ "$status" -eq 1 ]
+	[ "$output" = "error: $BATS_TEST_TMPDIR/missing/cobaltcore is not a checkout of upstream; run make vendor" ]
+	[ ! -e "$BATS_TEST_TMPDIR/flux.called" ]
+}
+
+@test "push_artifact records the commit of the checkout and marks local changes" {
+	registry_runs
+	flux() { echo "{\"digest\": \"sha256:$DIGEST\"}"; }
+	run push_artifact
+	[ "$status" -eq 0 ]
+	[[ $output == *": pushing the working tree to oci://172.30.0.2:5000/sandbox:latest, upstream at $UPSTREAM_FIRST" ]]
+	push_artifact >/dev/null
+	[ "$SANDBOX_UPSTREAM_RECORD" = "$UPSTREAM_FIRST" ]
+
+	touch "$SANDBOX_VENDOR_DIR/deploy/new.tmp"
+	push_artifact >/dev/null
+	[ "$SANDBOX_UPSTREAM_RECORD" = "$UPSTREAM_FIRST-modified" ]
 }
 
 @test "push_artifact fails with the first line of flux's error" {
@@ -331,6 +357,20 @@ scaffold_attached() {
 	run "$BATS_TEST_TMPDIR/scripts/up.sh"
 	[ "$status" -eq 1 ]
 	[ "$output" = 'error: config: switches.hypervisor-nodes and switches.hypervisor_nodes become the same Flux variable SWITCHES_HYPERVISOR_NODES' ]
+}
+
+@test "up.sh stops at a failed fetch of upstream before it calls kind or Docker" {
+	cp -R -- "$SANDBOX_ROOT/scripts" "$BATS_TEST_TMPDIR/"
+	# The host check passes.
+	echo 'preflight_run() { :; }' >"$BATS_TEST_TMPDIR/scripts/lib/preflight.sh"
+	export SANDBOX_CONFIG=$SANDBOX_ROOT/config.yaml SANDBOX_UPSTREAM_URL=file://$BATS_TEST_TMPDIR/missing
+	profile_with 'clusters: [management, storage, compute]'
+	export -f docker kind
+	run "$BATS_TEST_TMPDIR/scripts/up.sh"
+	[ "$status" -eq 1 ]
+	[[ ${lines[-1]} == "error: vendor: cannot fetch $(yq '.upstream.cobaltcore' "$SANDBOX_CONFIG") from file://$BATS_TEST_TMPDIR/missing: "?* ]]
+	[[ $output != *"unit test called"* ]]
+	[ ! -e "$BATS_TEST_TMPDIR/.sandbox" ]
 }
 
 @test "cluster_vars carries the switches of the profile" {
@@ -562,11 +602,13 @@ wait_stages" ]
 }
 
 # push_host <kind clusters>: copies scripts/ into the test's directory with a
-# kubeconfig file for management, and exports docker, kind and flux for a
-# running registry at 172.30.0.2, the kind clusters given, every node on the
-# sandbox network and a push that answers with a digest.
+# kubeconfig file for management and a checkout of upstream, and exports
+# docker, kind and flux for a running registry at 172.30.0.2, the kind
+# clusters given, every node on the sandbox network and a push that answers
+# with a digest.
 push_host() {
 	cp -R -- "$SANDBOX_ROOT/scripts" "$BATS_TEST_TMPDIR/"
+	vendor_checkout
 	mkdir -p -- "$BATS_TEST_TMPDIR/.sandbox/kubeconfig"
 	: >"$BATS_TEST_TMPDIR/.sandbox/kubeconfig/management.yaml"
 	export CLUSTERS=$1 DIGEST
@@ -620,7 +662,7 @@ push_host() {
 	[ "${lines[-1]}" = "push: nothing follows the tag yet, run make up" ]
 }
 
-@test "push.sh asks Flux on sandbox-management to fetch the pushed revision" {
+@test "push.sh asks Flux on sandbox-management to fetch the pushed revision and records upstream" {
 	push_host sandbox-management
 	export ANNOTATE=$BATS_TEST_TMPDIR/annotate
 	kubectl() {
@@ -634,7 +676,7 @@ push_host() {
 	run "$BATS_TEST_TMPDIR/scripts/push.sh"
 	[ "$status" -eq 0 ]
 	[ "${lines[-1]}" = "push: asked Flux on sandbox-management to fetch latest@sha256:$DIGEST" ]
-	[[ $(<"$ANNOTATE") == *" -n flux-system annotate --overwrite ocirepositories.source.toolkit.fluxcd.io sandbox reconcile.fluxcd.io/requestedAt="?* ]]
+	[[ $(<"$ANNOTATE") == *" -n flux-system annotate --overwrite ocirepositories.source.toolkit.fluxcd.io sandbox reconcile.fluxcd.io/requestedAt="?*" sandbox.c5c3.io/upstream=$UPSTREAM_FIRST" ]]
 }
 
 @test "push.sh fails with the last line of kubectl when it cannot reach sandbox-management" {

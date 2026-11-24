@@ -3,9 +3,10 @@
 #
 # Lists the FluxInstance, the source, the root of each cluster and the stages
 # on sandbox-management with the status and the message of their Ready
-# condition, per cluster. It reads no configuration and no profile and runs
-# no host check. It exits 0 whenever it could read the hub: a stage that is
-# not ready is a row, not an exit status.
+# condition, per cluster, then the record of vendor/cobaltcore that make up
+# or make push left on the source. It reads no configuration and no profile
+# and runs no host check. It exits 0 whenever it could read the hub: a stage
+# that is not ready is a row, not an exit status.
 set -euo pipefail
 
 # shellcheck source=lib/common.sh
@@ -51,4 +52,7 @@ while IFS=$'\t' read -r cluster object state message; do
 		fi
 	fi
 done <<<"$rows"
+upstream=$(jq -r '[.items[]? | select(.kind == "OCIRepository" and .metadata.name == "sandbox")
+	| .metadata.annotations["sandbox.c5c3.io/upstream"] // empty][0] // empty' <<<"$objects")
+printf 'status: upstream %s\n' "${upstream:-not recorded}"
 printf 'status: %d of %d ready\n' "$ready" "$total"
