@@ -26,6 +26,8 @@ Remote references per stage. Each stage would carry its own reference to upstrea
 
 `make vendor` checks out the commit recorded in `config.yaml` into `vendor/cobaltcore`, which Git ignores and which becomes part of the OCI artifact Flux reads ([ADR-0003](0003-oci-artifact-of-the-working-tree.md)).
 
+Which paths of upstream the checkout holds is recorded in [ADR-0016](0016-vendor-only-the-upstream-paths-that-are-read.md).
+
 Stages reference `vendor/cobaltcore/deploy/...` and patch what differs.
 
 All stages render against one revision. How that revision moves is recorded in [ADR-0013](0013-move-the-upstream-pin-by-scheduled-pull-request.md).
