@@ -77,6 +77,65 @@ peer_readyz() {
 			'cat > /tmp/peer && kubectl --kubeconfig /tmp/peer get --raw /readyz; rm -f /tmp/peer'
 }
 
+# mgmt_kubectl <argument>...: runs kubectl against sandbox-management.
+mgmt_kubectl() {
+	kubectl --kubeconfig "$KUBECONFIG_DIR/management.yaml" "$@"
+}
+
+# eventually <seconds> <command>...: runs the command every 2 s until it
+# succeeds, for at most the seconds given.
+eventually() {
+	local deadline=$((SECONDS + $1))
+	shift
+	until "$@"; do
+		if [ "$SECONDS" -ge "$deadline" ]; then
+			return 1
+		fi
+		sleep 2
+	done
+}
+
+# profile_file <name> <yaml>: writes the profile into the directory that
+# SANDBOX_PROFILE_DIR names for the make calls of a test.
+profile_file() {
+	mkdir -p "$BATS_FILE_TMPDIR/profiles"
+	printf '%s\n' "$2" >"$BATS_FILE_TMPDIR/profiles/$1.yaml"
+}
+
+# ready_at <kind/name> <revision>: the object in flux-system is Ready and
+# reports the revision.
+ready_at() {
+	[ "$(mgmt_kubectl -n flux-system get "$1" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status} {.status.artifact.revision}{.status.lastAppliedRevision}')" = "True $2" ]
+}
+
+# status_is <object> <ready>: make status shows the object with the READY
+# value.
+status_is() {
+	[ "$(sb_make status | awk -v object="$1" '$2 == object { print $3 }')" = "$2" ]
+}
+
+# absent_object <role> <argument>...: kubectl get with the arguments finds
+# nothing on the role's cluster.
+absent_object() {
+	! kubectl --kubeconfig "$KUBECONFIG_DIR/$1.yaml" get "${@:2}" >/dev/null 2>&1
+}
+
+# hub_data <role>: prints the data of the ConfigMap sandbox-test/hub of the
+# role's cluster as cluster, subnet and gateway.
+hub_data() {
+	kubectl --kubeconfig "$KUBECONFIG_DIR/$1.yaml" -n sandbox-test get configmap hub \
+		-o jsonpath='{.data.cluster} {.data.subnet} {.data.gateway}'
+}
+
+# kube_config_unchanged: ~/.kube/config is what setup_file found.
+kube_config_unchanged() {
+	if [ -f ~/.kube/config ]; then
+		[ "$(sha256sum <~/.kube/config)" = "$(cat "$BATS_FILE_TMPDIR/kubeconfig.sha256")" ]
+	else
+		[ "$(cat "$BATS_FILE_TMPDIR/kubeconfig.sha256")" = absent ]
+	fi
+}
+
 setup_file() {
 	if sandbox_exists; then
 		echo "a sandbox exists on this host; run make down first" >&2
@@ -92,6 +151,7 @@ setup_file() {
 }
 
 teardown_file() {
+	rm -f "$ROOT/push-marker.tmp"
 	if [ -f "$BATS_FILE_TMPDIR/foreign-network" ]; then
 		docker network rm cobaltcore-sandbox >/dev/null
 	fi
@@ -194,6 +254,162 @@ export KUBECONFIG=$KUBECONFIG_DIR/compute.yaml  # sandbox-compute" ]
 	done
 }
 
+@test "make up prints the stages Ready on the three clusters before the KUBECONFIG lines" {
+	run sb_make up
+	[ "$status" -eq 0 ]
+	[[ ${lines[-4]} =~ ^up:\ 3\ stages\ Ready\ on\ 3\ clusters\ at\ (latest@sha256:[0-9a-f]{64})$ ]]
+	echo "${BASH_REMATCH[1]}" >"$BATS_FILE_TMPDIR/revision"
+	[[ ${lines[-3]} == "export KUBECONFIG="* ]]
+}
+
+@test "the FluxInstance runs three controllers on 2.10 with strict substitution" {
+	run mgmt_kubectl -n flux-system get fluxinstance flux \
+		-o jsonpath='{.status.conditions[?(@.type=="Ready")].status} {.status.lastAppliedRevision}'
+	[ "$status" -eq 0 ]
+	[[ $output == "True v2.10."* ]]
+	run mgmt_kubectl -n flux-system get deployments -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}'
+	[ "$status" -eq 0 ]
+	[ "$(sort <<<"$output" | paste -sd ' ')" = "flux-operator helm-controller kustomize-controller source-controller" ]
+	run mgmt_kubectl -n flux-system get deployment kustomize-controller -o jsonpath='{.spec.template.spec.containers[0].args}'
+	[ "$status" -eq 0 ]
+	[[ $output == *'"--feature-gates=StrictPostBuildSubstitutions=true"'* ]]
+}
+
+@test "the storage and compute clusters run no Flux" {
+	local role
+	for role in storage compute; do
+		run kubectl --kubeconfig "$KUBECONFIG_DIR/$role.yaml" get namespace flux-system
+		[ "$status" -ne 0 ]
+		[[ $output == *NotFound* ]]
+	done
+}
+
+@test "the source follows the registry by name and is Ready at the revision of make up" {
+	[ "$(mgmt_kubectl -n flux-system get ocirepository sandbox -o jsonpath='{.spec.url}')" = oci://sandbox-registry:5000/sandbox ]
+	ready_at ocirepository/sandbox "$(cat "$BATS_FILE_TMPDIR/revision")"
+}
+
+@test "the kubeconfig Secrets of storage and compute name the API inside the network" {
+	local role
+	for role in storage compute; do
+		run mgmt_kubectl -n flux-system get secret "kubeconfig-$role" -o jsonpath='{.data.value}'
+		[ "$status" -eq 0 ]
+		[ "$(base64 -d <<<"$output" | yq '.clusters[0].cluster.server')" = "https://sandbox-$role-control-plane:6443" ]
+	done
+	run mgmt_kubectl -n flux-system get secret kubeconfig-management
+	[ "$status" -ne 0 ]
+	[[ $output == *NotFound* ]]
+}
+
+@test "cluster-vars holds the addresses of the configuration" {
+	run mgmt_kubectl -n flux-system get configmap cluster-vars -o jsonpath='{.data.NETWORK_SUBNET} {.data.ADDRESSES_GATEWAY}'
+	[ "$status" -eq 0 ]
+	[ "$output" = "172.30.0.0/16 172.30.255.10" ]
+}
+
+@test "the module test wrote its ConfigMap with the role and the addresses on each cluster" {
+	local role
+	for role in "${ROLES[@]}"; do
+		[ "$(hub_data "$role")" = "$role 172.30.0.0/16 172.30.255.10" ]
+	done
+}
+
+@test "make status shows the FluxInstance, the source, the roots and the stages Ready" {
+	local role object
+	run sb_make status
+	[ "$status" -eq 0 ]
+	for object in FluxInstance/flux OCIRepository/sandbox; do
+		[[ $output =~ (^|$'\n')management\ +$object\ +True\  ]]
+	done
+	for role in "${ROLES[@]}"; do
+		for object in "Kustomization/cluster-$role" "Kustomization/$role-test"; do
+			[[ $output =~ (^|$'\n')$role\ +$object\ +True\  ]]
+		done
+	done
+	[ "${lines[-1]}" = "status: 8 of 8 ready" ]
+}
+
+@test "the artifact holds the tree without .sandbox and .git" {
+	local address
+	address=$(docker container inspect -f '{{(index .NetworkSettings.Networks "cobaltcore-sandbox").IPAddress}}' sandbox-registry)
+	mkdir "$BATS_TEST_TMPDIR/artifact"
+	flux pull artifact "oci://$address:5000/sandbox:latest" --insecure-registry --output "$BATS_TEST_TMPDIR/artifact"
+	[ -f "$BATS_TEST_TMPDIR/artifact/clusters/management/kustomization.yaml" ]
+	[ ! -e "$BATS_TEST_TMPDIR/artifact/.sandbox" ]
+	[ ! -e "$BATS_TEST_TMPDIR/artifact/.git" ]
+}
+
+@test "make push publishes a changed tree and Flux applies it within 120 s" {
+	local revision address
+	touch "$ROOT/push-marker.tmp"
+	run sb_make push
+	rm -f "$ROOT/push-marker.tmp"
+	[ "$status" -eq 0 ]
+	[[ ${lines[-1]} =~ ^push:\ asked\ Flux\ on\ sandbox-management\ to\ fetch\ (latest@sha256:[0-9a-f]{64})$ ]]
+	revision=${BASH_REMATCH[1]}
+	[ "$revision" != "$(cat "$BATS_FILE_TMPDIR/revision")" ]
+	address=$(docker container inspect -f '{{(index .NetworkSettings.Networks "cobaltcore-sandbox").IPAddress}}' sandbox-registry)
+	mkdir "$BATS_TEST_TMPDIR/artifact"
+	flux pull artifact "oci://$address:5000/sandbox:latest" --insecure-registry --output "$BATS_TEST_TMPDIR/artifact"
+	[ -f "$BATS_TEST_TMPDIR/artifact/push-marker.tmp" ]
+	eventually 120 ready_at ocirepository/sandbox "$revision"
+	eventually 120 ready_at kustomization/compute-test "$revision"
+}
+
+@test "a broken kubeconfig Secret shows in make status and make up repairs it" {
+	mgmt_kubectl -n flux-system patch secret kubeconfig-storage --type merge \
+		-p "{\"data\":{\"value\":\"$(printf broken | base64)\"}}" >/dev/null
+	[ "$(mgmt_kubectl -n flux-system get secret kubeconfig-storage -o jsonpath='{.metadata.labels.reconcile\.fluxcd\.io/watch}')" = Enabled ]
+	eventually 60 status_is Kustomization/storage-test False
+	run sb_make status
+	[ "$status" -eq 0 ]
+	[ "${lines[-1]}" = "status: 7 of 8 ready" ]
+	run sb_make up
+	[ "$status" -eq 0 ]
+	run sb_make status
+	[ "$status" -eq 0 ]
+	[ "${lines[-1]}" = "status: 8 of 8 ready" ]
+}
+
+@test "a profile without the module of storage removes its stage and what the stage applied" {
+	profile_file nostorage $'clusters: [management, storage, compute]\nmodules:\n  management: [test]\n  compute: [test]'
+	run env SANDBOX_PROFILE_DIR="$BATS_FILE_TMPDIR/profiles" make --no-print-directory -C "$ROOT" up PROFILE=nostorage
+	[ "$status" -eq 0 ]
+	eventually 60 absent_object management -n flux-system kustomization storage-test
+	eventually 60 absent_object storage namespace sandbox-test
+	[ "$(mgmt_kubectl -n flux-system get kustomization cluster-storage -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}')" = True ]
+	run sb_make status
+	[ "$status" -eq 0 ]
+	[ "${lines[-1]}" = "status: 7 of 7 ready" ]
+	run sb_make up
+	[ "$status" -eq 0 ]
+	[ "$(hub_data storage)" = "storage 172.30.0.0/16 172.30.255.10" ]
+}
+
+@test "make up refuses a profile that does not list an existing cluster" {
+	profile_file mgmtonly 'clusters: [management]'
+	run env SANDBOX_PROFILE_DIR="$BATS_FILE_TMPDIR/profiles" make --no-print-directory -C "$ROOT" up PROFILE=mgmtonly
+	failed_with "sandbox-storage exists, the profile mgmtonly does not list it; run make down first"
+	run sb_make status
+	[ "$status" -eq 0 ]
+	[ "${lines[-1]}" = "status: 8 of 8 ready" ]
+}
+
+@test "make up stops at a missing profile before the host check" {
+	local line
+	run sb_make up PROFILE=full
+	failed_with "profile: $ROOT/profiles/full.yaml not found"
+	for line in "${lines[@]}"; do
+		[[ $line != preflight:* && $line != "ok "* && $line != "warn "* && $line != "FAIL "* ]]
+	done
+}
+
+@test "make up-storage refuses a cluster the profile does not list" {
+	profile_file mgmtonly 'clusters: [management]'
+	run env SANDBOX_PROFILE_DIR="$BATS_FILE_TMPDIR/profiles" make --no-print-directory -C "$ROOT" up-storage PROFILE=mgmtonly
+	failed_with "the profile mgmtonly does not list the cluster storage"
+}
+
 @test "a second make up keeps every container" {
 	local before
 	before=$(container_ids)
@@ -273,11 +489,7 @@ export KUBECONFIG=$KUBECONFIG_DIR/compute.yaml  # sandbox-compute" ]
 }
 
 @test "~/.kube/config is unchanged" {
-	if [ -f ~/.kube/config ]; then
-		[ "$(sha256sum <~/.kube/config)" = "$(cat "$BATS_FILE_TMPDIR/kubeconfig.sha256")" ]
-	else
-		[ "$(cat "$BATS_FILE_TMPDIR/kubeconfig.sha256")" = absent ]
-	fi
+	kube_config_unchanged
 }
 
 @test "a second make down finds nothing left" {
@@ -293,9 +505,20 @@ export KUBECONFIG=$KUBECONFIG_DIR/compute.yaml  # sandbox-compute" ]
 total 0 0" ]
 }
 
+@test "make status and make push without a sandbox" {
+	run sb_make status
+	[ "$status" -eq 0 ]
+	[ "${lines[-1]}" = "status: sandbox-management does not exist" ]
+	run sb_make push
+	failed_with "container sandbox-registry does not run; run make up first"
+}
+
 @test "make up-compute creates the network, the registry and only the compute cluster" {
 	run sb_make up-compute CONFIG="$(config_copy '.switches["hypervisor-nodes"] = 2')"
 	[ "$status" -eq 0 ]
+	[[ $output == *"up: sandbox-management does not exist, Flux applies nothing until make up-management has run"* ]]
+	run kubectl --kubeconfig "$KUBECONFIG_DIR/compute.yaml" get namespace flux-system
+	[ "$status" -ne 0 ]
 	docker network inspect cobaltcore-sandbox >/dev/null
 	[ "$(docker container inspect -f '{{.State.Running}}' sandbox-registry)" = true ]
 	[ "$(kind get nodes --name sandbox-compute | wc -l)" -eq 3 ]
@@ -318,6 +541,28 @@ total 0 0" ]
 	run sb_make down
 	[ "$status" -eq 0 ]
 	[ "${lines[-1]}" = "down: nothing left" ]
+}
+
+@test "make up-management, then make up-storage attaches the storage cluster to the hub" {
+	run sb_make up-management
+	[ "$status" -eq 0 ]
+	[[ ${lines[-2]} =~ ^up:\ 1\ stages\ Ready\ on\ 1\ clusters\ at\ latest@sha256:[0-9a-f]{64}$ ]]
+	run sb_make status
+	[ "$status" -eq 0 ]
+	[ "${lines[-1]}" = "status: 4 of 4 ready" ]
+
+	run sb_make up-storage
+	[ "$status" -eq 0 ]
+	[[ ${lines[-2]} =~ ^up:\ 2\ stages\ Ready\ on\ 2\ clusters\ at\ latest@sha256:[0-9a-f]{64}$ ]]
+	[ "$(hub_data storage)" = "storage 172.30.0.0/16 172.30.255.10" ]
+	run sb_make status
+	[ "$status" -eq 0 ]
+	[ "${lines[-1]}" = "status: 6 of 6 ready" ]
+
+	run sb_make down
+	[ "$status" -eq 0 ]
+	[ "${lines[-1]}" = "down: nothing left" ]
+	kube_config_unchanged
 }
 
 @test "make up and make down leave a network they did not create alone" {
