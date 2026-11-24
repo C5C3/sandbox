@@ -15,7 +15,7 @@ export SANDBOX_PROFILE := $(PROFILE)
 
 REQUIRE_BATS = command -v bats >/dev/null || { echo 'bats-core not found, see "Host requirements" in the README' >&2; exit 1; }
 
-.PHONY: up up-management up-storage up-compute push status down footprint test test-host
+.PHONY: up up-management up-storage up-compute push status down footprint vendor test test-host
 
 up:
 	scripts/up.sh
@@ -34,6 +34,9 @@ down:
 
 footprint:
 	scripts/footprint.sh
+
+vendor:
+	scripts/vendor.sh
 
 test:
 	@$(REQUIRE_BATS)
