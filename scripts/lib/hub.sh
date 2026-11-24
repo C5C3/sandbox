@@ -9,11 +9,6 @@
 # source of these objects, so a second run changes nothing and a hand edit of
 # a field it sets is taken back.
 
-# _first_line <text>, _last_line <text>: print the first or the last line of
-# the text that holds more than spaces.
-_first_line() { grep -m 1 '[^[:space:]]' <<<"$1" || :; }
-_last_line() { grep '[^[:space:]]' <<<"$1" | tail -n 1 || :; }
-
 # _timeout <variable> <default>: prints the value of the variable, or the
 # default when it is unset or empty, and fails when that is no integer of 1
 # or more.
@@ -117,7 +112,7 @@ push_artifact() {
 	log "pushing the working tree to $url"
 	errfile=$(mktemp)
 	if ! out=$(flux push artifact "$url" --path "$SANDBOX_ROOT" --source "$SANDBOX_ROOT" --revision "$revision" \
-		--ignore-paths ".git/,.sandbox/" --insecure-registry --output json 2>"$errfile"); then
+		--ignore-paths "$SANDBOX_ARTIFACT_IGNORE" --insecure-registry --output json 2>"$errfile"); then
 		out=$(_first_line "$(<"$errfile")")
 		rm -f -- "$errfile"
 		die "cannot push the working tree to $url: ${out#✗ }"

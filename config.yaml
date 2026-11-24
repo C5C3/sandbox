@@ -13,7 +13,7 @@ switches:
   # Read by kind_config in scripts/lib/common.sh: the worker nodes of sandbox-compute.
   hypervisor-nodes: 1
 upstream:
-  # Read by make vendor of #5; until then only cluster_vars in scripts/lib/hub.sh reads it.
+  # Read by config_load in scripts/lib/common.sh: the commit of C5C3/cobaltcore that make vendor checks out. scripts/pin.sh moves it.
   cobaltcore: 15a0323e243c7f53b91200f193a58b5b41d41f6a
 flux:
   # Read by ensure_flux in scripts/lib/hub.sh: the version of the chart flux-operator.

@@ -12,6 +12,8 @@ setup() {
 	[ "$SANDBOX_REGISTRY_IMAGE" = registry:3 ]
 	[ "$SANDBOX_HYPERVISOR_NODES" = 1 ]
 	[ "$SANDBOX_FLUX_OPERATOR_VERSION" = 0.63.1 ]
+	# The pin moves with upstream, so the test reads it.
+	[ "$SANDBOX_UPSTREAM_COMMIT" = "$(yq '.upstream.cobaltcore' "$SANDBOX_ROOT/config.yaml")" ]
 }
 
 @test "config_load fails on a zero-length file at network.subnet" {
@@ -23,7 +25,7 @@ setup() {
 }
 
 @test "config_load fails for each key that is absent" {
-	for key in network.subnet addresses.gateway registry.image switches.hypervisor-nodes flux.operator; do
+	for key in network.subnet addresses.gateway registry.image switches.hypervisor-nodes flux.operator upstream.cobaltcore; do
 		config_with "del(.${key%%.*}[\"${key#*.}\"])"
 		run config_load
 		[ "$status" -eq 1 ]
@@ -98,4 +100,20 @@ setup() {
 	run config_load
 	[ "$status" -eq 1 ]
 	[ "$output" = "error: config: flux.operator is not set" ]
+}
+
+@test "config_load treats an empty upstream commit as not set" {
+	config_with '.upstream.cobaltcore = ""'
+	run config_load
+	[ "$status" -eq 1 ]
+	[ "$output" = "error: config: upstream.cobaltcore is not set" ]
+}
+
+@test "config_load rejects an upstream commit that is not a full SHA in lower case" {
+	for commit in 15a0323e 15A0323E243C7F53B91200F193A58B5B41D41F6A; do
+		config_with ".upstream.cobaltcore = \"$commit\""
+		run config_load
+		[ "$status" -eq 1 ]
+		[ "$output" = "error: config: upstream.cobaltcore '$commit' is not a commit SHA of 40 hex characters" ]
+	done
 }

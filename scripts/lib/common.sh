@@ -11,6 +11,11 @@ SANDBOX_REGISTRY_PORT=5000
 SANDBOX_LABEL=cobaltcore-sandbox=true
 SANDBOX_ROLES=(management storage compute)
 SANDBOX_STATE_DIR=$SANDBOX_ROOT/.sandbox
+# The paths that flux leaves out of the artifact of the working tree, which
+# push_artifact pushes and scripts/validate.sh renders.
+SANDBOX_ARTIFACT_IGNORE=".git/,.sandbox/"
+# The form of upstream.cobaltcore: a full commit SHA in lower case.
+SANDBOX_SHA_RE='^[0-9a-f]{40}$'
 
 # log <message>: prints one step, prefixed with the name of the script.
 log() {
@@ -23,6 +28,11 @@ die() {
 	printf 'error: %s\n' "$*" >&2
 	exit 1
 }
+
+# _first_line <text>, _last_line <text>: print the first or the last line of
+# the text that holds more than spaces.
+_first_line() { grep -m 1 '[^[:space:]]' <<<"$1" || :; }
+_last_line() { grep '[^[:space:]]' <<<"$1" | tail -n 1 || :; }
 
 # require_roles <word>...: fails for the first word that is not a role.
 require_roles() {
@@ -87,22 +97,22 @@ config_merged() {
 }
 
 # config_load: reads the output of config_merged and exports SANDBOX_SUBNET,
-# SANDBOX_GATEWAY_ADDRESS, SANDBOX_REGISTRY_IMAGE, SANDBOX_HYPERVISOR_NODES and
-# SANDBOX_FLUX_OPERATOR_VERSION. A missing key is an error; no script carries
-# a default for these five.
+# SANDBOX_GATEWAY_ADDRESS, SANDBOX_REGISTRY_IMAGE, SANDBOX_HYPERVISOR_NODES,
+# SANDBOX_FLUX_OPERATOR_VERSION and SANDBOX_UPSTREAM_COMMIT. A missing key is
+# an error; no script carries a default for these six.
 config_load() {
-	local merged key value subnet gateway nodes operator
+	local merged key value subnet gateway nodes operator upstream
 	local -A values=()
 
 	merged=$(config_merged) || exit 1
-	for key in network.subnet addresses.gateway registry.image switches.hypervisor-nodes flux.operator; do
+	for key in network.subnet addresses.gateway registry.image switches.hypervisor-nodes flux.operator upstream.cobaltcore; do
 		# The bracket form reads a key with a hyphen, such as hypervisor-nodes.
 		value=$(yq ".${key%%.*}[\"${key#*.}\"] // \"\"" - <<<"$merged")
 		[ -n "$value" ] || die "config: $key is not set"
 		values[$key]=$value
 	done
 	subnet=${values[network.subnet]} gateway=${values[addresses.gateway]} nodes=${values[switches.hypervisor-nodes]}
-	operator=${values[flux.operator]}
+	operator=${values[flux.operator]} upstream=${values[upstream.cobaltcore]}
 
 	[[ $subnet =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}$ ]] ||
 		die "config: network.subnet '$subnet' is not an IPv4 CIDR"
@@ -112,12 +122,15 @@ config_load() {
 		die "config: switches.hypervisor-nodes must be an integer of 1 or more, got '$nodes'"
 	[[ $operator =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] ||
 		die "config: flux.operator '$operator' is not a version"
+	[[ $upstream =~ $SANDBOX_SHA_RE ]] ||
+		die "config: upstream.cobaltcore '$upstream' is not a commit SHA of 40 hex characters"
 
 	export SANDBOX_SUBNET=$subnet
 	export SANDBOX_GATEWAY_ADDRESS=$gateway
 	export SANDBOX_REGISTRY_IMAGE=${values[registry.image]}
 	export SANDBOX_HYPERVISOR_NODES=$nodes
 	export SANDBOX_FLUX_OPERATOR_VERSION=$operator
+	export SANDBOX_UPSTREAM_COMMIT=$upstream
 }
 
 # cluster_exists <role>: succeeds when kind lists the role's cluster.
