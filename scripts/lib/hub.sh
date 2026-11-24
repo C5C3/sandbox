@@ -8,14 +8,6 @@
 # source of these objects, so a second run changes nothing and a hand edit of
 # a field it sets is taken back.
 
-# The jq definition of ready: the status and the first line of the message of
-# the Ready condition of the object on the input, or Unknown and "no Ready
-# condition" for an object without one.
-_HUB_READY='def ready:
-  ([.status.conditions[]? | select(.type == "Ready")][0]) as $c
-  | if $c == null then ["Unknown", "no Ready condition"]
-    else [$c.status // "Unknown", ($c.message // "" | split("\n")[0] // "")] end;'
-
 # _first_line <text>, _last_line <text>: print the first or the last line of
 # the text that holds more than spaces.
 _first_line() { grep -m 1 '[^[:space:]]' <<<"$1" || :; }
@@ -86,7 +78,7 @@ ensure_flux() {
 	_hub_apply "cannot apply the FluxInstance flux on sandbox-management" <"$SANDBOX_ROOT/flux/flux-instance.yaml"
 	if ! hub_kubectl -n flux-system wait fluxinstance/flux --for=condition=Ready --timeout=300s >/dev/null 2>&1; then
 		if out=$(_hub_json -n flux-system get fluxinstances.fluxcd.controlplane.io flux); then
-			out=$(jq -r "$_HUB_READY"' ready[1]' <<<"$out")
+			out=$(jq -r -L "$SANDBOX_ROOT/scripts/lib" 'include "ready"; ready[1]' <<<"$out")
 		else
 			out="cannot read it: $out"
 		fi
@@ -151,7 +143,7 @@ ensure_source() {
 	start=$SECONDS
 	while :; do
 		if out=$(_hub_json -n flux-system get ocirepositories.source.toolkit.fluxcd.io sandbox); then
-			out=$(jq -r --arg rev "$SANDBOX_REVISION" "$_HUB_READY"'
+			out=$(jq -r --arg rev "$SANDBOX_REVISION" -L "$SANDBOX_ROOT/scripts/lib" 'include "ready";
 				ready as [$status, $message]
 				| [$status == "True" and .status.artifact.revision == $rev, $message] | @tsv' <<<"$out")
 			ready=${out%%$'\t'*} message=${out#*$'\t'}
@@ -315,7 +307,7 @@ wait_stages() {
 	while :; do
 		if out=$(_hub_json -n flux-system get kustomizations.kustomize.toolkit.fluxcd.io); then
 			failed=''
-			pending=$(jq -r --arg names "${names[*]}" --arg rev "$SANDBOX_REVISION" "$_HUB_READY"'
+			pending=$(jq -r --arg names "${names[*]}" --arg rev "$SANDBOX_REVISION" -L "$SANDBOX_ROOT/scripts/lib" 'include "ready";
 				(.items // []) as $items
 				| ($names | split(" "))[] as $name
 				| [$items[] | select(.metadata.name == $name)][0] as $k
