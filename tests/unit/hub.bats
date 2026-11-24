@@ -560,3 +560,91 @@ wait_stages" ]
 	[ "$status" -eq 1 ]
 	[ "$output" = "error: the stage compute-test depends on storage-test, but sandbox-storage is not part of the sandbox; run make up-storage first" ]
 }
+
+# push_host <kind clusters>: copies scripts/ into the test's directory with a
+# kubeconfig file for management, and exports docker, kind and flux for a
+# running registry at 172.30.0.2, the kind clusters given, every node on the
+# sandbox network and a push that answers with a digest.
+push_host() {
+	cp -R -- "$SANDBOX_ROOT/scripts" "$BATS_TEST_TMPDIR/"
+	mkdir -p -- "$BATS_TEST_TMPDIR/.sandbox/kubeconfig"
+	: >"$BATS_TEST_TMPDIR/.sandbox/kubeconfig/management.yaml"
+	export CLUSTERS=$1 DIGEST
+	docker() {
+		case $* in
+		"ps -a --format {{.Names}}") echo sandbox-registry ;;
+		"container inspect -f {{.State.Running}} sandbox-registry") echo true ;;
+		"inspect -f "*" sandbox-registry") echo 172.30.0.2 ;;
+		*) echo 'cobaltcore-sandbox ' ;;
+		esac
+	}
+	kind() {
+		case $* in
+		"get clusters") [ -z "$CLUSTERS" ] || echo "$CLUSTERS" ;;
+		"get nodes --name "*) echo "$4-control-plane" ;;
+		*) return 1 ;;
+		esac
+	}
+	flux() { echo "{\"digest\": \"sha256:$DIGEST\"}"; }
+	export -f docker kind flux
+}
+
+@test "push.sh without a management cluster pushes and says that nothing follows the tag" {
+	push_host ""
+	run "$BATS_TEST_TMPDIR/scripts/push.sh"
+	[ "$status" -eq 0 ]
+	[ "${lines[-1]}" = "push: nothing follows the tag yet, run make up" ]
+}
+
+@test "push.sh without the Flux CRDs on sandbox-management says that nothing follows the tag" {
+	push_host sandbox-management
+	kubectl() { :; }
+	export -f kubectl
+	run "$BATS_TEST_TMPDIR/scripts/push.sh"
+	[ "$status" -eq 0 ]
+	[ "${lines[-1]}" = "push: nothing follows the tag yet, run make up" ]
+}
+
+@test "push.sh without the source on sandbox-management says that nothing follows the tag" {
+	push_host sandbox-management
+	kubectl() {
+		case $* in
+		*" get crd ocirepositories.source.toolkit.fluxcd.io "*) echo '{"kind": "CustomResourceDefinition"}' ;;
+		*" -n flux-system get ocirepositories.source.toolkit.fluxcd.io sandbox "*) ;;
+		*) return 1 ;;
+		esac
+	}
+	export -f kubectl
+	run "$BATS_TEST_TMPDIR/scripts/push.sh"
+	[ "$status" -eq 0 ]
+	[ "${lines[-1]}" = "push: nothing follows the tag yet, run make up" ]
+}
+
+@test "push.sh asks Flux on sandbox-management to fetch the pushed revision" {
+	push_host sandbox-management
+	export ANNOTATE=$BATS_TEST_TMPDIR/annotate
+	kubectl() {
+		case $* in
+		*" annotate --overwrite ocirepositories.source.toolkit.fluxcd.io sandbox reconcile.fluxcd.io/requestedAt="*) printf '%s\n' "$*" >"$ANNOTATE" ;;
+		*" get "*) echo '{"kind": "found"}' ;;
+		*) return 1 ;;
+		esac
+	}
+	export -f kubectl
+	run "$BATS_TEST_TMPDIR/scripts/push.sh"
+	[ "$status" -eq 0 ]
+	[ "${lines[-1]}" = "push: asked Flux on sandbox-management to fetch latest@sha256:$DIGEST" ]
+	[[ $(<"$ANNOTATE") == *" -n flux-system annotate --overwrite ocirepositories.source.toolkit.fluxcd.io sandbox reconcile.fluxcd.io/requestedAt="?* ]]
+}
+
+@test "push.sh fails with the last line of kubectl when it cannot reach sandbox-management" {
+	push_host sandbox-management
+	kubectl() {
+		printf 'E1124 memcache.go\nThe connection to the server 127.0.0.1:40001 was refused\n' >&2
+		return 1
+	}
+	export -f kubectl
+	run "$BATS_TEST_TMPDIR/scripts/push.sh"
+	[ "$status" -eq 1 ]
+	[ "${lines[-1]}" = "error: cannot ask Flux to fetch the artifact: The connection to the server 127.0.0.1:40001 was refused" ]
+}
