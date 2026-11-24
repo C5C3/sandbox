@@ -122,7 +122,7 @@ preflight_run() {
 		_preflight_report ok inotify "$out"
 	fi
 
-	for name in docker kind kubectl jq helm flux; do
+	for name in docker kind kubectl jq helm flux git; do
 		if out=$(probe_tool "$name"); then
 			_preflight_report ok "tool $name" "$out"
 		else
