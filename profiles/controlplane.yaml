@@ -1,6 +1,6 @@
 clusters: [management]
 modules:
-  management: [crds, controllers, loadbalancer, pki, gateway, openbao, objectstore, platform, sizing, controlplane, placement, neutron, cinder, cinder-nfs, nova]
+  management: [crds, controllers, loadbalancer, pki, gateway, openbao, objectstore, platform, sizing, controlplane, placement, neutron, cinder, cinder-nfs, nova, orders]
 switches:
   glance: true
   barbican: true

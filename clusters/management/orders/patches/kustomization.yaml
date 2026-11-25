@@ -1,0 +1,17 @@
+# The module orders assigns the namespaces of its owners: it appends the
+# Component components/orders, which adds spec.namespaceAssignments to the
+# ControlPlane, to the stage of the module controlplane. The stage of orders
+# depends on that stage, so the assignment exists before the first order.
+# A profile without controlplane has no such stage, and the patch changes
+# nothing.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+patches:
+  - target:
+      group: kustomize.toolkit.fluxcd.io
+      kind: Kustomization
+      name: management-controlplane
+    patch: |
+      - op: add
+        path: /spec/components/-
+        value: components/orders

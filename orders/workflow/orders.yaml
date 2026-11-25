@@ -1,0 +1,105 @@
+# The example orders of the owner workflow, Steps 3 to 9 of Part 1 of
+# upstream's Quick Start (Orders). The application credential carries no
+# rotation block and rotates every 720h, the form of Part 2: the 3m schedule
+# of Step 6 would rotate it for the life of the sandbox.
+#
+# Each order carries ssa: Merge, so Flux keeps the fields another tool added,
+# such as a spec.passwordGeneration an owner raised by hand: Flux would take
+# the field back, and lowering it is refused ("may only increase").
+apiVersion: c5c3.io/v1alpha1
+kind: KeystoneUser
+metadata:
+  name: workflow
+  namespace: workflow
+  annotations:
+    kustomize.toolkit.fluxcd.io/ssa: Merge
+spec:
+  controlPlaneRef:
+    name: controlplane
+    namespace: openstack
+---
+apiVersion: c5c3.io/v1alpha1
+kind: KeystoneProject
+metadata:
+  name: workflow-project
+  namespace: workflow
+  annotations:
+    kustomize.toolkit.fluxcd.io/ssa: Merge
+spec:
+  controlPlaneRef:
+    name: controlplane
+    namespace: openstack
+---
+apiVersion: c5c3.io/v1alpha1
+kind: KeystoneRoleAssignment
+metadata:
+  name: workflow-member
+  namespace: workflow
+  annotations:
+    kustomize.toolkit.fluxcd.io/ssa: Merge
+spec:
+  controlPlaneRef:
+    name: controlplane
+    namespace: openstack
+  userRef:
+    name: workflow
+  projectRef:
+    name: workflow-project
+  role: member
+---
+apiVersion: c5c3.io/v1alpha1
+kind: KeystoneCatalogEntry
+metadata:
+  name: workflow-dns
+  namespace: workflow
+  annotations:
+    kustomize.toolkit.fluxcd.io/ssa: Merge
+spec:
+  controlPlaneRef:
+    name: controlplane
+    namespace: openstack
+  serviceType: dns
+  serviceName: designate
+  endpoints:
+    - interface: public
+      url: https://dns.example.test/v2
+---
+apiVersion: c5c3.io/v1alpha1
+kind: KeystoneApplicationCredential
+metadata:
+  name: workflow-appcred
+  namespace: workflow
+  annotations:
+    kustomize.toolkit.fluxcd.io/ssa: Merge
+spec:
+  controlPlaneRef:
+    name: controlplane
+    namespace: openstack
+  userRef:
+    name: workflow
+  projectRef:
+    name: workflow-project
+---
+apiVersion: c5c3.io/v1alpha1
+kind: MariaDBDatabase
+metadata:
+  name: workflow-db
+  namespace: workflow
+  annotations:
+    kustomize.toolkit.fluxcd.io/ssa: Merge
+spec:
+  controlPlaneRef:
+    name: controlplane
+    namespace: openstack
+---
+apiVersion: c5c3.io/v1alpha1
+kind: RabbitMQVhost
+metadata:
+  name: workflow-bus
+  namespace: workflow
+  annotations:
+    kustomize.toolkit.fluxcd.io/ssa: Merge
+spec:
+  controlPlaneRef:
+    name: controlplane
+    namespace: openstack

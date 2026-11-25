@@ -1,0 +1,7 @@
+# The owners of the module orders, one directory each with the owner's
+# namespace and its orders. A further owner is a further directory listed
+# here and an entry in controlplane/components/orders/kustomization.yaml.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - workflow

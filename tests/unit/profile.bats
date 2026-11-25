@@ -41,13 +41,13 @@ profile_fails_with() {
 	[ "$output" = $'crds\ncontrollers\nloadbalancer\npki\ngateway\nopenbao\nobjectstore\nplatform\nsizing' ]
 }
 
-@test "profile_load loads identity with the management cluster alone and its ten modules" {
+@test "profile_load loads identity with the management cluster alone and its eleven modules" {
 	export SANDBOX_PROFILE=identity
 	profile_load
 	[ "$SANDBOX_PROFILE_CLUSTERS" = management ]
 	run cluster_modules management
 	[ "$status" -eq 0 ]
-	[ "$output" = $'crds\ncontrollers\nloadbalancer\npki\ngateway\nopenbao\nplatform\nsizing\nmessaging-tls\ncontrolplane' ]
+	[ "$output" = $'crds\ncontrollers\nloadbalancer\npki\ngateway\nopenbao\nplatform\nsizing\nmessaging-tls\ncontrolplane\norders' ]
 }
 
 @test "cluster_modules gives storage the module resolver of gateway only with the switch on" {
@@ -423,19 +423,19 @@ switches_on() {
 	[ "$output" = $'test\ncrds\nfake-compute\nresolver' ]
 }
 
-@test "profile_load loads controlplane with the management cluster alone and its 15 modules, 12 stages with its switches" {
+@test "profile_load loads controlplane with the management cluster alone and its 16 modules, 13 stages with its switches" {
 	export SANDBOX_PROFILE=controlplane
 	profile_load
 	[ "$SANDBOX_PROFILE_CLUSTERS" = management ]
 	run profile_modules management
 	[ "$status" -eq 0 ]
-	[ "$output" = $'crds\ncontrollers\nloadbalancer\npki\ngateway\nopenbao\nobjectstore\nplatform\nsizing\ncontrolplane\nplacement\nneutron\ncinder\ncinder-nfs\nnova' ]
+	[ "$output" = $'crds\ncontrollers\nloadbalancer\npki\ngateway\nopenbao\nobjectstore\nplatform\nsizing\ncontrolplane\nplacement\nneutron\ncinder\ncinder-nfs\nnova\norders' ]
 
 	config_load
 	run cluster_modules management
 	[ "$status" -eq 0 ]
-	[ "$output" = $'crds\ncontrollers\nloadbalancer\npki\ngateway\nopenbao\nobjectstore\nplatform\nsizing\ncontrolplane\nplacement\nneutron\ncinder\ncinder-nfs\nnova\nglance\nbarbican\nhorizon\nfake-compute' ]
+	[ "$output" = $'crds\ncontrollers\nloadbalancer\npki\ngateway\nopenbao\nobjectstore\nplatform\nsizing\ncontrolplane\nplacement\nneutron\ncinder\ncinder-nfs\nnova\norders\nglance\nbarbican\nhorizon\nfake-compute' ]
 	run cluster_stages management
 	[ "$status" -eq 0 ]
-	[ "$output" = $'crds\ncontrollers\nloadbalancer\npki\ngateway\nopenbao\nobjectstore\nplatform\nsizing\ncontrolplane\ncinder-nfs\nfake-compute' ]
+	[ "$output" = $'crds\ncontrollers\nloadbalancer\npki\ngateway\nopenbao\nobjectstore\nplatform\nsizing\ncontrolplane\ncinder-nfs\norders\nfake-compute' ]
 }
