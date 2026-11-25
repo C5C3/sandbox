@@ -422,6 +422,14 @@ scaffold_attached() {
 	[ "$(yq '.spec.path' - <<<"$output")" = ./clusters/storage ]
 }
 
+@test "root_manifest lists resolver as a component of storage with the resolver switch on" {
+	export SANDBOX_PROFILE=gateway SANDBOX_RESOLVER_FALLBACK=true
+	profile_load
+	run root_manifest storage
+	[ "$status" -eq 0 ]
+	[ "$(yq -o=json -I=0 '.spec.components' - <<<"$output")" = '["resolver"]' ]
+}
+
 @test "root_manifest fails for a word that is not a role" {
 	profile_load
 	run root_manifest network
@@ -613,6 +621,50 @@ wait_stages" ]
 	run hub_sync
 	[ "$status" -eq 1 ]
 	[ "$output" = "error: the stage compute-test depends on storage-test, but sandbox-storage is not part of the sandbox; run make up-storage first" ]
+}
+
+# network_answers <options> <id>: replaces docker with a function that
+# answers the inspection of the sandbox network with the bridge option and
+# the ID. It answers only the template that prints nothing for a missing
+# option; with index alone Docker prints "<no value>" for it.
+network_answers() {
+	export BRIDGE_OPTION=$1 NETWORK_ID=$2
+	docker() {
+		[ "$*" = 'network inspect -f {{with index .Options "com.docker.network.bridge.name"}}{{.}}{{end}} {{.Id}} cobaltcore-sandbox' ] || return 1
+		printf '%s %s\n' "$BRIDGE_OPTION" "$NETWORK_ID"
+	}
+}
+
+@test "resolver_hint prints nothing and calls no docker with the resolver switch off" {
+	config_load
+	run resolver_hint
+	[ "$status" -eq 0 ]
+	[ "$output" = "" ]
+}
+
+@test "resolver_hint names the bridge of the network and the DNS address" {
+	config_with '.switches["resolver-fallback"] = true'
+	config_load
+	network_answers "" 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+	run resolver_hint
+	[ "$status" -eq 0 ]
+	[ "${#lines[@]}" -eq 3 ]
+	[[ ${lines[0]} == *": the resolver fallback answers nip.io names on 172.30.255.53; route the host's lookups to it:" ]]
+	[ "${lines[1]}" = "  sudo resolvectl dns br-0123456789ab 172.30.255.53 && sudo resolvectl domain br-0123456789ab '~nip.io'   # systemd-resolved" ]
+	[ "${lines[2]}" = "  server=/nip.io/172.30.255.53   # dnsmasq" ]
+
+	network_answers sandbox0 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+	run resolver_hint
+	[ "$status" -eq 0 ]
+	[ "${lines[1]}" = "  sudo resolvectl dns sandbox0 172.30.255.53 && sudo resolvectl domain sandbox0 '~nip.io'   # systemd-resolved" ]
+}
+
+@test "resolver_hint fails when Docker cannot inspect the network" {
+	config_with '.switches["resolver-fallback"] = true'
+	config_load
+	run resolver_hint
+	[ "$status" -eq 1 ]
+	[ "$output" = "error: cannot read the bridge of Docker network cobaltcore-sandbox" ]
 }
 
 # push_host <kind clusters>: copies scripts/ into the test's directory with a

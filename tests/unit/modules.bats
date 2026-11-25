@@ -139,3 +139,11 @@ EOF
 @test "the address pool hands out no address unasked" {
 	[ "$(yq 'select(.kind == "IPAddressPool") | .spec.autoAssign' "$SANDBOX_ROOT/infrastructure/loadbalancer/pool.yaml")" = false ]
 }
+
+@test "the Corefile of the module resolver holds the sandbox block once and is never pruned" {
+	local file=$SANDBOX_ROOT/infrastructure/resolver/coredns/configmap.yaml corefile
+	corefile=$(yq '.data.Corefile' "$file")
+	[ "$(grep -cxF '    # sandbox: begin' <<<"$corefile")" = 1 ]
+	[ "$(grep -cxF '    # sandbox: end' <<<"$corefile")" = 1 ]
+	[ "$(yq '.metadata.annotations["kustomize.toolkit.fluxcd.io/prune"]' "$file")" = disabled ]
+}

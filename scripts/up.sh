@@ -6,7 +6,8 @@
 # Docker network, the registry and the kind clusters of the given roles, or
 # of the profile's clusters when none is given. When the management cluster
 # exists, it installs Flux there, pushes the working tree and has Flux apply
-# the profile's modules to every cluster of the sandbox.
+# the profile's modules to every cluster of the sandbox. With
+# switches.resolver-fallback on, it then prints the host's resolver settings.
 #
 # Each step creates its object or checks that the existing one matches the
 # configuration, so a second run continues where a failed one stopped. A
@@ -150,6 +151,7 @@ done
 attached=$(attached_roles)
 if [[ " $attached " == *" management "* ]]; then
 	hub_sync
+	resolver_hint
 else
 	log "sandbox-management does not exist, Flux applies nothing until make up-management has run"
 fi
