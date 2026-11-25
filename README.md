@@ -256,9 +256,10 @@ address on it directly, which is why a Linux host is required.
 | Item | Design |
 | --- | --- |
 | Docker network | `cobaltcore-sandbox` with a fixed, configurable subnet (default proposal `172.30.0.0/16`), selected through `KIND_EXPERIMENTAL_DOCKER_NETWORK`. A network of its own keeps the address plan apart from other kind clusters on the host |
-| Load balancer | MetalLB in layer-2 mode on the management cluster, with a pool from the upper end of the subnet. Services ask for a fixed address, so every published address is known before the first deploy |
+| Load balancer | MetalLB in layer-2 mode on the management cluster, with the pool `addresses.pool` from the upper end of the subnet (default `172.30.255.0/24`) and `autoAssign: false`. Every Service asks for its address with the annotation `metallb.io/loadBalancerIPs`, so every published address is one of the configuration and known before the first deploy |
 | Gateway | The Envoy proxy of `openstack-gw` as a `LoadBalancer` Service on port 443, as in the upstream lab. With the address `172.30.255.10` the suffix is `172-30-255-10.nip.io` and the endpoints are `https://keystone.<suffix>/v3`, `https://horizon.<suffix>`, `https://nova-console.<suffix>`, `https://nova-metadata.<suffix>` and one per remaining service |
 | Names | [nip.io](https://nip.io) resolves `<name>.<a-b-c-d>.nip.io` to the address, for the workstation and for the pods of every cluster alike. No CoreDNS rewrite and no `/etc/hosts` entry is needed |
+| Resolver fallback | For a host whose resolver drops private answers, `switches.resolver-fallback` makes the CoreDNS of every cluster answer the nip.io names itself, and publishes the CoreDNS of the management cluster on `addresses.dns` (default `172.30.255.53`) for the host. See [Host requirements](#host-requirements) |
 | Certificates | One sandbox CA from cert-manager, name-constrained to `nip.io` like the upstream lab CA. It signs the Gateway certificate `*.<suffix>` and the certificate of the broker's TLS listener. `sandbox-ca.pem` is what the workstation passes as `OS_CACERT` |
 | Message bus | AMQPS on a load-balancer address of its own, `rabbitmq.<a-b-c-d>.nip.io:5671` |
 | OpenBao | Port 8200 with mutual TLS on a load-balancer address, for the External Secrets Operators of the storage and compute clusters |
@@ -352,8 +353,14 @@ that deploys them.
   validation runs six checks: the tools, the checkout at the pin, the render
   of every root and stage with strict substitution, the schemas of
   `scripts/crd-sources.yaml`, `kubeconform -strict` against them, and that
-  every patch changes the render of a stage that reaches it. It does not
-  template Helm charts: a `HelmRelease` is checked as an object. The
+  every patch changes the render of a stage that reaches it. A source of
+  schemas is an archive of JSON schemas, a glob of CRD files of the tree, or
+  `crds`, the URL of a YAML stream whose CRDs are converted, such as a release
+  asset a stage reads as a remote resource. The render reads those remote
+  resources, so the validation needs the network. It does not check a
+  `CustomResourceDefinition` object, for which the schemas of Kubernetes hold
+  none, and it does not template Helm charts: a `HelmRelease` is checked as an
+  object. The
   validation cannot see a break that only shows at run time, so `make up` and
   `make push` record the commit of the checkout they pushed, followed by
   `-modified` when it has local changes, in the annotation
@@ -422,6 +429,7 @@ builds it.
 | `loadbalancer` | MetalLB and its address pool | `controllers` | 1 |
 | `pki` | Sandbox CA, ClusterIssuers, the upstream `tls` base | `controllers` | 1 |
 | `gateway` | GatewayClass, Gateway `openstack-gw`, wildcard certificate | `loadbalancer`, `pki` | 1 |
+| `resolver` | The CoreDNS block that answers nip.io names, and CoreDNS on `addresses.dns` for the host. Added by the switch `resolver-fallback` | `loadbalancer` | 1 |
 | `openbao` | Shared OpenBao with one replica, bootstrap Job, ESO store | `pki` | 1 |
 | `objectstore` | Garage and the bucket `glance-images` | `controllers` | 1 |
 | `platform` | The c5c3-operator (upstream base `controlplane-operator`) | `controllers`, `openbao` | 1 |
@@ -442,6 +450,7 @@ builds it.
 
 | Module | Content | Depends on | M |
 | --- | --- | --- | --- |
+| `resolver` | The CoreDNS block that answers nip.io names. Added by the switch `resolver-fallback` | | 1 |
 | `controllers` | External Secrets; cert-manager only if the key hand-off needs it there | | 3 |
 | `block-devices` | StorageClass and static local volumes over the loop devices | node preparation | 3 |
 | `rook-operator` | The upstream `ceph` overlay: Rook chart, namespace, the `ClientProfile` CRD | | 3 |
@@ -452,6 +461,7 @@ builds it.
 
 | Module | Content | Depends on | M |
 | --- | --- | --- | --- |
+| `resolver` | The CoreDNS block that answers nip.io names. Added by the switch `resolver-fallback` | | 1 |
 | `access` | The `target-cluster-access` chart with `namespaces={openstack}`, `privilegedNamespaces={openstack}`, `createNamespaces=true` | | 4 |
 | `controllers` | cert-manager, External Secrets | | 4 |
 | `node-prep` | Node labels and the `aggregates` annotation, the migration port reservation, the namespace `hypervisor-system` | | 4 |
@@ -474,10 +484,13 @@ the configuration to a value, which replaces the value of the configuration.
 `make up` without `PROFILE` uses `scaffold`, which runs the module `test` on
 all three clusters. The module lists reach Flux through the roots on the
 management cluster, not through the artifact, so a changed profile is applied
-by `make up`, not by `make push`.
+by `make up`, not by `make push`. `gateway` runs the modules of the Gateway on
+the management cluster and none on the other two, which take part so that a
+pod of each can call the Gateway.
 
 | Profile | Clusters | What runs | Evaluates |
 | --- | --- | --- | --- |
+| `gateway` | management, storage, compute | `crds`, `controllers`, `loadbalancer`, `pki` and `gateway` on management, the service operators suspended | The Gateway on port 443 with the sandbox CA, from the host and from every cluster |
 | `identity` | management | Keystone | The operator model, OpenBao and ESO, K-ORC, credential rotation, orders |
 | `controlplane` | management | All eight services, fake compute, managed message bus | Parity with the Quick Start (ControlPlane); all seven order kinds |
 | `storage` | management, storage | Keystone, Cinder with the volume backend on Ceph | RBD backend, key hand-off and rotation, without hypervisors |
@@ -501,6 +514,7 @@ for Nova. The switches on top of the profiles:
 | `osd-count`, `osd-size` | OSDs of the storage cluster and the size of their sparse files | 1 OSD; 3 in `parity` |
 | `fake-compute` | A compute without a hypervisor | on in `controlplane` |
 | `observability`, `ui` | Prometheus and Grafana; Headlamp and Flux Web | off |
+| `resolver-fallback` | The module `resolver` on every cluster, for a host whose resolver drops private answers. Needs `loadbalancer` on the management cluster | off |
 
 Three settings are fixed when the ControlPlane is created, so a profile
 chooses them up front and a change means recreating the ControlPlane:
@@ -629,7 +643,7 @@ make vendor                 # check out the paths of upstream at the pin into ve
 make validate               # render every root and stage against vendor/cobaltcore, check schemas and patches
 make test                   # the unit tests of the command layer
 make test-validate          # the tests of make validate on a fixture tree, with flux and kubeconform
-make test-host              # the lifecycle test against a real Docker, which creates and removes a sandbox
+make test-host              # the lifecycle and the profile gateway against a real Docker, each creating and removing a sandbox
 make down                   # delete clusters, registry, network, loop devices
 ```
 
@@ -638,7 +652,19 @@ make down                   # delete clusters, registry, network, loop devices
 each. `CONFIG=<file>` selects another configuration file. `make up` waits up
 to 600 s for the stages, and `SANDBOX_STAGE_TIMEOUT=<seconds>` changes that;
 `SANDBOX_SOURCE_TIMEOUT=<seconds>` does the same for the source, by default
-120 s.
+120 s. The first `make up PROFILE=gateway` pulls the images of every
+controller, which on a slow link can take longer than 600 s; a second
+`make up PROFILE=gateway` continues where the first stopped.
+
+With `switches.resolver-fallback` on, `make up` prints the resolver settings
+for the host before the `export KUBECONFIG=` lines, and runs none of them.
+`<bridge>` is the bridge of the Docker network `cobaltcore-sandbox`:
+
+```text
+up: the resolver fallback answers nip.io names on 172.30.255.53; route the host's lookups to it:
+  sudo resolvectl dns <bridge> 172.30.255.53 && sudo resolvectl domain <bridge> '~nip.io'   # systemd-resolved
+  server=/nip.io/172.30.255.53   # dnsmasq
+```
 
 `make vendor` and `make up` fetch upstream from
 `https://github.com/C5C3/cobaltcore`, and `SANDBOX_UPSTREAM_URL=<url>` names
@@ -662,9 +688,9 @@ lists the checks it adds.
 | Memory | 16 GiB as the target for the profiles up to `full`; more for `parity`. See [Footprint](#footprint) |
 | CPU | To be measured. *Upstream* budgets 4 vCPU for the control plane with all eight services. Working estimate for `full`: 8 cores |
 | Disk | To be measured. Every kind node keeps its own image store, so an image is stored once per node that runs it. Working estimate: 60 GB free for `full`, 100 GB for `parity`, including the sparse OSD files |
-| DNS | The resolver must answer `*.nip.io` names with private addresses. Resolvers with DNS rebinding protection drop such answers; a module with a CoreDNS template and a local resolver entry is the fallback |
-| Tools | `docker`, `kind`, `kubectl`, `helm`, `flux`, `git`, `yq` v4.40.1 or newer, `jq`, `make`, `bats` (bats-core 1.5.0 or newer, for `make test`, `make test-validate` and `make test-host`), `kubeconform`, `curl` and `tar` for `make validate`, and the OpenStack CLI with `osc-placement` and `python-barbicanclient` |
-| Network | Egress to `github.com` (upstream, the tools and schemas of `make validate`), `raw.githubusercontent.com` (the Kubernetes schemas of `make validate`), `ghcr.io`, `quay.io`, `docker.io`, the Helm repositories and the cirros download |
+| DNS | The resolver must answer `*.nip.io` names with private addresses. Resolvers with DNS rebinding protection drop such answers. For such a host, `switches.resolver-fallback` adds the module `resolver`: the CoreDNS of every cluster answers the names itself, and the CoreDNS of the management cluster answers them on `addresses.dns`, to which the host routes `nip.io` with the settings `make up` prints ([ADR-0018](docs/adr/0018-print-the-host-resolver-settings-of-the-nip-io-fallback.md)) |
+| Tools | `docker`, `kind`, `kubectl`, `helm`, `flux`, `git`, `yq` v4.40.1 or newer, `jq`, `make`, `bats` (bats-core 1.5.0 or newer, for `make test`, `make test-validate` and `make test-host`), `kubeconform`, `curl` and `tar` for `make validate`, `curl` for `make test-host`, and the OpenStack CLI with `osc-placement` and `python-barbicanclient` |
+| Network | Egress to `github.com` (upstream, the tools and schemas of `make validate`, the CRDs of the module `crds`), `raw.githubusercontent.com` (the Kubernetes schemas of `make validate`, the MetalLB manifest of the module `loadbalancer`), `ghcr.io`, `quay.io`, `docker.io`, the Helm repositories and the cirros download. The management cluster reads `github.com` and `raw.githubusercontent.com` at every reconcile of `crds` and `loadbalancer` ([ADR-0019](docs/adr/0019-read-third-party-manifests-as-pinned-remote-resources.md)) |
 
 `make up`, `make up-<cluster>` and `scripts/preflight.sh [<role>...]` check
 the host before anything is created. They print one line per check, with the
@@ -675,7 +701,10 @@ Docker, `fs.inotify.max_user_instances` at 512 or more, `docker`, `kind`,
 configuration file. `sandbox-storage` also needs the module `loop`, and
 `sandbox-compute` the modules `openvswitch`, `geneve` and `vhost_net`.
 `/dev/kvm`, the resolver's answer for a nip.io name and the OpenStack CLI with
-its plugins are reported as warnings.
+its plugins are reported as warnings. The warning for the resolver names
+`switches.resolver-fallback`, or says that the fallback is on. A configuration
+file without `addresses.pool`, `addresses.dns` or
+`switches.resolver-fallback` fails the check of the configuration.
 
 ## Footprint
 
