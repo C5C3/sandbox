@@ -37,9 +37,12 @@ secret() {
 # directory and answers from the files of hub/ there, a missing file as a
 # missing object: the four reads of scripts/lib/access.sh, and for
 # nova-server the reads of the Deployment controlplane-fake-compute and its
-# pods and the exec of discover_hosts. The hub has the CRD, a ControlPlane
-# with the Keystone hostname of AUTH_URL, the admin password PASSWORD and the
-# CA CA_PEM. kubectl fails like an unreachable server for the call whose file
+# pods and the exec of discover_hosts. The calls of the order checks go to
+# fake_hub, under the names orders.<namespace>, secret.<namespace>.<name>,
+# apply, appcred, patch, delete.<name> and children.<name>; a patch appends
+# its merge patch to patch.log. The hub has the CRD, a ControlPlane with the
+# Keystone hostname of AUTH_URL, the admin password PASSWORD and the CA
+# CA_PEM. kubectl fails like an unreachable server for the call whose file
 # name KUBECTL_FAILS names.
 access_host() {
 	cp -R -- "$SANDBOX_ROOT/scripts" "$BATS_TEST_TMPDIR/"
@@ -70,6 +73,17 @@ access_host() {
 		*" -n openstack exec deploy/controlplane-nova-conductor -c conductor -- nova-manage --config-dir /etc/nova/nova.conf.d cell_v2 discover_hosts")
 			file=discover-hosts
 			;;
+		# The arguments after --kubeconfig <file>: -n <namespace> <verb> ...,
+		# or get <resources> -A -l <selector> for the children.
+		*" get keystoneusers.c5c3.io,keystoneprojects.c5c3.io,keystoneroleassignments.c5c3.io,keystonecatalogentries.c5c3.io,keystoneapplicationcredentials.c5c3.io,mariadbdatabases.c5c3.io,rabbitmqvhosts.c5c3.io -o json")
+			file=orders.$4
+			;;
+		*" get secret "*"-credentials --ignore-not-found -o json") file=secret.$4.$7 ;;
+		*" apply -f -") file=apply ;;
+		*" get keystoneapplicationcredentials.c5c3.io sandbox-verify-appcred -o json") file=appcred ;;
+		*" patch keystoneapplicationcredentials.c5c3.io sandbox-verify-appcred --type merge -p "*) file=patch ;;
+		*" delete "*" --ignore-not-found --timeout=180s") file=delete.$7 ;;
+		*" get secrets,"*" -A -l "*" -o json") file=children.${7##*-name=} ;;
 		*)
 			echo "unexpected kubectl $*" >&2
 			return 1
@@ -79,11 +93,208 @@ access_host() {
 			printf 'E1125 memcache.go\nThe connection to the server 127.0.0.1:40001 was refused - did you specify the right host or port?\n' >&2
 			return 1
 		fi
+		case $file in
+		orders.* | secret.* | apply | appcred | patch | delete.* | children.*)
+			fake_hub "$file" "$@"
+			return
+			;;
+		esac
 		if [ -f "$BATS_TEST_TMPDIR/hub/$file" ]; then
 			cat -- "$BATS_TEST_TMPDIR/hub/$file"
 		fi
 	}
-	export -f kind docker kubectl
+	export -f kind docker kubectl fake_hub fake_apply fake_rotation fake_mint fake_retire fake_delete
+}
+
+# The fake hub of the orders lives in hub/orders/ of the test's directory:
+# orders.json, secrets.json and children.json hold the orders, the delivered
+# Secrets and the labelled children of every namespace as JSON arrays, and
+# keystone the application credentials that Keystone accepts, one line
+# "<id> <secret>" each. An application credential <name> has the id
+# id-<name>-<generation> and the secret S3cr3t-<name>-<generation>.
+
+# fake_hub <call> <argument of kubectl>...: answers the call of the order
+# checks that access_host named. A list of orders holds those of the
+# namespace, in the order verify.sh names the resources; the label query
+# finds Secrets and children.
+fake_hub() {
+	local call=$1 dir=$BATS_TEST_TMPDIR/hub/orders n file
+	shift
+	mkdir -p -- "$dir"
+	for file in orders secrets children; do
+		[ -f "$dir/$file.json" ] || echo '[]' >"$dir/$file.json"
+	done
+	case $call in
+	orders.*)
+		jq --arg ns "${call#orders.}" '{apiVersion: "v1", kind: "List", items: map(select(.metadata.namespace == $ns))
+			| sort_by(.kind | {KeystoneUser: 0, KeystoneProject: 1, KeystoneRoleAssignment: 2, KeystoneCatalogEntry: 3,
+				KeystoneApplicationCredential: 4, MariaDBDatabase: 5, RabbitMQVhost: 6}[.])}' "$dir/orders.json"
+		;;
+	secret.*)
+		jq --arg ns "$4" --arg name "$7" 'map(select(.metadata.namespace == $ns and .metadata.name == $name))[0] // empty' "$dir/secrets.json"
+		;;
+	apply)
+		n=$(find "$BATS_TEST_TMPDIR" -maxdepth 1 -name 'applied.*.yaml' | wc -l)
+		cat >"$BATS_TEST_TMPDIR/applied.$((n + 1)).yaml"
+		fake_apply <"$BATS_TEST_TMPDIR/applied.$((n + 1)).yaml"
+		;;
+	appcred) fake_rotation "$4" ;;
+	patch)
+		printf '%s\n' "${11}" >>"$BATS_TEST_TMPDIR/patch.log"
+		: >"$dir/patched"
+		;;
+	delete.*) fake_delete "$4" "$6" "$7" ;;
+	children.*)
+		jq -s --arg selector "$7" '($selector | split(",") | map(split("=") | {key: .[0], value: .[1]}) | from_entries) as $want
+			| {apiVersion: "v1", kind: "List", items: (add | map(select(.metadata.labels as $l | $want | to_entries | all(.value == $l[.key]))))}' \
+			"$dir/secrets.json" "$dir/children.json"
+		;;
+	esac
+}
+
+# fake_apply: the operator of the fake hub. It applies the orders of the YAML
+# stream on stdin. Each gets the uid uid-<name> and turns Ready with the
+# sub-condition of its kind, or not Ready with reason Provisioning when
+# NOT_READY names it; a Ready one gets its Secret <name>-credentials. A
+# RabbitMQVhost on a bus of the ControlPlane without clusterRef reports
+# MessagingNotManaged, or MessagingNotDeclared without a messaging block,
+# and gets no Secret. Every order gets one labelled child in openstack. An
+# application credential starts at generation 1, which Keystone accepts.
+fake_apply() {
+	local dir=$BATS_TEST_TMPDIR/hub/orders file out
+	mkdir -p -- "$dir"
+	for file in orders secrets children; do
+		[ -f "$dir/$file.json" ] || echo '[]' >"$dir/$file.json"
+	done
+	out=$(yq -o=json -I=0 ea '[.]' - | jq -c --arg notready "${NOT_READY:-}" --slurpfile cp "$BATS_TEST_TMPDIR/hub/controlplane.json" '
+		def sub: {KeystoneUser: "UserReady", KeystoneProject: "ProjectReady", KeystoneRoleAssignment: "AssignmentReady",
+			KeystoneCatalogEntry: "CatalogReady", KeystoneApplicationCredential: "CredentialReady",
+			MariaDBDatabase: "DatabaseReady", RabbitMQVhost: "VhostReady"}[.kind];
+		def keys: {KeystoneUser: ["clouds.yaml", "password"],
+			KeystoneApplicationCredential: ["clouds.yaml", "application_credential_id", "application_credential_secret"],
+			MariaDBDatabase: ["host", "port", "database", "username", "password"],
+			RabbitMQVhost: ["transport_url", "host", "port", "username", "password", "vhost"]}[.kind] // [];
+		def child: {KeystoneUser: "User", KeystoneProject: "Project", KeystoneRoleAssignment: "RoleAssignment",
+			KeystoneCatalogEntry: "Service", KeystoneApplicationCredential: "ApplicationCredential",
+			MariaDBDatabase: "Database", RabbitMQVhost: "Vhost"}[.kind];
+		def labels: ("c5c3.io/" + (.kind | ascii_downcase)) as $k
+			| {($k + "-namespace"): .metadata.namespace, ($k + "-name"): .metadata.name};
+		$cp[0].spec.infrastructure.messaging as $m
+		| (if ($m.clusterRef.name // "") != "" then null elif $m == null then "MessagingNotDeclared" else "MessagingNotManaged" end) as $refusal
+		| [.[] | .metadata.uid = "uid-" + .metadata.name
+			| .status.conditions = (if .kind == "RabbitMQVhost" and $refusal != null then
+					[{type: "VhostReady", status: "False", reason: $refusal}, {type: "DeliveryReady", status: "False", reason: $refusal},
+					 {type: "Ready", status: "False", reason: "NotAllReady"}]
+				elif .metadata.name == $notready then
+					[{type: sub, status: "False", reason: "Provisioning"}, {type: "Ready", status: "False", reason: "NotAllReady"}]
+				else [{type: sub, status: "True", reason: "Provisioned"}, {type: "Ready", status: "True", reason: "AllReady"}] end)
+			| if .kind == "KeystoneApplicationCredential"
+				then .status += {credentialGeneration: 1, credentialID: ("id-" + .metadata.name + "-1")} else . end] as $orders
+		| {orders: $orders,
+		   secrets: [$orders[] | select(.status.conditions[-1].status == "True" and (keys | length) > 0) | . as $o
+			| {apiVersion: "v1", kind: "Secret",
+			   metadata: {name: (.metadata.name + "-credentials"), namespace: .metadata.namespace, labels: labels,
+				ownerReferences: [{apiVersion: "c5c3.io/v1alpha1", kind: .kind, name: .metadata.name, uid: .metadata.uid, controller: true}]},
+			   data: (keys | map({key: ., value: (if . == "application_credential_id" then $o.status.credentialID
+				elif . == "application_credential_secret" then "S3cr3t-" + $o.metadata.name + "-1"
+				else . + "-of-" + $o.metadata.name end | @base64)}) | from_entries)}],
+		   children: [$orders[] | {apiVersion: "v1", kind: child, metadata: {name: .metadata.name, namespace: "openstack", labels: labels}}],
+		   keystone: [$orders[] | select(.kind == "KeystoneApplicationCredential") | "\(.status.credentialID) S3cr3t-\(.metadata.name)-1"]}')
+	for file in orders secrets children; do
+		jq --argjson new "$(jq -c ".$file" <<<"$out")" 'map(. as $x | select($new | any(.kind == $x.kind
+			and .metadata.namespace == $x.metadata.namespace and .metadata.name == $x.metadata.name) | not)) + $new' \
+			"$dir/$file.json" >"$dir/$file.new"
+		mv -- "$dir/$file.new" "$dir/$file.json"
+	done
+	jq -r '.keystone[]' <<<"$out" >>"$dir/keystone"
+}
+
+# fake_mint <namespace> <generation> <previous id>: gives
+# sandbox-verify-appcred the generation and the previous id. Keystone accepts
+# the new credential, and the Secret takes it unless ROTATION is secret-lag.
+fake_mint() {
+	local dir=$BATS_TEST_TMPDIR/hub/orders name=sandbox-verify-appcred
+	jq --arg ns "$1" --arg name "$name" --argjson generation "$2" --arg previous "$3" '
+		map(if .metadata.namespace == $ns and .metadata.name == $name then .status += {credentialGeneration: $generation,
+			credentialID: "id-\($name)-\($generation)", previousCredentialID: $previous} else . end)' "$dir/orders.json" >"$dir/orders.new"
+	mv -- "$dir/orders.new" "$dir/orders.json"
+	printf 'id-%s-%s S3cr3t-%s-%s\n' "$name" "$2" "$name" "$2" >>"$dir/keystone"
+	if [ "${ROTATION:-}" != secret-lag ]; then
+		jq --arg ns "$1" --arg name "$name-credentials" --arg id "id-$name-$2" --arg secret "S3cr3t-$name-$2" '
+			map(if .metadata.namespace == $ns and .metadata.name == $name then .data += {application_credential_id: ($id | @base64),
+				application_credential_secret: ($secret | @base64)} else . end)' "$dir/secrets.json" >"$dir/secrets.new"
+		mv -- "$dir/secrets.new" "$dir/secrets.json"
+	fi
+}
+
+# fake_retire <namespace>: ends the grace period of generation 1 of
+# sandbox-verify-appcred: the previous id is gone from the status and,
+# unless GEN1_ALIVE is set, from Keystone.
+fake_retire() {
+	local dir=$BATS_TEST_TMPDIR/hub/orders name=sandbox-verify-appcred
+	jq --arg ns "$1" --arg name "$name" 'map(if .metadata.namespace == $ns and .metadata.name == $name
+		then del(.status.previousCredentialID) else . end)' "$dir/orders.json" >"$dir/orders.new"
+	mv -- "$dir/orders.new" "$dir/orders.json"
+	if [ -z "${GEN1_ALIVE:-}" ]; then
+		grep -v "^id-$name-1 " "$dir/keystone" >"$dir/keystone.new" || :
+		mv -- "$dir/keystone.new" "$dir/keystone"
+	fi
+}
+
+# fake_rotation <namespace>: prints sandbox-verify-appcred after the schedule
+# moved it on, by the number of reads. With ROTATION unset, secret-lag or
+# kept, generation 2 comes at the second read, and generation 1 retires at
+# the third read after the patch, except with kept. With stuck nothing
+# changes; with skipped the first read finds generation 3, and with foreign
+# the second finds generation 2 after a credential verify did not read.
+fake_rotation() {
+	local dir=$BATS_TEST_TMPDIR/hub/orders reads after=0
+	reads=$(($(cat "$dir/reads" 2>/dev/null || echo 0) + 1))
+	echo "$reads" >"$dir/reads"
+	if [ -f "$dir/patched" ]; then
+		after=$(($(cat "$dir/after" 2>/dev/null || echo 0) + 1))
+		echo "$after" >"$dir/after"
+	fi
+	case ${ROTATION:-} in
+	stuck) ;;
+	skipped) [ "$reads" -ne 1 ] || fake_mint "$1" 3 id-sandbox-verify-appcred-2 ;;
+	foreign) [ "$reads" -ne 2 ] || fake_mint "$1" 2 id-sandbox-verify-appcred-0 ;;
+	*)
+		[ "$reads" -ne 2 ] || fake_mint "$1" 2 id-sandbox-verify-appcred-1
+		if [ "$after" -eq 3 ] && [ "${ROTATION:-}" != kept ]; then
+			fake_retire "$1"
+		fi
+		;;
+	esac
+	jq --arg ns "$1" 'map(select(.metadata.namespace == $ns and .metadata.name == "sandbox-verify-appcred"))[0] // empty' "$dir/orders.json"
+}
+
+# fake_delete <namespace> <resource> <name>: deletes the order with its Secret
+# and its children, except a child of the order LEFT_CHILD names, and for
+# sandbox-verify-appcred what fake_rotation counted. For the order
+# DELETE_TIMES_OUT names it fails as kubectl does after --timeout.
+fake_delete() {
+	local dir=$BATS_TEST_TMPDIR/hub/orders kind file
+	if [ "$3" = "${DELETE_TIMES_OUT:-}" ]; then
+		echo "error: timed out waiting for the condition on $2/$3" >&2
+		return 1
+	fi
+	if [ "$3" = sandbox-verify-appcred ]; then
+		rm -f -- "$dir/reads" "$dir/after" "$dir/patched"
+	fi
+	kind=$(jq -rn --arg resource "$2" '{"keystoneusers.c5c3.io": "KeystoneUser", "keystoneprojects.c5c3.io": "KeystoneProject",
+		"keystoneroleassignments.c5c3.io": "KeystoneRoleAssignment", "keystonecatalogentries.c5c3.io": "KeystoneCatalogEntry",
+		"keystoneapplicationcredentials.c5c3.io": "KeystoneApplicationCredential", "mariadbdatabases.c5c3.io": "MariaDBDatabase",
+		"rabbitmqvhosts.c5c3.io": "RabbitMQVhost"}[$resource]')
+	for file in orders secrets children; do
+		[ -f "$dir/$file.json" ] || continue
+		jq --arg ns "$1" --arg kind "$kind" --arg name "$3" --arg left "${LEFT_CHILD:-}" '
+			("c5c3.io/" + ($kind | ascii_downcase)) as $k
+			| map(select((.kind == $kind and .metadata.namespace == $ns and .metadata.name == $name)
+				or (.metadata.labels[$k + "-namespace"] == $ns and .metadata.labels[$k + "-name"] == $name
+					and (.kind == "Secret" or $name != $left)) | not))' "$dir/$file.json" >"$dir/$file.new"
+		mv -- "$dir/$file.new" "$dir/$file.json"
+	done
 }
 
 # openstack_logs: replaces openstack with a function that appends its
@@ -104,12 +315,19 @@ access_host() {
 # show of sandbox-verify-server fails as for a server that does not exist. A
 # call whose arguments match the pattern STUB_FAILS prints STUB_ERROR, by
 # default an unreachable endpoint, on stderr and fails, and one that matches
-# STUB_SILENT prints nothing. The names do not start with OS_, which
-# verify.sh unsets.
+# STUB_SILENT prints nothing. A token issue with OS_AUTH_TYPE
+# v3applicationcredential goes to stub_appcred_token, and user list, project
+# list and service list print KEYSTONE_USERS, KEYSTONE_PROJECTS and
+# KEYSTONE_SERVICES, which default to the rows the orders leave. The names
+# do not start with OS_, which verify.sh unsets.
 openstack_logs() {
 	openstack() {
 		local arg prev=
 		printf '%s\n' "$*" >>"$BATS_TEST_TMPDIR/openstack.log"
+		if [[ ${OS_AUTH_TYPE:-} == v3applicationcredential && $* == "token issue -f value -c id" ]]; then
+			stub_appcred_token
+			return
+		fi
 		# shellcheck disable=SC2053 # STUB_FAILS and STUB_SILENT are patterns.
 		if [[ -n ${STUB_FAILS:-} && $* == $STUB_FAILS ]]; then
 			printf '%s\n' "${STUB_ERROR:-Unable to establish connection to https://keystone.172-30-255-10.nip.io/v3/auth/tokens}" >&2
@@ -151,6 +369,9 @@ IPV4_ADDRESS}"
 		"compute service list --service nova-compute --host sandbox-management-control-plane -f value -c State")
 			echo "${COMPUTE_STATE:-up}"
 			;;
+		"user list -f value -c Name") printf '%s\n' ${KEYSTONE_USERS:-admin workflow} ;;
+		"project list -f value -c Name") printf '%s\n' ${KEYSTONE_PROJECTS:-admin service workflow-project} ;;
+		"service list -f value -c Type") printf '%s\n' ${KEYSTONE_SERVICES:-identity image dns} ;;
 		"server show sandbox-verify-server -f value -c status") echo "${SERVER_STATUS:-ACTIVE}" ;;
 		"server show sandbox-verify-server -f json -c fault")
 			jq -n --arg message "${FAULT:-}" '{fault: {code: 500, created: "2026-11-25T10:00:00Z", message: $message}}'
@@ -176,7 +397,35 @@ IPV4_ADDRESS}"
 			;;
 		esac
 	}
-	export -f openstack
+	export -f openstack stub_appcred_token
+}
+
+# stub_appcred_token: the answer of the openstack stub to a token issue by
+# application credential. It appends the names of the OS_ variables of its
+# environment and the id to appcred.log in the test's directory, one line
+# per call. The call APPCRED_FAILS counts prints APPCRED_ERROR, by default an
+# unreachable endpoint, and fails. Otherwise it prints a token when Keystone
+# of the fake hub accepts the id and the secret, and else fails as Keystone
+# does for a deleted credential, naming its id, or with HTTP 401 when
+# GEN1_REFUSAL is 401.
+stub_appcred_token() {
+	local n
+	n=$(($(grep -c '' "$BATS_TEST_TMPDIR/appcred.log" 2>/dev/null || :) + 1))
+	printf '%s %s\n' "$(env | sed -n 's/^\(OS_[A-Z_]*\)=.*/\1/p' | LC_ALL=C sort | paste -sd ' ')" \
+		"$OS_APPLICATION_CREDENTIAL_ID" >>"$BATS_TEST_TMPDIR/appcred.log"
+	if [ "$n" = "${APPCRED_FAILS:-}" ]; then
+		printf '%s\n' "${APPCRED_ERROR:-Unable to establish connection to https://keystone.172-30-255-10.nip.io/v3/auth/tokens}" >&2
+		return 1
+	fi
+	if grep -qxF -- "$OS_APPLICATION_CREDENTIAL_ID $OS_APPLICATION_CREDENTIAL_SECRET" "$BATS_TEST_TMPDIR/hub/orders/keystone"; then
+		echo gAAAAABappcredtoken
+	elif [ "${GEN1_REFUSAL:-}" = 401 ]; then
+		echo 'The request you have made requires authentication. (HTTP 401) (Request-ID: req-401)' >&2
+		return 1
+	else
+		echo "Could not find Application Credential: $OS_APPLICATION_CREDENTIAL_ID. (HTTP 404) (Request-ID: req-404)" >&2
+		return 1
+	fi
 }
 
 # catalog_with <url>: writes the catalog of openstack 6.6.0 under -f json,
@@ -338,14 +587,50 @@ healthy_cloud() {
 	export -f sleep
 }
 
-# verify_fails <line> <passed>: runs verify.sh and checks that it exits 1,
-# prints the line, and ends with verify: <passed> of 16 checks passed.
+# orders_cloud: healthy_cloud with a ControlPlane on the managed bus
+# openstack-rabbitmq that assigns workflow with the role member and catalog
+# entries, and the seven orders of orders/workflow/orders.yaml applied to an
+# empty fake hub, Ready with their four Secrets. It removes the logs of an
+# earlier run in the same test.
+orders_cloud() {
+	rm -rf -- "$BATS_TEST_TMPDIR/hub/orders" "$BATS_TEST_TMPDIR"/applied.*.yaml
+	rm -f -- "$BATS_TEST_TMPDIR"/{kubectl,openstack,appcred,patch,sleep,curl}.log
+	healthy_cloud
+	hub_edit '.spec.infrastructure.messaging = {clusterRef: {name: "openstack-rabbitmq"}}
+		| .spec.namespaceAssignments = [{namespace: "workflow", allowedRoles: ["member"], allowCatalogEntries: true}]'
+	fake_apply <"$SANDBOX_ROOT/orders/workflow/orders.yaml"
+}
+
+# orders_edit <file> <jq filter>: changes orders.json, secrets.json or
+# children.json of the fake hub with the filter.
+orders_edit() {
+	jq "$2" "$BATS_TEST_TMPDIR/hub/orders/$1.json" >"$BATS_TEST_TMPDIR/hub/orders/$1.new"
+	mv -- "$BATS_TEST_TMPDIR/hub/orders/$1.new" "$BATS_TEST_TMPDIR/hub/orders/$1.json"
+}
+
+# kubectl_calls: prints the calls of kubectl.log without their --kubeconfig.
+kubectl_calls() {
+	sed 's|^--kubeconfig [^ ]* ||' "$BATS_TEST_TMPDIR/kubectl.log"
+}
+
+# HOLDS: the deletes of the scratch orders in the order of their holds.
+HOLDS="keystoneapplicationcredentials.c5c3.io sandbox-verify-appcred
+keystoneroleassignments.c5c3.io sandbox-verify-member
+keystonecatalogentries.c5c3.io sandbox-verify-catalog
+keystoneprojects.c5c3.io sandbox-verify-project
+keystoneusers.c5c3.io sandbox-verify
+mariadbdatabases.c5c3.io sandbox-verify-db
+rabbitmqvhosts.c5c3.io sandbox-verify-bus"
+
+# verify_fails <line> <passed> [<total>]: runs verify.sh and checks that it
+# exits 1, prints the line, and ends with verify: <passed> of <total> checks
+# passed, by default 16.
 verify_fails() {
 	run "$BATS_TEST_TMPDIR/scripts/verify.sh"
 	echo "$output"
 	[ "$status" -eq 1 ]
 	grep -qxF -- "$1" <<<"$output"
-	[ "${lines[-1]}" = "verify: $2 of 16 checks passed" ]
+	[ "${lines[-1]}" = "verify: $2 of ${3:-16} checks passed" ]
 }
 
 # logged <pattern>: prints the number of each line of openstack.log that
@@ -1091,4 +1376,340 @@ https://barbican.172-30-255-10.nip.io/v1/secrets/0ld2'
 	[ "${#lines[@]}" -eq 17 ]
 	[ "${lines[16]}" = "verify: 16 of 16 checks passed" ]
 	[ -n "$(logged '* delete *')" ]
+}
+
+@test "verify.sh runs no order check for a ControlPlane without a namespace assigned on the management cluster" {
+	local case
+	healthy_cloud
+	for case in absent empty target-only; do
+		controlplane_services horizon nova cinder neutron barbican placement glance keystone
+		case $case in
+		empty) hub_edit '.spec.namespaceAssignments = []' ;;
+		target-only)
+			hub_edit '.spec.namespaceAssignments = [{namespace: "workflow", targetClusterRef: {name: "compute"},
+				allowedRoles: ["member"], allowCatalogEntries: true}]'
+			;;
+		esac
+		rm -f -- "$BATS_TEST_TMPDIR/kubectl.log"
+		run "$BATS_TEST_TMPDIR/scripts/verify.sh"
+		echo "$case: $output"
+		[ "$status" -eq 0 ]
+		[[ $output != *orders-* ]]
+		[ "${lines[-1]}" = "verify: 16 of 16 checks passed" ]
+		run ! grep -qE ' (apply|delete|patch) |keystoneusers|secrets,' "$BATS_TEST_TMPDIR/kubectl.log"
+	done
+}
+
+@test "verify.sh passes the five order checks after those of the services, with seven scratch orders on a managed bus" {
+	local ref='{"controlPlaneRef":{"name":"controlplane","namespace":"openstack"}}'
+	orders_cloud
+	run "$BATS_TEST_TMPDIR/scripts/verify.sh"
+	echo "$output"
+	[ "$status" -eq 0 ]
+	[ "$(check_ids)" = keystone-token,keystone-catalog,glance-catalog,glance-image,placement-catalog,placement-classes,barbican-catalog,barbican-secret,neutron-catalog,neutron-network,cinder-catalog,cinder-volume,nova-catalog,nova-services,nova-server,horizon-login,orders-ready,orders-secrets,orders-converge,orders-rotation,orders-teardown ]
+	[ "$(printf '%s\n' "${lines[@]:16}")" = "ok orders-ready: 7 orders in workflow are Ready
+ok orders-secrets: 4 credentials Secrets sit beside their orders in workflow
+ok orders-converge: the 7 scratch orders in workflow are Ready with their Secrets
+ok orders-rotation: sandbox-verify-appcred rotated to generation 2 on its schedule, generation 1 authenticated inside the grace period and was refused after it
+ok orders-teardown: the 7 scratch orders are gone with their Secrets, their children and their user, project and catalog row
+verify: 21 of 21 checks passed" ]
+
+	# One apply of the seven scratch orders, and the schedule turned off
+	# once generation 2 is there.
+	[ ! -e "$BATS_TEST_TMPDIR/applied.2.yaml" ]
+	[ "$(yq ea -o=json -I=0 '[[.kind, .metadata.name, .metadata.namespace, .spec]]' "$BATS_TEST_TMPDIR/applied.1.yaml")" = \
+		"$(jq -n -c --argjson ref "$ref" '[
+		["KeystoneUser", "sandbox-verify", "workflow", $ref],
+		["KeystoneProject", "sandbox-verify-project", "workflow", $ref],
+		["KeystoneRoleAssignment", "sandbox-verify-member", "workflow",
+			$ref + {userRef: {name: "sandbox-verify"}, projectRef: {name: "sandbox-verify-project"}, role: "member"}],
+		["KeystoneCatalogEntry", "sandbox-verify-catalog", "workflow", $ref + {serviceType: "sandbox-verify", serviceName: "sandbox-verify",
+			endpoints: [{interface: "public", url: "https://sandbox-verify.example.test/v1"}]}],
+		["KeystoneApplicationCredential", "sandbox-verify-appcred", "workflow",
+			$ref + {userRef: {name: "sandbox-verify"}, projectRef: {name: "sandbox-verify-project"}, rotation: {interval: "3m", gracePeriod: "2m"}}],
+		["MariaDBDatabase", "sandbox-verify-db", "workflow", $ref + {deletionPolicy: "Delete"}],
+		["RabbitMQVhost", "sandbox-verify-bus", "workflow", $ref + {deletionPolicy: "Delete"}]]')" ]
+	[ "$(<"$BATS_TEST_TMPDIR/patch.log")" = '{"spec":{"rotation":{"interval":"0s"}}}' ]
+	# The scratch orders are gone with their Secrets and children; the
+	# example orders stay.
+	[ "$(jq -c '[.[].metadata.name]' "$BATS_TEST_TMPDIR/hub/orders/orders.json")" = \
+		'["workflow","workflow-project","workflow-member","workflow-dns","workflow-appcred","workflow-db","workflow-bus"]' ]
+	[ "$(jq '[.[] | select(.metadata.name | startswith("sandbox-verify"))] | length' \
+		"$BATS_TEST_TMPDIR/hub/orders/secrets.json" "$BATS_TEST_TMPDIR/hub/orders/children.json" | paste -sd ' ')" = "0 0" ]
+	# One pause for generation 2, one for the end of the grace period.
+	[ "$(<"$BATS_TEST_TMPDIR/sleep.log")" = $'2\n2' ]
+}
+
+@test "verify.sh passes orders-ready for a RabbitMQVhost that reports MessagingNotManaged on a brownfield bus and MessagingNotDeclared without a bus, and orders no scratch vhost there" {
+	local case reason
+	for case in brownfield none; do
+		rm -rf -- "$BATS_TEST_TMPDIR/hub" "$BATS_TEST_TMPDIR/scripts" "$BATS_TEST_TMPDIR"/applied.*.yaml "$BATS_TEST_TMPDIR/kubectl.log"
+		healthy_cloud
+		if [ "$case" = brownfield ]; then
+			reason=MessagingNotManaged
+			hub_edit '.spec.infrastructure.messaging = {secretRef: {name: "rabbitmq-transport-url"}, tls: {caBundleSecretRef: {name: "shared-rabbitmq-tls"}}}'
+		else
+			reason=MessagingNotDeclared
+			controlplane_services keystone
+		fi
+		hub_edit '.spec.namespaceAssignments = [{namespace: "workflow", allowedRoles: ["member"], allowCatalogEntries: true}]'
+		fake_apply <"$SANDBOX_ROOT/orders/workflow/orders.yaml"
+		run "$BATS_TEST_TMPDIR/scripts/verify.sh"
+		echo "$case: $output"
+		[ "$status" -eq 0 ]
+		[ "$(printf '%s\n' "${lines[@]: -6:5}")" = "ok orders-ready: 6 orders in workflow are Ready, RabbitMQVhost workflow/workflow-bus reports $reason on a bus that serves no vhost orders
+ok orders-secrets: 3 credentials Secrets sit beside their orders in workflow
+ok orders-converge: the 6 scratch orders in workflow are Ready with their Secrets
+ok orders-rotation: sandbox-verify-appcred rotated to generation 2 on its schedule, generation 1 authenticated inside the grace period and was refused after it
+ok orders-teardown: the 6 scratch orders are gone with their Secrets, their children and their user, project and catalog row" ]
+		[[ ${lines[-1]} =~ ^verify:\ ([0-9]+)\ of\ ([0-9]+)\ checks\ passed$ ]]
+		[ "${BASH_REMATCH[1]}" = "${BASH_REMATCH[2]}" ]
+		[ "$(yq ea '[.kind] | join(" ")' "$BATS_TEST_TMPDIR/applied.1.yaml")" = \
+			"KeystoneUser KeystoneProject KeystoneRoleAssignment KeystoneCatalogEntry KeystoneApplicationCredential MariaDBDatabase" ]
+		run ! grep -q ' delete rabbitmqvhosts' "$BATS_TEST_TMPDIR/kubectl.log"
+	done
+}
+
+@test "verify.sh fails orders-ready with the first sub-condition that is not True, for an order without conditions, and for a refused RabbitMQVhost on a managed bus" {
+	orders_cloud
+	orders_edit orders 'map(if .metadata.name == "workflow-db" then .status.conditions = [
+		{type: "DeliveryReady", status: "True", reason: "Delivered"},
+		{type: "DatabaseReady", status: "False", reason: "DynamicCredentialsUnavailable"},
+		{type: "Ready", status: "False", reason: "NotAllReady"}] else . end)
+		| map(if .metadata.name == "workflow-bus" then .status.conditions |= map(.status = "False") else . end)'
+	# The first failing order of the list decides the line.
+	verify_fails "FAIL orders-ready: MariaDBDatabase workflow/workflow-db is not Ready: DatabaseReady=False (DynamicCredentialsUnavailable)" 20 21
+	[ "$(grep -c '^FAIL ' <<<"$output")" -eq 1 ]
+
+	orders_edit orders 'map(if .metadata.name == "workflow-member" then del(.status) else . end)'
+	verify_fails "FAIL orders-ready: KeystoneRoleAssignment workflow/workflow-member is not Ready: has no condition" 20 21
+
+	orders_cloud
+	orders_edit orders 'map(if .metadata.name == "workflow-bus" then .status.conditions = [
+		{type: "VhostReady", status: "False", reason: "MessagingNotManaged"},
+		{type: "DeliveryReady", status: "False", reason: "MessagingNotManaged"},
+		{type: "Ready", status: "False", reason: "NotAllReady"}] else . end)'
+	verify_fails "FAIL orders-ready: RabbitMQVhost workflow/workflow-bus is not Ready: VhostReady=False (MessagingNotManaged)" 20 21
+}
+
+@test "verify.sh passes orders-ready and orders-secrets for assigned namespaces without an order" {
+	healthy_cloud
+	hub_edit '.spec.infrastructure.messaging = {clusterRef: {name: "openstack-rabbitmq"}}
+		| .spec.namespaceAssignments = [{namespace: "workflow", allowedRoles: ["member"], allowCatalogEntries: true},
+			{namespace: "team-b", allowedRoles: ["reader"]}, {namespace: "absent"},
+			{namespace: "remote", targetClusterRef: {name: "compute"}}]'
+	run "$BATS_TEST_TMPDIR/scripts/verify.sh"
+	echo "$output"
+	[ "$status" -eq 0 ]
+	# absent is assigned and does not exist; remote lives on another cluster.
+	[ "${lines[16]}" = "ok orders-ready: no order in workflow, team-b, absent" ]
+	[ "${lines[17]}" = "ok orders-secrets: 0 credentials Secrets sit beside their orders in workflow, team-b, absent" ]
+	[ "${lines[-1]}" = "verify: 21 of 21 checks passed" ]
+	[ "$(kubectl_calls | grep -c '^-n absent get keystoneusers.c5c3.io,')" -eq 1 ]
+	run ! grep -q -- '-n remote ' "$BATS_TEST_TMPDIR/kubectl.log"
+}
+
+@test "verify.sh fails orders-secrets for a missing Secret, a Secret another object controls, a missing key and an empty value" {
+	local case
+	for case in \
+		'map(select(.metadata.name != "workflow-db-credentials"))|the Secret workflow/workflow-db-credentials is missing' \
+		'map(if .metadata.name == "workflow-db-credentials" then .metadata.ownerReferences[0].uid = "uid-elsewhere" else . end)|the Secret workflow/workflow-db-credentials is not controlled by MariaDBDatabase workflow-db' \
+		'map(if .metadata.name == "workflow-credentials" then .metadata.ownerReferences[0].controller = false else . end)|the Secret workflow/workflow-credentials is not controlled by KeystoneUser workflow' \
+		'map(if .metadata.name == "workflow-bus-credentials" then del(.data.vhost) else . end)|the Secret workflow/workflow-bus-credentials holds no vhost' \
+		'map(if .metadata.name == "workflow-appcred-credentials" then .data.application_credential_secret = "" else . end)|the Secret workflow/workflow-appcred-credentials holds no application_credential_secret'; do
+		orders_cloud
+		orders_edit secrets "${case%%|*}"
+		verify_fails "FAIL orders-secrets: ${case#*|}" 20 21
+		[ "${lines[17]}" = "FAIL orders-secrets: ${case#*|}" ]
+		[[ $output != *-of-workflow* ]]
+		[[ $output != *S3cr3t* ]]
+	done
+}
+
+@test "verify.sh fails the three scratch checks and creates nothing when no assigned namespace allows the role member and catalog entries" {
+	local id
+	healthy_cloud
+	hub_edit '.spec.infrastructure.messaging = {clusterRef: {name: "openstack-rabbitmq"}}
+		| .spec.namespaceAssignments = [{namespace: "workflow", allowedRoles: ["reader"], allowCatalogEntries: true},
+			{namespace: "team-b", allowedRoles: ["member"]},
+			{namespace: "remote", targetClusterRef: {name: "compute"}, allowedRoles: ["member"], allowCatalogEntries: true}]'
+	run "$BATS_TEST_TMPDIR/scripts/verify.sh"
+	echo "$output"
+	[ "$status" -eq 1 ]
+	for id in orders-converge orders-rotation orders-teardown; do
+		grep -qxF "FAIL $id: no namespace assigned on the management cluster allows the role member and catalog entries" <<<"$output"
+	done
+	[ "${lines[-1]}" = "verify: 18 of 21 checks passed" ]
+	run ! grep -qE ' (apply|delete|patch) ' "$BATS_TEST_TMPDIR/kubectl.log"
+	[ ! -e "$BATS_TEST_TMPDIR/appcred.log" ]
+}
+
+@test "verify.sh fails orders-converge with the last line of kubectl when the apply fails, and with the order that is not Ready after 300 s" {
+	orders_cloud
+	export KUBECTL_FAILS=apply
+	verify_fails "FAIL orders-converge: cannot order in workflow: The connection to the server 127.0.0.1:40001 was refused - did you specify the right host or port?" 19 21
+	[ "${lines[19]}" = "FAIL orders-rotation: the scratch orders did not converge" ]
+	[ "${lines[20]}" = "ok orders-teardown: the 7 scratch orders are gone with their Secrets, their children and their user, project and catalog row" ]
+	# The deletes of the teardown still run after the failed apply.
+	[ "$(kubectl_calls | sed -n '/^apply -f -$/,$p' | sed -n 's/^-n workflow delete \([^ ]*\) \([^ ]*\) --ignore-not-found --timeout=180s$/\1 \2/p')" = "$HOLDS" ]
+
+	unset KUBECTL_FAILS
+	orders_cloud
+	export NOT_READY=sandbox-verify-db
+	verify_fails "FAIL orders-converge: MariaDBDatabase sandbox-verify-db is not Ready after 300 s: DatabaseReady=False (Provisioning)" 19 21
+	[ "${lines[19]}" = "FAIL orders-rotation: the scratch orders did not converge" ]
+	[ "$(grep -c '' "$BATS_TEST_TMPDIR/sleep.log")" -eq 150 ]
+	[ "$(sort -u "$BATS_TEST_TMPDIR/sleep.log")" = 2 ]
+	[[ ${lines[20]} == "ok orders-teardown: "* ]]
+}
+
+@test "verify.sh fails orders-rotation at each of its seven steps with the line of that step" {
+	local case line refused="The connection to the server 127.0.0.1:40001 was refused - did you specify the right host or port?"
+	local unreachable="Unable to establish connection to https://keystone.172-30-255-10.nip.io/v3/auth/tokens"
+	while IFS='|' read -r case line; do
+		orders_cloud
+		unset ROTATION APPCRED_FAILS KUBECTL_FAILS GEN1_ALIVE
+		export "${case?}"
+		echo "$case"
+		verify_fails "FAIL orders-rotation: $line" 20 21
+		[ "${lines[19]}" = "FAIL orders-rotation: $line" ]
+		[[ ${lines[20]} == "ok orders-teardown: "* ]]
+	done <<CASES
+APPCRED_FAILS=1|generation 1 does not authenticate: $unreachable
+ROTATION=stuck|sandbox-verify-appcred is at generation 1 after 300 s, expected 2
+ROTATION=skipped|generation 1 was superseded before verify read generation 2
+ROTATION=foreign|generation 1 was superseded before verify read generation 2
+APPCRED_FAILS=2|generation 1 is refused inside its grace period: $unreachable
+KUBECTL_FAILS=patch|cannot turn the schedule off: $refused
+ROTATION=secret-lag|the Secret did not take generation 2 within 180 s
+APPCRED_FAILS=3|generation 2 does not authenticate: $unreachable
+ROTATION=kept|generation 1 is not deleted 300 s after the switch
+GEN1_ALIVE=1|generation 1 still authenticates after its grace period
+CASES
+}
+
+@test "verify.sh fails orders-rotation with the first line of the error when the refusal after the grace period is neither HTTP 401 nor HTTP 404" {
+	orders_cloud
+	export APPCRED_FAILS=4 APPCRED_ERROR="Unable to establish connection to https://keystone.172-30-255-10.nip.io/v3/auth/tokens: HTTPSConnectionPool(host='keystone.172-30-255-10.nip.io', port=443)
+Max retries exceeded with url: /v3/auth/tokens"
+	verify_fails "FAIL orders-rotation: Unable to establish connection to https://keystone.172-30-255-10.nip.io/v3/auth/tokens: HTTPSConnectionPool(host='keystone.172-30-255-10.nip.io', port=443)" 20 21
+	[ "$(grep -c '' "$BATS_TEST_TMPDIR/appcred.log")" -eq 4 ]
+
+	# Keystone refuses an expired credential with HTTP 401, a deleted one with
+	# HTTP 404.
+	unset APPCRED_FAILS APPCRED_ERROR
+	orders_cloud
+	export GEN1_REFUSAL=401
+	run "$BATS_TEST_TMPDIR/scripts/verify.sh"
+	[ "$status" -eq 0 ]
+	[[ ${lines[19]} == "ok orders-rotation: "* ]]
+}
+
+@test "verify.sh gives openstack the application credential through the environment, without the user and the password of the admin, and prints no value of a Secret" {
+	local value out names="OS_APPLICATION_CREDENTIAL_ID OS_APPLICATION_CREDENTIAL_SECRET OS_AUTH_TYPE OS_AUTH_URL OS_CACERT"
+	orders_cloud
+	run "$BATS_TEST_TMPDIR/scripts/verify.sh"
+	[ "$status" -eq 0 ]
+	out=$output
+	# Generation 1, inside its grace period, generation 2, generation 1
+	# after it.
+	[ "$(<"$BATS_TEST_TMPDIR/appcred.log")" = "$names id-sandbox-verify-appcred-1
+$names id-sandbox-verify-appcred-1
+$names id-sandbox-verify-appcred-2
+$names id-sandbox-verify-appcred-1" ]
+	[ "$(grep -cxF 'token issue -f value -c id' "$BATS_TEST_TMPDIR/openstack.log")" -eq 5 ]
+	run ! grep -E -e '(^| )(--insecure|-[a-zA-Z]*k)( |$)' "$BATS_TEST_TMPDIR/openstack.log"
+	for value in id-sandbox-verify-appcred S3cr3t- -of-workflow -of-sandbox-verify \
+		"$(printf S3cr3t-sandbox-verify-appcred-1 | base64 -w 0)" "$(printf id-sandbox-verify-appcred-1 | base64 -w 0)"; do
+		[[ $out != *"$value"* ]]
+		run ! grep -qF -- "$value" "$BATS_TEST_TMPDIR/openstack.log"
+		run ! grep -qF -- "$value" "$BATS_TEST_TMPDIR/kubectl.log"
+	done
+
+	# Keystone names the id of a credential it cannot find; the line hides it.
+	orders_cloud
+	export APPCRED_FAILS=1 APPCRED_ERROR='Could not find Application Credential: id-sandbox-verify-appcred-1. (HTTP 404) (Request-ID: req-1)'
+	verify_fails "FAIL orders-rotation: generation 1 does not authenticate: Could not find Application Credential: <redacted>. (HTTP 404) (Request-ID: req-1)" 20 21
+	for value in id-sandbox-verify-appcred S3cr3t- -of-; do
+		[[ $output != *"$value"* ]]
+	done
+}
+
+@test "verify.sh deletes the scratch orders an earlier run left before it orders, and tears them down in the order of the holds after a failed check" {
+	local calls
+	orders_cloud
+	# An interrupted run left its scratch orders.
+	(
+		. "$SANDBOX_ROOT/scripts/lib/orders.sh"
+		orders_scratch_ns=workflow orders_refusal=
+		orders_manifest
+	) | fake_apply
+	[ "$(jq '[.[] | select(.metadata.name | startswith("sandbox-verify"))] | length' "$BATS_TEST_TMPDIR/hub/orders/orders.json")" -eq 7 ]
+
+	export ROTATION=stuck
+	verify_fails "FAIL orders-rotation: sandbox-verify-appcred is at generation 1 after 300 s, expected 2" 20 21
+	calls=$(kubectl_calls)
+	# The deletes in the order of the holds come before the apply and after
+	# it, and orders-ready reads the example orders alone.
+	[ "$(sed -n '1,/^apply -f -$/p' <<<"$calls" | sed -n 's/^-n workflow delete \([^ ]*\) \([^ ]*\) --ignore-not-found --timeout=180s$/\1 \2/p')" = "$HOLDS" ]
+	[ "$(sed -n '/^apply -f -$/,$p' <<<"$calls" | sed -n 's/^-n workflow delete \([^ ]*\) \([^ ]*\) --ignore-not-found --timeout=180s$/\1 \2/p')" = "$HOLDS" ]
+	[ "$(grep -c '^-n workflow delete ' <<<"$calls")" -eq 14 ]
+	[ "${lines[16]}" = "ok orders-ready: 7 orders in workflow are Ready" ]
+	[[ ${lines[20]} == "ok orders-teardown: "* ]]
+}
+
+@test "verify.sh fails orders-teardown for a delete that times out, for a labelled child that is left and for a user, a project and a service left in Keystone" {
+	local case
+	orders_cloud
+	export DELETE_TIMES_OUT=sandbox-verify-project
+	verify_fails "FAIL orders-teardown: KeystoneProject sandbox-verify-project is not deleted after 180 s: error: timed out waiting for the condition on keystoneprojects.c5c3.io/sandbox-verify-project" 20 21
+	# The deletes after the one that failed still run.
+	[ "$(kubectl_calls | sed -n '/^apply -f -$/,$p' | sed -n 's/^-n workflow delete \([^ ]*\) \([^ ]*\) --ignore-not-found --timeout=180s$/\1 \2/p')" = "$HOLDS" ]
+	unset DELETE_TIMES_OUT
+
+	orders_cloud
+	export LEFT_CHILD=sandbox-verify-db
+	verify_fails "FAIL orders-teardown: Database openstack/sandbox-verify-db is left after the teardown" 20 21
+	unset LEFT_CHILD
+
+	for case in \
+		'KEYSTONE_USERS=admin workflow sandbox-verify|the user sandbox-verify is left in Keystone' \
+		'KEYSTONE_PROJECTS=admin sandbox-verify-project|the project sandbox-verify-project is left in Keystone' \
+		'KEYSTONE_SERVICES=identity sandbox-verify dns|the service sandbox-verify is left in Keystone'; do
+		orders_cloud
+		export "${case%%|*}"
+		verify_fails "FAIL orders-teardown: ${case#*|}" 20 21
+		unset KEYSTONE_USERS KEYSTONE_PROJECTS KEYSTONE_SERVICES
+	done
+}
+
+@test "verify.sh fails each order check with the last line of kubectl when a read fails" {
+	local refused="The connection to the server 127.0.0.1:40001 was refused - did you specify the right host or port?"
+	orders_cloud
+	export KUBECTL_FAILS=orders.workflow
+	verify_fails "FAIL orders-ready: cannot read the orders of workflow: $refused" 17 21
+	[ "${lines[17]}" = "FAIL orders-secrets: cannot read the orders of workflow: $refused" ]
+	[ "${lines[18]}" = "FAIL orders-converge: cannot read the orders of workflow: $refused" ]
+
+	orders_cloud
+	export KUBECTL_FAILS=secret.workflow.workflow-credentials
+	verify_fails "FAIL orders-secrets: cannot read the Secret workflow/workflow-credentials: $refused" 20 21
+
+	orders_cloud
+	export KUBECTL_FAILS=secret.workflow.sandbox-verify-appcred-credentials
+	verify_fails "FAIL orders-converge: cannot read the Secret workflow/sandbox-verify-appcred-credentials: $refused" 19 21
+
+	orders_cloud
+	export KUBECTL_FAILS=appcred
+	verify_fails "FAIL orders-rotation: cannot read the KeystoneApplicationCredential workflow/sandbox-verify-appcred: $refused" 20 21
+
+	orders_cloud
+	export KUBECTL_FAILS=children.sandbox-verify-appcred
+	verify_fails "FAIL orders-teardown: $refused" 20 21
+
+	unset KUBECTL_FAILS
+	orders_cloud
+	export STUB_FAILS='service list *' STUB_ERROR='Failed to discover available identity versions when contacting https://keystone.172-30-255-10.nip.io/v3.
+SSL exception'
+	verify_fails "FAIL orders-teardown: Failed to discover available identity versions when contacting https://keystone.172-30-255-10.nip.io/v3." 20 21
 }
