@@ -430,6 +430,36 @@ scaffold_attached() {
 	[ "$(yq -o=json -I=0 '.spec.components' - <<<"$output")" = '["resolver"]' ]
 }
 
+@test "root_manifest lists the patches Components of identity after its ten modules, and none for platform" {
+	export SANDBOX_PROFILE=identity
+	profile_load
+	run root_manifest management
+	[ "$status" -eq 0 ]
+	[ "$(yq -o=json -I=0 '.spec.components' - <<<"$output")" = \
+		'["crds","controllers","loadbalancer","pki","gateway","openbao","platform","sizing","messaging-tls","controlplane","messaging-tls/patches","controlplane/patches"]' ]
+
+	export SANDBOX_PROFILE=platform
+	profile_load
+	run root_manifest management
+	[ "$status" -eq 0 ]
+	[ "$(yq '[.spec.components[] | select(test("/patches$"))] | length' - <<<"$output")" = 0 ]
+}
+
+@test "root_manifest lists the patches Components in the order of the modules" {
+	profile_with $'clusters: [management]\nmodules:\n  management: [crds, controllers, loadbalancer, pki, gateway, openbao, platform, sizing, controlplane, messaging-tls]'
+	profile_load
+	run root_manifest management
+	[ "$status" -eq 0 ]
+	[ "$(yq -o=json -I=0 '.spec.components[-2:]' - <<<"$output")" = '["controlplane/patches","messaging-tls/patches"]' ]
+
+	profile_with $'clusters: [management]\nmodules:\n  management: [crds, controllers, loadbalancer, pki, messaging-tls]'
+	profile_load
+	run root_manifest management
+	[ "$status" -eq 0 ]
+	[ "$(yq -o=json -I=0 '.spec.components' - <<<"$output")" = \
+		'["crds","controllers","loadbalancer","pki","messaging-tls","messaging-tls/patches"]' ]
+}
+
 @test "root_manifest fails for a word that is not a role" {
 	profile_load
 	run root_manifest network
