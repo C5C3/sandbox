@@ -33,6 +33,17 @@
 #                                 openstack/controlplane-fake-compute exists
 #   horizon    horizon-login      admin logs in to the dashboard with curl
 #
+# After them, when spec.namespaceAssignments assigns a namespace on the
+# management cluster, come the five checks of scripts/lib/orders.sh:
+#
+#   orders-ready      the orders of the assigned namespaces are Ready
+#   orders-secrets    each Ready order that delivers a Secret has it
+#   orders-converge   the scratch orders sandbox-verify* are Ready within
+#                     300 s, with their Secrets
+#   orders-rotation   sandbox-verify-appcred rotates on its schedule, and
+#                     generation 1 is refused after its grace period
+#   orders-teardown   the scratch orders leave nothing when deleted
+#
 # A key outside the table adds no check. It prints one line per check,
 # ok <id>: <detail> or FAIL <id>: <first line of the error>, then
 # verify: <passed> of <total> checks passed, and exits 1 when a check failed.
@@ -51,6 +62,8 @@ set -euo pipefail
 . "$SANDBOX_ROOT/scripts/lib/hub.sh"
 # shellcheck source=lib/access.sh
 . "$SANDBOX_ROOT/scripts/lib/access.sh"
+# shellcheck source=lib/orders.sh
+. "$SANDBOX_ROOT/scripts/lib/orders.sh"
 
 tmp=$(mktemp -d)
 trap 'rm -rf -- "$tmp"' EXIT
@@ -558,6 +571,7 @@ for service in keystone glance placement barbican neutron cinder nova horizon; d
 		"check_$service"
 	fi
 done
+check_orders
 
 echo "verify: $passed of $total checks passed"
 if [ "$passed" -ne "$total" ]; then
