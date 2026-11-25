@@ -1,0 +1,12 @@
+# The NFS export of the volume backend nfs1, upstream's kind overlay
+# unchanged: the Deployment nfs-server (NFS-Ganesha, privileged, 640Mi of
+# requests), its claim nfs-server-exports of 5Gi on the class standard and
+# its Service in openstack, the HelmRepository csi-driver-nfs in flux-system,
+# and the HelmRelease csi-driver-nfs 4.13.6 in kube-system
+# (vendor/cobaltcore/deploy/bases/nfs/). The cinder-operator mounts the
+# export /volumes as an inline CSI volume. The namespace openstack comes from
+# controllers.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../vendor/cobaltcore/deploy/overlays/kind/nfs

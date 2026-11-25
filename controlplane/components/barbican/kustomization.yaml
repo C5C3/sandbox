@@ -1,0 +1,52 @@
+# Barbican behind the Gateway openstack-gw at barbican.<a-b-c-d>.nip.io, on a
+# dedicated OpenBao instance the ControlPlane provisions and owns. The block
+# is that of Step 4 of upstream's Quick Start (ControlPlane) at the pin, as
+# vendor/cobaltcore/deploy/overlays/metal-stack/controlplane/controlplane-lab.yaml
+# carries it. No publicEndpoint: on port 443 the operator derives
+# https://<hostname>. The second patch has the Job
+# controlplane-database-tenant wait for the block and write the database
+# role of barbican.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+patches:
+  - target:
+      group: c5c3.io
+      version: v1alpha1
+      kind: ControlPlane
+      name: controlplane
+      namespace: openstack
+    patch: |
+      apiVersion: c5c3.io/v1alpha1
+      kind: ControlPlane
+      metadata:
+        name: controlplane
+        namespace: openstack
+      spec:
+        services:
+          barbican:
+            gateway:
+              parentRef:
+                name: openstack-gw
+              hostname: barbican.${ADDRESSES_GATEWAY//./-}.nip.io
+            secretStore:
+              dedicated: {}
+  - target:
+      group: batch
+      version: v1
+      kind: Job
+      name: controlplane-database-tenant
+      namespace: openstack
+    patch: |
+      apiVersion: batch/v1
+      kind: Job
+      metadata:
+        name: controlplane-database-tenant
+        namespace: openstack
+      spec:
+        template:
+          spec:
+            containers:
+              - name: tenant
+                env:
+                  - name: TENANT_SERVICE_BARBICAN
+                    value: barbican

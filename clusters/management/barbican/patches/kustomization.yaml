@@ -1,0 +1,46 @@
+# The module barbican runs the Key Manager service and has no stage of its
+# own. It appends the Component components/barbican to the stage of the
+# module controlplane and resumes the barbican-operator, which controllers
+# suspends, on one replica. Without the module controlplane the first patch
+# changes nothing, while the second still resumes the operator, which then
+# waits for the keystone-operator that only controlplane resumes, so the
+# module belongs beside controlplane.
+#
+# The Flux patch tests that controllers suspended the release before it
+# resumes it: replace alone would add the field, so a render with every
+# service module would not need the suspension, and make validate would
+# report that patch of infrastructure/controllers as dead.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+patches:
+  - target:
+      group: kustomize.toolkit.fluxcd.io
+      kind: Kustomization
+      name: management-controlplane
+    patch: |
+      - op: add
+        path: /spec/components/-
+        value: components/barbican
+  - target:
+      group: kustomize.toolkit.fluxcd.io
+      kind: Kustomization
+      name: management-controllers
+    patch: |
+      - op: add
+        path: /spec/patches/-
+        value:
+          target:
+            group: helm.toolkit.fluxcd.io
+            kind: HelmRelease
+            name: barbican-operator
+            namespace: barbican-system
+          patch: |
+            - op: test
+              path: /spec/suspend
+              value: true
+            - op: replace
+              path: /spec/suspend
+              value: false
+            - op: replace
+              path: /spec/values/replicas
+              value: 1

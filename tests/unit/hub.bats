@@ -401,6 +401,24 @@ scaffold_attached() {
 	[ "$output" = "error: switches.horizon needs the module controlplane on sandbox-management, the profile platform does not list it" ]
 }
 
+@test "up.sh passes the check of a switch of a service module whose modules the profile lists" {
+	cp -R -- "$SANDBOX_ROOT/scripts" "$SANDBOX_ROOT/profiles" "$SANDBOX_ROOT/clusters" "$BATS_TEST_TMPDIR/"
+	# The host check passes, kind lists no cluster, and a failed fetch of
+	# upstream stops the run.
+	echo 'preflight_run() { :; }' >"$BATS_TEST_TMPDIR/scripts/lib/preflight.sh"
+	export SANDBOX_PROFILE=controlplane SANDBOX_CONFIG=$SANDBOX_ROOT/config.yaml SANDBOX_UPSTREAM_URL=file://$BATS_TEST_TMPDIR/missing
+	kind() {
+		[ "$*" = "get clusters" ] && return 0
+		echo "unit test called kind $*" >&2
+		return 1
+	}
+	export -f docker kind
+	run "$BATS_TEST_TMPDIR/scripts/up.sh"
+	[ "$status" -eq 1 ]
+	[[ ${lines[-1]} == "error: vendor: cannot fetch "* ]]
+	[[ $output != *"switches."* && $output != *"unit test called"* ]]
+}
+
 @test "up.sh stops at a failed fetch of upstream before it calls kind or Docker" {
 	cp -R -- "$SANDBOX_ROOT/scripts" "$BATS_TEST_TMPDIR/"
 	# The host check passes.
@@ -503,6 +521,16 @@ scaffold_attached() {
 	[ "$(yq -o=json -I=0 '.spec.components' - <<<"$output")" = '["extra/patches"]' ]
 }
 
+@test "root_manifest lists the 12 stages of controlplane with its switches, then its nine patches Components" {
+	export SANDBOX_PROFILE=controlplane
+	profile_load
+	config_load
+	run root_manifest management
+	[ "$status" -eq 0 ]
+	[ "$(yq -o=json -I=0 '.spec.components' - <<<"$output")" = \
+		'["crds","controllers","loadbalancer","pki","gateway","openbao","objectstore","platform","sizing","controlplane","cinder-nfs","fake-compute","controlplane/patches","placement/patches","neutron/patches","cinder/patches","cinder-nfs/patches","nova/patches","glance/patches","barbican/patches","horizon/patches"]' ]
+}
+
 @test "root_manifest fails for a word that is not a role" {
 	profile_load
 	run root_manifest network
@@ -584,6 +612,20 @@ controlplane_ready() {
 			kustomization "$name" True "Applied revision: latest@sha256:new" latest@sha256:new
 		fi
 	done
+}
+
+@test "wait_stages waits for the root and the 12 stages of controlplane, not for its modules without a stage" {
+	controlplane_attached
+	stages_answer "$(controlplane_ready)"
+	run wait_stages
+	[ "$status" -eq 0 ]
+	[[ ${lines[0]} == *": waiting for 13 roots and stages to be Ready at latest@sha256:new" ]]
+
+	stages_answer "$(controlplane_ready management-fake-compute)"
+	run wait_stages
+	[ "$status" -eq 1 ]
+	[ "${lines[-2]}" = "error: stage management-fake-compute: not found" ]
+	[ "${lines[-1]}" = "error: 1 of 13 stages are not Ready at latest@sha256:new after 2 s; make status shows them" ]
 }
 
 @test "wait_stages and hub_sync leave out a module without a stage" {
@@ -733,6 +775,20 @@ ensure_root management
 ensure_root storage
 wait_stages" ]
 	[[ ${lines[-1]} == *": 2 stages Ready on 2 clusters at latest@sha256:new" ]]
+}
+
+@test "hub_sync counts the 12 stages of controlplane, not its modules without a stage" {
+	controlplane_attached
+	ensure_flux() { :; }
+	ensure_cluster_vars() { :; }
+	ensure_kubeconfig_secret() { echo "unit test called ensure_kubeconfig_secret $1" >&2; return 1; }
+	ensure_source() { :; }
+	ensure_root() { :; }
+	wait_stages() { :; }
+	run hub_sync
+	[ "$status" -eq 0 ]
+	[ "${#lines[@]}" -eq 1 ]
+	[[ ${lines[0]} == *": 12 stages Ready on 1 clusters at latest@sha256:new" ]]
 }
 
 @test "hub_sync stops before Flux when a stage depends on a stage of a cluster that is not attached" {

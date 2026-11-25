@@ -1,0 +1,61 @@
+# Glance behind the Gateway openstack-gw at glance.<a-b-c-d>.nip.io, with one
+# S3 image store on the Garage of the module objectstore, which syncs
+# garage-s3-credentials into openstack. The block is that of Step 4 of
+# upstream's Quick Start (ControlPlane) at the pin, as
+# vendor/cobaltcore/deploy/overlays/metal-stack/controlplane/controlplane-lab.yaml
+# carries it. No publicEndpoint: on port 443 the operator derives
+# https://<hostname>. The second patch has the Job
+# controlplane-database-tenant wait for the block and write the database
+# role of glance.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+patches:
+  - target:
+      group: c5c3.io
+      version: v1alpha1
+      kind: ControlPlane
+      name: controlplane
+      namespace: openstack
+    patch: |
+      apiVersion: c5c3.io/v1alpha1
+      kind: ControlPlane
+      metadata:
+        name: controlplane
+        namespace: openstack
+      spec:
+        services:
+          glance:
+            gateway:
+              parentRef:
+                name: openstack-gw
+              hostname: glance.${ADDRESSES_GATEWAY//./-}.nip.io
+            backends:
+              - name: default
+                type: S3
+                isDefault: true
+                s3:
+                  endpoint: http://garage.shared-services.svc.cluster.local:3900
+                  bucket: glance-images
+                  region: garage
+                  credentialsSecretRef:
+                    name: garage-s3-credentials
+  - target:
+      group: batch
+      version: v1
+      kind: Job
+      name: controlplane-database-tenant
+      namespace: openstack
+    patch: |
+      apiVersion: batch/v1
+      kind: Job
+      metadata:
+        name: controlplane-database-tenant
+        namespace: openstack
+      spec:
+        template:
+          spec:
+            containers:
+              - name: tenant
+                env:
+                  - name: TENANT_SERVICE_GLANCE
+                    value: glance

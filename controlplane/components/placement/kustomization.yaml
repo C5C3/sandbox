@@ -1,0 +1,50 @@
+# Placement behind the Gateway openstack-gw at placement.<a-b-c-d>.nip.io.
+# The block is that of Step 4 of upstream's Quick Start (ControlPlane) at the
+# pin, as
+# vendor/cobaltcore/deploy/overlays/metal-stack/controlplane/controlplane-lab.yaml
+# carries it. No publicEndpoint: on port 443 the operator derives
+# https://<hostname>. The second patch has the Job
+# controlplane-database-tenant wait for the block and write the database
+# role of placement.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+patches:
+  - target:
+      group: c5c3.io
+      version: v1alpha1
+      kind: ControlPlane
+      name: controlplane
+      namespace: openstack
+    patch: |
+      apiVersion: c5c3.io/v1alpha1
+      kind: ControlPlane
+      metadata:
+        name: controlplane
+        namespace: openstack
+      spec:
+        services:
+          placement:
+            gateway:
+              parentRef:
+                name: openstack-gw
+              hostname: placement.${ADDRESSES_GATEWAY//./-}.nip.io
+  - target:
+      group: batch
+      version: v1
+      kind: Job
+      name: controlplane-database-tenant
+      namespace: openstack
+    patch: |
+      apiVersion: batch/v1
+      kind: Job
+      metadata:
+        name: controlplane-database-tenant
+        namespace: openstack
+      spec:
+        template:
+          spec:
+            containers:
+              - name: tenant
+                env:
+                  - name: TENANT_SERVICE_PLACEMENT
+                    value: placement

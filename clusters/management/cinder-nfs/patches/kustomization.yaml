@@ -1,0 +1,20 @@
+# The module cinder-nfs gives Cinder the volume backend nfs1 on the export
+# its stage runs: it appends the Component components/cinder-nfs and the
+# dependency on its own stage to the stage of the module controlplane, so
+# the ControlPlane names the backend only once the export serves. A profile
+# without controlplane has no such stage, and the patch changes nothing.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+patches:
+  - target:
+      group: kustomize.toolkit.fluxcd.io
+      kind: Kustomization
+      name: management-controlplane
+    patch: |
+      - op: add
+        path: /spec/components/-
+        value: components/cinder-nfs
+      - op: add
+        path: /spec/dependsOn/-
+        value:
+          name: management-cinder-nfs

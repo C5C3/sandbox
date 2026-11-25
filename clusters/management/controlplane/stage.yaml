@@ -13,7 +13,10 @@ spec:
   timeout: 30m
   path: ./controlplane
   # One Component per service. The patches Components of other modules
-  # append theirs, such as messaging-tls with its dependency.
+  # append theirs: components/glance, placement, barbican, neutron, cinder,
+  # nova and horizon from the service modules of the same names, glance
+  # with the dependency on objectstore, and components/cinder-nfs and
+  # messaging-tls with the dependency on the stage of their module.
   components:
     - components/keystone
   prune: true

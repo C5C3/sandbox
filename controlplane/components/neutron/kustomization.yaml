@@ -1,0 +1,63 @@
+# Neutron behind the Gateway openstack-gw at neutron.<a-b-c-d>.nip.io, on the
+# OVNCentral controlplane-ovn of ovncentral.yaml, whose certificates the
+# ClusterIssuer openstack-ovn-ca-issuer of the module pki issues. The block is
+# that of Step 4 of upstream's Quick Start (ControlPlane) at the pin, as
+# vendor/cobaltcore/deploy/overlays/metal-stack/controlplane/controlplane-lab.yaml
+# carries it without the lab's extraConfig. No publicEndpoint: on port 443
+# the operator derives https://<hostname>.
+#
+# Upstream admits services.neutron only beside a message bus. The empty
+# messaging block, in the patch of the service block, becomes the managed
+# bus openstack-rabbitmq through the webhook, or stays the brownfield block
+# of components/messaging-tls when the stage holds it, before or after this
+# Component. The second patch has the Job controlplane-database-tenant wait
+# for the block and write the database role of neutron.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+resources:
+  - ovncentral.yaml
+patches:
+  - target:
+      group: c5c3.io
+      version: v1alpha1
+      kind: ControlPlane
+      name: controlplane
+      namespace: openstack
+    patch: |
+      apiVersion: c5c3.io/v1alpha1
+      kind: ControlPlane
+      metadata:
+        name: controlplane
+        namespace: openstack
+      spec:
+        infrastructure:
+          messaging: {}
+        services:
+          neutron:
+            gateway:
+              parentRef:
+                name: openstack-gw
+              hostname: neutron.${ADDRESSES_GATEWAY//./-}.nip.io
+            ovn:
+              centralRef:
+                name: controlplane-ovn
+  - target:
+      group: batch
+      version: v1
+      kind: Job
+      name: controlplane-database-tenant
+      namespace: openstack
+    patch: |
+      apiVersion: batch/v1
+      kind: Job
+      metadata:
+        name: controlplane-database-tenant
+        namespace: openstack
+      spec:
+        template:
+          spec:
+            containers:
+              - name: tenant
+                env:
+                  - name: TENANT_SERVICE_NEUTRON
+                    value: neutron

@@ -11,7 +11,9 @@ spec:
   timeout: 15m
   path: ./infrastructure/controllers
   # The patches Components of other modules append to this list: the module
-  # controlplane resumes the keystone-operator here.
+  # controlplane resumes the keystone-operator here, and each service module
+  # the release of its operator, neutron those of the ovn-operator and the
+  # neutron-operator.
   patches: []
   prune: true
   wait: true

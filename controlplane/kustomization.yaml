@@ -1,6 +1,10 @@
 # The module controlplane: the ControlPlane controlplane and the Job that
 # onboards its database tenant. The stage management-controlplane adds one
-# Component of components/ per service the profile runs.
+# Component of components/ per service the profile runs: keystone, glance,
+# placement, barbican, neutron with the OVNCentral controlplane-ovn, cinder,
+# nova and horizon, and beside them cinder-nfs and messaging-tls. The
+# components of the services with a database add their variable
+# TENANT_SERVICE_<SERVICE> to the Job.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
