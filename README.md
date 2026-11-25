@@ -12,9 +12,9 @@ The idea for this sandbox and its implementation come out of the
 [IPCEI-CIS Hackathon Potsdam](https://apeirora.eu/content/news/apeirora-ipcei-cis-hackathon/)
 of the IPCEI-CIS and NeoNephos community, November 24 to 26, 2026.
 
-> **Status: milestones 0 and 1 built.** The scaffold of milestone 0 and the
-> control plane of milestone 1 are implemented, and milestones 2 to 7 are
-> specification.
+> **Status: milestones 0 to 2 built.** The scaffold of milestone 0, the
+> control plane of milestone 1 and the orders of milestone 2 are
+> implemented, and milestones 3 to 7 are specification.
 > This README describes what is to be built, which upstream material it builds
 > on, and which points have to be proven first. It was written against
 > `C5C3/cobaltcore` at `15a0323e` and `C5C3/playground` at `d2e6b596`
@@ -553,7 +553,7 @@ The table is the planned set; M marks the milestone that builds it.
 | `horizon` | No stage. The dashboard and the ExternalSecret of its secret key, its operator resumed. Added by the switch `horizon` | `controlplane` | 1 |
 | `cinder-nfs` | Upstream's kind NFS export and `csi-driver-nfs`, and the volume backend `nfs1` of Cinder ([ADR-0024](docs/adr/0024-run-cinder-on-upstreams-nfs-export-in-the-profile-controlplane.md)) | `controllers` | 1 |
 | `fake-compute` | The upstream fake compute, for a control plane without hypervisors. Added by the switch `fake-compute` | `controlplane`, and `nova` beside it | 1 |
-| `orders` | Owners' namespaces, the namespace assignment and the example orders | `controlplane` | 2 |
+| `orders` | The namespace `workflow` of one owner, its assignment on the `ControlPlane` with the role `member` and catalog entries, and the seven example orders of Part 1 of the upstream Quick Start (Orders). See [Orders](#orders) | `controlplane` | 2 |
 | `openbao-remote-auth` | Auth mounts, roles and policies for the storage and compute clusters, OpenBao on a load-balancer address | `openbao` | 3 |
 | `ceph-keys` | ExternalSecrets `ceph-client-cinder` and `ceph-client-cinder-backup` in `openstack` | `openbao-remote-auth` | 3 |
 | `cinder-rbd` | The `cinder` block of the ControlPlane with the backend `ceph1`. The backup target `cephbk` is a switch | `ceph-keys`, `controlplane` | 3 |
@@ -605,20 +605,22 @@ the management cluster and none on the other two, which take part so that a
 pod of each can call the Gateway. `platform` adds the shared services
 `openbao`, `objectstore`, `platform` and `sizing` to those five modules and
 runs on the management cluster alone. `identity` replaces `objectstore` with
-`messaging-tls`, the TLS bus, and `controlplane`, the `ControlPlane` with
-Keystone alone on that bus, and also runs on the management cluster alone.
-`controlplane` adds to the modules of `platform` the module `controlplane`,
-the services `placement`, `neutron`, `cinder` and `nova`, and `cinder-nfs`,
-the volume backend of Cinder, and turns on the switches `glance`,
-`barbican`, `horizon` and `fake-compute`: 19 modules, 12 of them with a
-stage, on the management cluster alone and on the managed bus.
+`messaging-tls`, the TLS bus, `controlplane`, the `ControlPlane` with
+Keystone alone on that bus, and `orders`, the orders of the owner
+`workflow`, and also runs on the management cluster alone: 11 modules,
+each with a stage. `controlplane` adds to the modules of `platform` the
+module `controlplane`, the services `placement`, `neutron`, `cinder` and
+`nova`, `cinder-nfs`, the volume backend of Cinder, and `orders`, and turns
+on the switches `glance`, `barbican`, `horizon` and `fake-compute`: 20
+modules, 13 of them with a stage, on the management cluster alone and on
+the managed bus.
 
 | Profile | Clusters | What runs | Evaluates |
 | --- | --- | --- | --- |
 | `gateway` | management, storage, compute | `crds`, `controllers`, `loadbalancer`, `pki` and `gateway` on management, the service operators suspended | The Gateway on port 443 with the sandbox CA, from the host and from every cluster |
 | `platform` | management | The modules of `gateway` and `openbao`, `objectstore`, `platform` and `sizing`, the service operators suspended | OpenBao, External Secrets, Garage and the c5c3-operator before any service |
-| `identity` | management | Keystone | The operator model, OpenBao and ESO, K-ORC, credential rotation, orders |
-| `controlplane` | management | The modules of `platform` and `controlplane`, `placement`, `neutron`, `cinder`, `cinder-nfs` and `nova`, with the switches `glance`, `barbican`, `horizon` and `fake-compute`: all eight services, fake compute, Cinder on NFS, managed message bus | Parity with the Quick Start (ControlPlane); all seven order kinds |
+| `identity` | management | Keystone on the TLS bus and the orders of `workflow` | The operator model, OpenBao and ESO, K-ORC, credential rotation, six of the seven order kinds |
+| `controlplane` | management | The modules of `platform` and `controlplane`, `placement`, `neutron`, `cinder`, `cinder-nfs`, `nova` and `orders`, with the switches `glance`, `barbican`, `horizon` and `fake-compute`: all eight services, fake compute, Cinder on NFS, managed message bus, the orders of `workflow` | Parity with the Quick Start (ControlPlane); all seven order kinds |
 | `storage` | management, storage | Keystone, Cinder with the volume backend on Ceph | RBD backend, key hand-off and rotation, without hypervisors |
 | `full` | management, storage, compute | Keystone, Glance, Placement, Neutron, Nova, Cinder on Ceph, one hypervisor node, TLS message bus | Servers on KVM with RBD volumes across three clusters |
 | `parity` | management, storage, compute | `full` plus Barbican, Horizon, `cinder-backup`, a second hypervisor node, three OSDs | Parity with the Quick Start (metal-stack), the acceptance test of goal 1 |
@@ -667,21 +669,52 @@ storage cluster, the compute cluster, a switch.
 ## Orders
 
 Orders run from assigned namespaces on the management cluster, as in Part 1
-of the upstream quick start.
+of the upstream quick start. The module `orders`, which `identity` and
+`controlplane` list, lives in three places:
 
-- The module `orders` creates the owner's namespace, adds the
-  `namespaceAssignments` entry to the ControlPlane and applies the example
-  orders: `KeystoneUser`, `KeystoneProject`, `KeystoneRoleAssignment`,
-  `KeystoneCatalogEntry`, `KeystoneApplicationCredential`,
-  `MariaDBDatabase` and `RabbitMQVhost`.
-- On the managed bus of the `controlplane` profile all seven kinds converge.
-  On the TLS bus of the other profiles `RabbitMQVhost` reports
-  `MessagingNotManaged` and the other six converge. Six of seven beside a
-  compute cluster is accepted (D10).
-- Further owners are further namespaces with an assignment each.
-- The verification is the one of the upstream page: the credentials Secret
-  sits beside each order, the credential rotates, and the teardown removes
-  what the orders created.
+- `clusters/management/orders/`: the stage `management-orders`, which
+  applies `orders/` after `management-controlplane`, and a patches
+  Component that appends `components/orders` to the stage of
+  `controlplane`.
+- `controlplane/components/orders/`: the `namespaceAssignments` of the
+  `ControlPlane`, one entry per owner with the role `member` and catalog
+  entries. *Upstream* admits a change of the list on a live `ControlPlane`,
+  so a running sandbox gains the module at its next `make up` and keeps its
+  `ControlPlane`.
+- `orders/workflow/`: the namespace of the owner `workflow` and the seven
+  example orders of Steps 3 to 9 of the upstream page, `KeystoneUser`
+  `workflow`, `KeystoneProject` `workflow-project`, `KeystoneRoleAssignment`
+  `workflow-member`, `KeystoneCatalogEntry` `workflow-dns`,
+  `KeystoneApplicationCredential` `workflow-appcred`, `MariaDBDatabase`
+  `workflow-db` and `RabbitMQVhost` `workflow-bus`. The operator delivers
+  four Secrets beside them: `workflow-credentials`,
+  `workflow-appcred-credentials`, `workflow-db-credentials` and, on a
+  managed bus, `workflow-bus-credentials`. The credential carries no
+  `rotation` block and rotates every 720h, the form of Part 2 of the page.
+
+On the managed bus of `controlplane` all seven kinds converge. *Upstream*
+serves vhost orders on a bus with `clusterRef` alone, so on the TLS bus of
+`identity` the `RabbitMQVhost` reports `VhostReady=False` with
+`MessagingNotManaged` and gets no Secret, and the other six converge, as
+[ADR-0010](docs/adr/0010-six-of-seven-order-kinds-beside-a-compute-cluster.md)
+accepts. The stage counts a vhost refused that way as settled and turns
+Ready.
+
+A further owner takes two edits: a directory under `orders/` with its
+namespace and orders, listed in `orders/kustomization.yaml`, and an entry
+in `controlplane/components/orders/kustomization.yaml`. An assignment added
+with `kubectl patch` instead is taken back by Flux at the next reconcile of
+`management-controlplane`. The example orders carry
+`kustomize.toolkit.fluxcd.io/ssa: Merge`, so Flux keeps a field added by
+hand, such as a `spec.passwordGeneration` an owner raised to rotate the
+password of `workflow`; the CRDs refuse to lower it again. An order that an
+owner applies with `kubectl` in `workflow` is not in the stage and is
+theirs alone.
+
+`make verify` checks the orders and runs the verification of the upstream
+page on scratch orders of its own, see
+[Planned command surface](#planned-command-surface) and
+[ADR-0025](docs/adr/0025-check-the-orders-with-scratch-orders-and-a-scheduled-rotation.md).
 
 ## External storage and external compute
 
@@ -748,7 +781,7 @@ platform/            The c5c3-operator and the sizing profile
 controlplane/        OVNCentral, ControlPlane base and one component per service
 storage/             rook-operator, ceph-cluster, block-devices, key-push
 compute/             access, node-prep, libvirt, hypervisor-operator, ...
-orders/              Owners' namespaces, assignment and example orders
+orders/              Owners' namespaces and example orders
 profiles/            One file per profile: clusters, modules, switches
 kind/                kind cluster configurations
 scripts/             Cluster lifecycle, node preparation, registration, validation
@@ -830,8 +863,26 @@ Quick Start (ControlPlane):
 | Cinder | `cinder-catalog`, and `cinder-volume` creates a 1 GiB volume that is `available` within 120 s |
 | Nova | `nova-catalog`, `nova-services` finds a `nova-scheduler` and a `nova-conductor` `up`, and, beside the Deployment `controlplane-fake-compute`, `nova-server` boots a server on the fake compute to `ACTIVE` |
 | Horizon | `horizon-login` logs in as `admin` through the login form with curl |
+| Orders | `orders-ready` finds the orders of the assigned namespaces `Ready`, `orders-secrets` the Secret beside each that delivers one, `orders-converge` orders a scratch set, `orders-rotation` watches its application credential rotate, `orders-teardown` deletes the scratch set and finds nothing left |
 
-On `controlplane` that is 16 checks. Each check creates its objects under
+On `controlplane` that is 21 checks, on `identity` 7. The five order checks
+run after those of the services whenever the `ControlPlane` assigns a
+namespace on the management cluster, and are the checks of Part 1 of
+upstream's Quick Start (Orders). The first two only read the orders they
+find. The other three order `sandbox-verify`, `sandbox-verify-project`,
+`sandbox-verify-member`, `sandbox-verify-catalog`, `sandbox-verify-appcred`,
+`sandbox-verify-db` and, on a managed bus, `sandbox-verify-bus` in the first
+assigned namespace that allows the role `member` and catalog entries.
+`sandbox-verify-appcred` rotates on a schedule of 3m with a grace period of
+2m, as in Step 7: generation 1 authenticates inside the grace period and is
+refused after it. The teardown deletes the scratch orders in the order of
+their holds, Step 10, and finds no Secret, no object with their labels and
+no user, project or service in Keystone. The credential reaches `openstack`
+through its environment. The order checks add an estimated 6 to 8 minutes
+to `make verify`, not yet measured on a host; their waits are bounded at
+18 minutes, and each of the seven deletes at 180 s.
+
+Each check creates its objects under
 names that start with `sandbox-verify`, deletes what an earlier run left
 of them first and what it created when it ends. No check passes
 `--insecure` or `-k`, and curl reads the admin password from a file of mode
@@ -975,7 +1026,9 @@ total                       13790           10306
 The control plane of all eight services, with Cinder on NFS and the fake
 compute, works in about 10 GiB on the management cluster, against
 13.5 GiB of requests. It is one measurement of the largest part of `full`;
-the verdict on point 10 is that of the profile `full`.
+the verdict on point 10 is that of the profile `full`. It was taken before
+the module `orders`; `controlplane` with the orders of `workflow` and the
+21 checks of `make verify` is not measured yet.
 
 ## Milestones
 
