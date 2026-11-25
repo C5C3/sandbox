@@ -1,0 +1,31 @@
+# The probe of tests/host/gateway.bats: an HTTPRoute on openstack-gw that
+# answers every request with status 200 and the body sandbox, without a
+# backend. The test adds the hostname probe.<a-b-c-d>.nip.io.
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: HTTPRouteFilter
+metadata:
+  name: probe
+  namespace: openstack
+spec:
+  directResponse:
+    statusCode: 200
+    contentType: text/plain
+    body:
+      type: Inline
+      inline: sandbox
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: probe
+  namespace: openstack
+spec:
+  parentRefs:
+    - name: openstack-gw
+  rules:
+    - filters:
+        - type: ExtensionRef
+          extensionRef:
+            group: gateway.envoyproxy.io
+            kind: HTTPRouteFilter
+            name: probe
