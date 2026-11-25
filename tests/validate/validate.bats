@@ -173,6 +173,43 @@ failed() {
 	[[ $output == *"validate: patches: 2 patches checked"* ]]
 }
 
+# patches_component <stage>: writes the patches Component of the module base,
+# whose one patch gives the stage the variable PATCHED that settings.yaml
+# reads.
+patches_component() {
+	mkdir -p -- "$TREE/clusters/management/base/patches"
+	cat >"$TREE/clusters/management/base/patches/kustomization.yaml" <<EOF
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+patches:
+  - target:
+      group: kustomize.toolkit.fluxcd.io
+      kind: Kustomization
+      name: $1
+    patch: |
+      - op: add
+        path: /spec/postBuild/substitute/PATCHED
+        value: component
+EOF
+}
+
+@test "the patch of a patches Component reaches the rendered stage, and one whose stage is gone fails" {
+	yq -i '.data.patched = "${PATCHED}"' "$TREE/infrastructure/base/settings.yaml"
+	validate
+	failed render
+	[[ $output == *'validate: error: render: stage management-base: '*'variable not set (strict mode): "PATCHED"'* ]]
+
+	patches_component management-base
+	validate
+	[ "$status" -eq 0 ]
+	[[ $output == *$'\n'"validate: patches: 2 patches checked"$'\n'* ]]
+
+	patches_component management-nothere
+	validate
+	failed "render patches"
+	[[ $output == *"validate: error: patches: clusters/management/base/patches/kustomization.yaml: patches[0] changes nothing in the root cluster-management: its target matches no resource, or the resource already has what the patch sets"* ]]
+}
+
 @test "patchesJson6902 in a kustomization is not checked and fails" {
 	yq -i '.patchesJson6902 = [{"target": {"version": "v1", "kind": "ConfigMap", "name": "demo"}, "patch": "- op: add\n  path: /data/extra\n  value: x\n"}]' \
 		"$TREE/infrastructure/base/kustomization.yaml"

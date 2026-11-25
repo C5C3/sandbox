@@ -22,8 +22,10 @@
 #                and no unknown kind. A CustomResourceDefinition is skipped:
 #                the schemas of Kubernetes hold none for its kind
 #   patches      each patch of a stage, and of a kustomization of the tree
-#                outside vendor/ that a stage reaches, changes the render of
-#                at least one stage
+#                outside vendor/ that a stage or a component of a stage
+#                reaches, changes the render of at least one stage; each
+#                patch of the patches Component of a module changes the
+#                render of the root of its cluster
 #
 # Every check runs even after an earlier one failed, except that a failed
 # tools or vendor check ends the run. Each failure prints
@@ -382,7 +384,8 @@ check_kubeconform() {
 
 # reach <directory>: records in reached the kustomization.yaml of the
 # directory and, recursively, of every local directory its resources and
-# components name, inside the tree and outside vendor/.
+# components name, inside the tree and outside vendor/. check_patches calls
+# it for the path of each stage and for each entry of its spec.components.
 reach() {
 	local file=$1/kustomization.yaml entry target
 	[ -f "$file" ] && [ -z "${reached[$file]:-}" ] || return 0
@@ -397,7 +400,7 @@ reach() {
 }
 
 check_patches() {
-	local name copy file rel field count i idx changed checked=0
+	local name copy file rel field count i idx changed entry target role checked=0
 	local -a files=()
 	local -A reached readers=()
 
@@ -418,6 +421,14 @@ check_patches() {
 		"$tree/vendor" | "$tree/vendor"/*) ;;
 		*) reach "${stage_paths[idx]}" ;;
 		esac
+		# The components of a stage are directories relative to its path.
+		while IFS= read -r entry; do
+			target=$(realpath -m -- "${stage_paths[idx]}/$entry")
+			case $target in
+			"$tree/vendor" | "$tree/vendor"/*) ;;
+			"$tree"/*) reach "$target" ;;
+			esac
+		done < <(yq '.spec.components // [] | .[]' "$copy")
 		for file in "${!reached[@]}"; do
 			readers[$file]+="$idx "
 		done
@@ -450,6 +461,31 @@ check_patches() {
 			if ! $changed; then
 				fail "$rel: patches[$i] changes nothing in any stage: $DEAD_PATCH"
 			fi
+		done
+	done
+
+	# The patches Component of a module patches the stages in the root of
+	# its cluster, so each patch is checked against that root.
+	for file in "$tree"/clusters/*/*/patches/kustomization.yaml; do
+		rel=${file#"$tree"/}
+		role=${rel#clusters/}
+		role=${role%%/*}
+		for field in patchesStrategicMerge patchesJson6902; do
+			if [ "$(F=$field yq 'has(strenv(F))' "$file")" = true ]; then
+				fail "$rel: $field is not checked; use patches"
+			fi
+		done
+		count=$(yq '.patches // [] | length' "$file")
+		for ((i = 0; i < count; i++)); do
+			checked=$((checked + 1))
+			cp -- "$file" "$tmp/kustomization.orig"
+			I=$i yq -i 'del(.patches[env(I)])' "$file"
+			# A render that fails without the patch counts as a change.
+			if flux_build "cluster-$role" "$tree/clusters/$role" "$tmp/roots/cluster-$role.yaml" "$tmp/without.out" &&
+				cmp -s -- "$tmp/render/$role/cluster-$role.yaml" "$tmp/without.out"; then
+				fail "$rel: patches[$i] changes nothing in the root cluster-$role: $DEAD_PATCH"
+			fi
+			mv -f -- "$tmp/kustomization.orig" "$file"
 		done
 	done
 	log "patches: $checked patches checked"

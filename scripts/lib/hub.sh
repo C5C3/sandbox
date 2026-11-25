@@ -245,7 +245,11 @@ ensure_kubeconfig_secret() {
 # root_manifest <role>: prints the root Kustomization cluster-<role>. It
 # applies clusters/<role>/ with the modules cluster_modules prints for the
 # role as components, which puts their stages on sandbox-management, and
-# labels the stages with the role. With prune, a module taken off the list
+# labels the stages with the role. After all modules it lists <module>/patches
+# for each of them that has clusters/<role>/<module>/patches/kustomization.yaml,
+# a Component whose patches change the stages of other modules: every stage
+# exists before the first of them runs, and a patch whose stage the profile
+# does not list changes nothing. With prune, a module taken off the list
 # loses its stage, and the stage removes what it applied on its cluster.
 root_manifest() {
 	local role=$1 modules module
@@ -273,6 +277,11 @@ EOT
 		echo '  components:'
 		for module in $modules; do
 			printf '    - %s\n' "$module"
+		done
+		for module in $modules; do
+			if [ -f "$SANDBOX_ROOT/clusters/$role/$module/patches/kustomization.yaml" ]; then
+				printf '    - %s/patches\n' "$module"
+			fi
 		done
 	fi
 	cat <<EOT
