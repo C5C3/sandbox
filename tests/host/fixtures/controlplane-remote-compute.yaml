@@ -1,0 +1,68 @@
+# A ControlPlane remote-compute in the namespace default on the brownfield
+# bus of the module messaging-tls, with services.nova.remoteCompute naming the
+# Secret controlplane-nova-remote-transport. The service blocks are those of
+# vendor/cobaltcore/deploy/overlays/metal-stack/controlplane/controlplane-lab.yaml:44-49,56-78,88-97,176-183.
+# tests/host/identity.bats applies it with --dry-run=server only, in three
+# forms: as it is, with .spec.infrastructure.messaging = {}, which the webhook
+# refuses beside remoteCompute, and with Keystone alone, the shape of the
+# profile identity.
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: remote-compute
+  namespace: default
+spec:
+  openStackRelease: "2026.1"
+  infrastructure:
+    messaging:
+      secretRef:
+        name: rabbitmq-transport-url
+      tls:
+        caBundleSecretRef:
+          name: shared-rabbitmq-tls
+  services:
+    keystone:
+      gateway:
+        parentRef:
+          name: openstack-gw
+        hostname: keystone.127-0-0-1.nip.io
+        path: /
+    glance:
+      gateway:
+        parentRef:
+          name: openstack-gw
+        hostname: glance.127-0-0-1.nip.io
+      backends:
+        - name: default
+          type: S3
+          isDefault: true
+          s3:
+            endpoint: http://garage.shared-services.svc.cluster.local:3900
+            bucket: glance-images
+            region: garage
+            credentialsSecretRef:
+              name: garage-s3-credentials
+    placement:
+      gateway:
+        parentRef:
+          name: openstack-gw
+        hostname: placement.127-0-0-1.nip.io
+    neutron:
+      gateway:
+        parentRef:
+          name: openstack-gw
+        hostname: neutron.127-0-0-1.nip.io
+      ovn:
+        centralRef:
+          name: controlplane-ovn
+    nova:
+      gateway:
+        parentRef:
+          name: openstack-gw
+        hostname: nova.127-0-0-1.nip.io
+      remoteCompute:
+        transportURLSecretRef:
+          name: controlplane-nova-remote-transport
+  sizing:
+    profileRef:
+      name: sandbox
