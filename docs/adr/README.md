@@ -28,6 +28,7 @@ Each file in this directory records one decision with its context, the alternati
 | [ADR-0022](0022-let-a-module-patch-the-stages-of-other-modules.md) | Let a module patch the stages of other modules | Proposed |
 | [ADR-0023](0023-select-the-services-of-the-controlplane-as-modules-without-a-stage.md) | Select the services of the ControlPlane as modules without a stage | Proposed |
 | [ADR-0024](0024-run-cinder-on-upstreams-nfs-export-in-the-profile-controlplane.md) | Run Cinder on upstream's NFS export in the profile controlplane | Proposed |
+| [ADR-0025](0025-check-the-orders-with-scratch-orders-and-a-scheduled-rotation.md) | Check the orders with scratch orders and a scheduled rotation | Proposed |
 
 ## Points to prove first
 
