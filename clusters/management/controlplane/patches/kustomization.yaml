@@ -1,0 +1,29 @@
+# The module controlplane resumes the keystone-operator, which controllers
+# suspends with the other service operators, on one replica, upstream's value
+# for one node (vendor/cobaltcore/deploy/bases/devstack/base/kustomization.yaml:118-133).
+# It appends a Flux patch to spec.patches of the stage, which runs after the
+# patches of infrastructure/controllers/kustomization.yaml: a Component named
+# in spec.components of the stage would run before them and lose.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+patches:
+  - target:
+      group: kustomize.toolkit.fluxcd.io
+      kind: Kustomization
+      name: management-controllers
+    patch: |
+      - op: add
+        path: /spec/patches/-
+        value:
+          target:
+            group: helm.toolkit.fluxcd.io
+            kind: HelmRelease
+            name: keystone-operator
+            namespace: keystone-system
+          patch: |
+            - op: replace
+              path: /spec/suspend
+              value: false
+            - op: replace
+              path: /spec/values/replicas
+              value: 1

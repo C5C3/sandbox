@@ -7,8 +7,10 @@ resources:
   - ../../vendor/cobaltcore/deploy/bases/operators
   - ../../vendor/cobaltcore/deploy/bases/devstack/base/envoy-gateway.yaml
 patches:
-  # No service is enabled before #9, so the release of every service
-  # operator stays suspended. No other release depends on one.
+  # The release of every service operator stays suspended until the module
+  # of its service resumes it with a patch of the stage, as the module
+  # controlplane does for the keystone-operator. No other release depends on
+  # one.
   - target:
       group: helm.toolkit.fluxcd.io
       kind: HelmRelease

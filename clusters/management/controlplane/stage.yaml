@@ -1,0 +1,33 @@
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: management-controlplane
+  namespace: flux-system
+spec:
+  dependsOn:
+    - name: management-platform
+    - name: management-gateway
+    - name: management-sizing
+  interval: 10m
+  retryInterval: 1m
+  timeout: 30m
+  path: ./controlplane
+  # One Component per service. The patches Components of other modules
+  # append theirs, such as messaging-tls with its dependency.
+  components:
+    - components/keystone
+  prune: true
+  wait: true
+  sourceRef:
+    kind: OCIRepository
+    name: sandbox
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: cluster-vars
+  # kstatus waits for the Job to complete but reads no Ready condition of a
+  # ControlPlane.
+  healthCheckExprs:
+    - apiVersion: c5c3.io/v1alpha1
+      kind: ControlPlane
+      current: status.conditions.exists(c, c.type == 'Ready' && c.status == 'True' && c.observedGeneration == metadata.generation)

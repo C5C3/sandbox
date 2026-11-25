@@ -10,6 +10,9 @@ spec:
   retryInterval: 1m
   timeout: 15m
   path: ./infrastructure/controllers
+  # The patches Components of other modules append to this list: the module
+  # controlplane resumes the keystone-operator here.
+  patches: []
   prune: true
   wait: true
   sourceRef:

@@ -1,0 +1,21 @@
+# Keystone behind the Gateway openstack-gw at keystone.<a-b-c-d>.nip.io, after
+# vendor/cobaltcore/deploy/overlays/kind/controlplane/controlplane.yaml. No
+# publicEndpoint: on port 443 the operator derives https://<hostname>/v3.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+patches:
+  - target:
+      group: c5c3.io
+      version: v1alpha1
+      kind: ControlPlane
+      name: controlplane
+      namespace: openstack
+    patch: |
+      - op: add
+        path: /spec/services/keystone
+        value:
+          gateway:
+            parentRef:
+              name: openstack-gw
+            hostname: keystone.${ADDRESSES_GATEWAY//./-}.nip.io
+            path: /
