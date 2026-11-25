@@ -26,6 +26,8 @@ Each file in this directory records one decision with its context, the alternati
 | [ADR-0020](0020-unseal-the-shared-openbao-once-with-upstream-scripts.md) | Unseal the shared OpenBao once with upstream's scripts | Accepted |
 | [ADR-0021](0021-install-the-c5c3-operator-without-the-keystone-operator.md) | Install the c5c3-operator without the keystone-operator | Accepted |
 | [ADR-0022](0022-let-a-module-patch-the-stages-of-other-modules.md) | Let a module patch the stages of other modules | Proposed |
+| [ADR-0023](0023-select-the-services-of-the-controlplane-as-modules-without-a-stage.md) | Select the services of the ControlPlane as modules without a stage | Proposed |
+| [ADR-0024](0024-run-cinder-on-upstreams-nfs-export-in-the-profile-controlplane.md) | Run Cinder on upstream's NFS export in the profile controlplane | Proposed |
 
 ## Points to prove first
 

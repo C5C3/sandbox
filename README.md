@@ -12,8 +12,9 @@ The idea for this sandbox and its implementation come out of the
 [IPCEI-CIS Hackathon Potsdam](https://apeirora.eu/content/news/apeirora-ipcei-cis-hackathon/)
 of the IPCEI-CIS and NeoNephos community, November 24 to 26, 2026.
 
-> **Status: milestone 0 built.** The scaffold of milestone 0 is implemented,
-> and milestones 1 to 7 are specification.
+> **Status: milestones 0 and 1 built.** The scaffold of milestone 0 and the
+> control plane of milestone 1 are implemented, and milestones 2 to 7 are
+> specification.
 > This README describes what is to be built, which upstream material it builds
 > on, and which points have to be proven first. It was written against
 > `C5C3/cobaltcore` at `15a0323e` and `C5C3/playground` at `d2e6b596`
@@ -452,16 +453,29 @@ The module `controlplane` applies the Job `controlplane-database-tenant` in
 waits for the MariaDB `openstack-db`, which the c5c3-operator creates, reads
 the root token of the shared OpenBao and runs upstream's
 `setup-database-tenant.sh` for the `ControlPlane`. The script writes the
-database-engine connection and role of Keystone, without which the
-`ControlPlane` stays at `DBCredentialsReady=False`. A second run is safe:
-the script overwrites what exists. Two states of the module need to be
-known:
+database-engine connection and role of Keystone and of every service with a
+database that the `ControlPlane` declares when it runs, without which the
+`ControlPlane` stays at `DBCredentialsReady=False` or the service stays
+without its database credentials. A second run is safe: the script
+overwrites what exists.
+
+The Component of each service with a database, Glance, Placement, Barbican,
+Neutron, Cinder and Nova, adds a variable `TENANT_SERVICE_<SERVICE>` to the
+Job, and the Job waits until the `ControlPlane` declares each of these
+services before it runs the script. A changed set of services in the
+profile therefore changes the Job, and Flux runs it again. A sandbox built
+before the services of the `ControlPlane` became modules runs the Job once
+more at its next `make up` or `make push`, because `controlplane/tenant.sh`
+changed with them. Two states of the module need to be known:
 
 - **The Job failed.** Five pods of the Job failed, or 1800 s passed: the
-  MariaDB was not Ready within 1500 s, the Secret
-  `shared-services/openbao-init-keys` held no root token, or the script
-  failed, a sealed OpenBao among its causes ([The shared OpenBao](#the-shared-openbao)
-  says how to unseal it). The stage `management-controlplane` is not Ready,
+  MariaDB was not Ready within 1500 s, the `ControlPlane` did not declare a
+  service of the Job within the same 1500 s (`ControlPlane
+  openstack/controlplane does not declare the service <service> within
+  1500 s: ...`), the Secret `shared-services/openbao-init-keys` held no root
+  token, or the script failed, a sealed OpenBao among its causes
+  ([The shared OpenBao](#the-shared-openbao) says how to unseal it). The
+  stage `management-controlplane` is not Ready,
   and the log of the Job ends with the error line of
   `controlplane/tenant.sh`. Once the cause is fixed, deleting the Job runs it
   again at the next retry of the stage:
@@ -503,6 +517,15 @@ patch whose stage the profile does not list changes nothing
 ([ADR-0022](docs/adr/0022-let-a-module-patch-the-stages-of-other-modules.md)).
 `messaging-tls` puts the `ControlPlane` on its bus this way, and
 `controlplane` resumes the keystone-operator in the stage of `controllers`.
+
+A module without a stage holds `patches/kustomization.yaml` alone. The root
+lists its patches Component and nothing else, `make status` shows no row
+for it, and it has no `dependsOn`: what it needs beside it is checked where
+its patches apply, by admission of the `ControlPlane` and in the stage
+`management-controlplane`. The seven services beside Keystone are such
+modules, because each adds its block to the one `ControlPlane`
+([ADR-0023](docs/adr/0023-select-the-services-of-the-controlplane-as-modules-without-a-stage.md)).
+`make up` counts and waits for stages, not modules.
 The table is the planned set; M marks the milestone that builds it.
 
 ### On sandbox-management
@@ -520,8 +543,16 @@ The table is the planned set; M marks the milestone that builds it.
 | `platform` | The c5c3-operator (upstream base `controlplane-operator`) on one replica, without its dependency on the suspended keystone-operator ([ADR-0021](docs/adr/0021-install-the-c5c3-operator-without-the-keystone-operator.md)) | `controllers`, `openbao` | 1 |
 | `messaging-tls` | The sandbox's `RabbitmqCluster` with a TLS listener, its certificate, the transport URL Secrets | `pki`, `loadbalancer` | 1 |
 | `sizing` | The `SizingProfile` `sandbox` on base `Minimal`, which carries the reductions the measurements allow | `platform` | 1 |
-| `controlplane` | `OVNCentral`, `ControlPlane`, database tenant onboarding Job. Composed from one component per service, see [Profiles](#profiles) | `platform`, `gateway`, `sizing` | 1 |
-| `fake-compute` | The upstream fake compute, for a control plane without hypervisors | `controlplane` | 1 |
+| `controlplane` | `ControlPlane` with Keystone, database tenant onboarding Job. Composed from one component per service, see [Profiles](#profiles) | `platform`, `gateway`, `sizing` | 1 |
+| `glance` | No stage. The Image service on the S3 store of `objectstore`, its operator resumed. Added by the switch `glance` | `controlplane`, `objectstore` | 1 |
+| `placement` | No stage. The Placement service, its operator resumed | `controlplane` | 1 |
+| `barbican` | No stage. The Key Manager service on an OpenBao of its own, its operator resumed. Added by the switch `barbican` | `controlplane` | 1 |
+| `neutron` | No stage. The network service, the `OVNCentral` `controlplane-ovn`, the ovn-operator and its operator resumed | `controlplane` | 1 |
+| `cinder` | No stage. The block-storage service, its operator resumed. Needs a module with a volume backend | `controlplane`, `cinder-nfs` | 1 |
+| `nova` | No stage. The compute service, its operator resumed. Admission needs `glance`, `placement` and `neutron` beside it | `controlplane` | 1 |
+| `horizon` | No stage. The dashboard and the ExternalSecret of its secret key, its operator resumed. Added by the switch `horizon` | `controlplane` | 1 |
+| `cinder-nfs` | Upstream's kind NFS export and `csi-driver-nfs`, and the volume backend `nfs1` of Cinder ([ADR-0024](docs/adr/0024-run-cinder-on-upstreams-nfs-export-in-the-profile-controlplane.md)) | `controllers` | 1 |
+| `fake-compute` | The upstream fake compute, for a control plane without hypervisors. Added by the switch `fake-compute` | `controlplane`, and `nova` beside it | 1 |
 | `orders` | Owners' namespaces, the namespace assignment and the example orders | `controlplane` | 2 |
 | `openbao-remote-auth` | Auth mounts, roles and policies for the storage and compute clusters, OpenBao on a load-balancer address | `openbao` | 3 |
 | `ceph-keys` | ExternalSecrets `ceph-client-cinder` and `ceph-client-cinder-backup` in `openstack` | `openbao-remote-auth` | 3 |
@@ -576,13 +607,18 @@ pod of each can call the Gateway. `platform` adds the shared services
 runs on the management cluster alone. `identity` replaces `objectstore` with
 `messaging-tls`, the TLS bus, and `controlplane`, the `ControlPlane` with
 Keystone alone on that bus, and also runs on the management cluster alone.
+`controlplane` adds to the modules of `platform` the module `controlplane`,
+the services `placement`, `neutron`, `cinder` and `nova`, and `cinder-nfs`,
+the volume backend of Cinder, and turns on the switches `glance`,
+`barbican`, `horizon` and `fake-compute`: 19 modules, 12 of them with a
+stage, on the management cluster alone and on the managed bus.
 
 | Profile | Clusters | What runs | Evaluates |
 | --- | --- | --- | --- |
 | `gateway` | management, storage, compute | `crds`, `controllers`, `loadbalancer`, `pki` and `gateway` on management, the service operators suspended | The Gateway on port 443 with the sandbox CA, from the host and from every cluster |
 | `platform` | management | The modules of `gateway` and `openbao`, `objectstore`, `platform` and `sizing`, the service operators suspended | OpenBao, External Secrets, Garage and the c5c3-operator before any service |
 | `identity` | management | Keystone | The operator model, OpenBao and ESO, K-ORC, credential rotation, orders |
-| `controlplane` | management | All eight services, fake compute, managed message bus | Parity with the Quick Start (ControlPlane); all seven order kinds |
+| `controlplane` | management | The modules of `platform` and `controlplane`, `placement`, `neutron`, `cinder`, `cinder-nfs` and `nova`, with the switches `glance`, `barbican`, `horizon` and `fake-compute`: all eight services, fake compute, Cinder on NFS, managed message bus | Parity with the Quick Start (ControlPlane); all seven order kinds |
 | `storage` | management, storage | Keystone, Cinder with the volume backend on Ceph | RBD backend, key hand-off and rotation, without hypervisors |
 | `full` | management, storage, compute | Keystone, Glance, Placement, Neutron, Nova, Cinder on Ceph, one hypervisor node, TLS message bus | Servers on KVM with RBD volumes across three clusters |
 | `parity` | management, storage, compute | `full` plus Barbican, Horizon, `cinder-backup`, a second hypervisor node, three OSDs | Parity with the Quick Start (metal-stack), the acceptance test of goal 1 |
@@ -591,18 +627,20 @@ Keystone alone on that bus, and also runs on the management cluster alone.
 `parity` is not expected to fit one, see [Footprint](#footprint).
 
 The ControlPlane is composed from kustomize components, one per
-`spec.services` block. *Upstream* makes every block optional, so leaving a
-component out leaves the service out. Which services a block requires beside
-it is checked at admission; *upstream* names Placement, Neutron and Glance
-for Nova. The switches on top of the profiles:
+`spec.services` block, and each service is a module without a stage that
+adds its component, so a profile selects a service by listing its module.
+*Upstream* makes every block optional, so leaving a module out leaves the
+service out. Which services a block requires beside it is checked at
+admission; *upstream* names Placement, Neutron and Glance for Nova. The
+switches on top of the profiles:
 
 | Switch | Adds | Default |
 | --- | --- | --- |
-| `horizon`, `barbican`, `glance` | The service and its operator | per profile |
+| `horizon`, `barbican`, `glance` | The module of the service: its block of the `ControlPlane` and its operator. Each needs `controlplane`, and `glance` also `objectstore` | off; on in `controlplane` |
 | `cinder-backup` | The backup target `cephbk` and the `cinder-backup` Deployment | on in `parity` |
 | `hypervisor-nodes` | Worker nodes of the compute cluster | 1; 2 in `parity` |
 | `osd-count`, `osd-size` | OSDs of the storage cluster and the size of their sparse files | 1 OSD; 3 in `parity` |
-| `fake-compute` | A compute without a hypervisor | on in `controlplane` |
+| `fake-compute` | The module `fake-compute`, a compute without a hypervisor. Needs `controlplane` and `nova` | off; on in `controlplane` |
 | `observability`, `ui` | Prometheus and Grafana; Headlamp and Flux Web | off |
 | `resolver-fallback` | The module `resolver` on every cluster, for a host whose resolver drops private answers. Needs `loadbalancer` on the management cluster | off |
 
@@ -613,7 +651,13 @@ chooses them up front and a change means recreating the ControlPlane:
   `storage`, `full` and `parity` use it, and `identity` can be started with
   it to grow into them without a rebuild. `messaging-tls` is therefore part
   of milestone 1. `controlplane` keeps the managed bus and is the place to
-  evaluate `RabbitMQVhost` orders.
+  evaluate `RabbitMQVhost` orders. The mode follows from the profile: one
+  that lists `messaging-tls` runs on the TLS bus, one that does not on the
+  managed bus. A running `identity` therefore grows into a profile with the
+  services beside `messaging-tls`, but not into `controlplane`: upstream
+  refuses the change with `messaging mode (managed clusterRef vs brownfield
+  secretRef) is immutable`, the stage `management-controlplane` reports it,
+  and `make down` is the way out.
 - Every `targetClusterRef`.
 - `database.replicas` and `database.storageSize`.
 
@@ -733,9 +777,15 @@ make vendor                 # check out the paths of upstream at the pin into ve
 make validate               # render every root and stage against vendor/cobaltcore, check schemas and patches
 make test                   # the unit tests of the command layer
 make test-validate          # the tests of make validate on a fixture tree, with flux and kubeconform
-make test-host              # the lifecycle and the profiles gateway, platform and identity against a real Docker, each creating and removing a sandbox
+make test-host              # the lifecycle, the profiles gateway, platform, identity and controlplane, and controlplane on the TLS bus against a real Docker, each creating and removing a sandbox
 make down                   # delete clusters, registry, network, loop devices
 ```
+
+`make down` waits up to 120 s for a node that Docker cannot stop in time and
+then deletes its cluster again. The node of a profile with `cinder-nfs`
+needs about 20 s, because the kernel's NFS client waits for the NFS server
+that stopped with the node, and on a busy host any node can take longer
+than the 12 s Docker waits.
 
 `make up` writes one kubeconfig per cluster to
 `.sandbox/kubeconfig/<role>.yaml` and prints the `export KUBECONFIG=` line for
@@ -747,7 +797,10 @@ controller, which on a slow link can take longer than 600 s; a second
 `make up PROFILE=gateway` continues where the first stopped. The first
 `make up PROFILE=identity` also pulls the images of Keystone, MariaDB,
 Memcached and RabbitMQ and can take longer than 600 s as well; a second run
-continues too.
+continues too. The first `make up PROFILE=controlplane` pulls the images of
+all eight services, the OVN databases, the NFS server and the fake compute,
+and on a slow link exceeds 600 s as well; `SANDBOX_STAGE_TIMEOUT=3600`
+waits for it, or a second run continues.
 
 `make env` prints the seven variables `OS_AUTH_URL`, `OS_USERNAME`,
 `OS_PASSWORD`, `OS_PROJECT_NAME`, `OS_USER_DOMAIN_NAME`,
@@ -761,13 +814,30 @@ eval "$(make --no-print-directory env)" && openstack token issue
 ```
 
 `make verify` runs the checks of the services the live `ControlPlane`
-declares, prints one line `ok <check>: ...` or `FAIL <check>: ...` each and
-`verify: <passed> of <total> checks passed`, and exits 1 when a check
-failed. For Keystone, `keystone-token` issues a token and `keystone-catalog`
-finds the public identity endpoint `OS_AUTH_URL` in the catalog. No check
-passes `--insecure`. Without a `ControlPlane`, `make verify` reports 0 of 0
-checks and exits 0. Both targets read the hub only, so they work with any
-`PROFILE` and `CONFIG`. `make verify`, like the `openstack` calls after
+declares, in the order Keystone, Glance, Placement, Barbican, Neutron,
+Cinder, Nova, Horizon, prints one line `ok <check>: ...` or
+`FAIL <check>: ...` each and `verify: <passed> of <total> checks passed`,
+and exits 1 when a check failed. They are the checks of Step 7 of upstream's
+Quick Start (ControlPlane):
+
+| Service | Checks |
+| --- | --- |
+| Keystone | `keystone-token` issues a token, `keystone-catalog` finds the public identity endpoint `OS_AUTH_URL` in the catalog |
+| Glance | `glance-catalog` finds a public `image` endpoint at the hostname of its Gateway, `glance-image` uploads a 1 KiB image that turns `active` within 60 s |
+| Placement | `placement-catalog`, and `placement-classes` finds `VCPU`, `MEMORY_MB` and `DISK_GB` |
+| Barbican | `barbican-catalog`, and `barbican-secret` stores a payload and reads it back unchanged |
+| Neutron | `neutron-catalog`, and `neutron-network` creates a network with a subnet on `192.0.2.0/24` that is `ACTIVE` |
+| Cinder | `cinder-catalog`, and `cinder-volume` creates a 1 GiB volume that is `available` within 120 s |
+| Nova | `nova-catalog`, `nova-services` finds a `nova-scheduler` and a `nova-conductor` `up`, and, beside the Deployment `controlplane-fake-compute`, `nova-server` boots a server on the fake compute to `ACTIVE` |
+| Horizon | `horizon-login` logs in as `admin` through the login form with curl |
+
+On `controlplane` that is 16 checks. Each check creates its objects under
+names that start with `sandbox-verify`, deletes what an earlier run left
+of them first and what it created when it ends. No check passes
+`--insecure` or `-k`, and curl reads the admin password from a file of mode
+600, never from an argument. Without a `ControlPlane`, `make verify` reports
+0 of 0 checks and exits 0. Both targets read the hub only, so they work with
+any `PROFILE` and `CONFIG`. `make verify`, like the `openstack` calls after
 `make env`, needs the resolver of the host to answer the nip.io names.
 
 With `switches.resolver-fallback` on, `make up` prints the resolver settings
@@ -797,14 +867,14 @@ lists the checks it adds.
 | --- | --- |
 | Operating system | Linux on x86-64 with cgroup v2 and rootful Docker |
 | Virtualization | `/dev/kvm`. On a virtual machine this needs nested virtualization; without it the compute pool falls back to `virtType: qemu` |
-| Kernel modules | `openvswitch`, `geneve`, `vhost_net`, `loop`; `nfs` and `nfsv4` only for the optional NFS backend. kind nodes use the host's module tree |
+| Kernel modules | `openvswitch`, `geneve`, `vhost_net`, `loop`; `nfs` and `nfsv4` for a profile with the module `cinder-nfs`, such as `controlplane`. kind nodes use the host's module tree |
 | Kernel settings | `fs.inotify.max_user_instances` at 512 or more. *Upstream*: a second kind cluster beside a full devstack fails at `Preparing nodes` with the default of 128 |
 | Memory | 16 GiB as the target for the profiles up to `full`; more for `parity`. See [Footprint](#footprint) |
 | CPU | To be measured. *Upstream* budgets 4 vCPU for the control plane with all eight services. Working estimate for `full`: 8 cores |
 | Disk | To be measured. Every kind node keeps its own image store, so an image is stored once per node that runs it. Working estimate: 60 GB free for `full`, 100 GB for `parity`, including the sparse OSD files |
 | DNS | The resolver must answer `*.nip.io` names with private addresses. Resolvers with DNS rebinding protection drop such answers. For such a host, `switches.resolver-fallback` adds the module `resolver`: the CoreDNS of every cluster answers the names itself, and the CoreDNS of the management cluster answers them on `addresses.dns`, to which the host routes `nip.io` with the settings `make up` prints ([ADR-0018](docs/adr/0018-print-the-host-resolver-settings-of-the-nip-io-fallback.md)) |
-| Tools | `docker`, `kind`, `kubectl`, `helm`, `flux`, `git`, `yq` v4.40.1 or newer, `jq`, `make`, `bats` (bats-core 1.5.0 or newer, for `make test`, `make test-validate` and `make test-host`), `kubeconform`, `curl` and `tar` for `make validate`, `curl` and `openssl` for `make test-host`, and the OpenStack CLI with `osc-placement` and `python-barbicanclient` |
-| Network | Egress to `github.com` (upstream, the tools and schemas of `make validate`, the CRDs of the module `crds`), `raw.githubusercontent.com` (the Kubernetes schemas of `make validate`, the MetalLB manifest of the module `loadbalancer`), `ghcr.io`, `quay.io`, `docker.io`, the Helm repositories and the cirros download. The management cluster reads `github.com` and `raw.githubusercontent.com` at every reconcile of `crds` and `loadbalancer` ([ADR-0019](docs/adr/0019-read-third-party-manifests-as-pinned-remote-resources.md)) |
+| Tools | `docker`, `kind`, `kubectl`, `helm`, `flux`, `git`, `yq` v4.40.1 or newer, `jq`, `make`, `bats` (bats-core 1.5.0 or newer, for `make test`, `make test-validate` and `make test-host`), `kubeconform`, `curl` and `tar` for `make validate`, `curl` for `make verify`, `curl` and `openssl` for `make test-host`, and the OpenStack CLI with `osc-placement` and `python-barbicanclient` |
+| Network | Egress to `github.com` (upstream, the tools and schemas of `make validate`, the CRDs of the module `crds`), `raw.githubusercontent.com` (the Kubernetes schemas of `make validate`, the MetalLB manifest of the module `loadbalancer`), `ghcr.io` (among others the NFS server of `cinder-nfs`), `quay.io`, `docker.io`, `registry.k8s.io` (the images of `csi-driver-nfs`), the Helm repositories, `raw.githubusercontent.com` as the one of `csi-driver-nfs` among them, and the cirros download. The management cluster reads `github.com` and `raw.githubusercontent.com` at every reconcile of `crds` and `loadbalancer` ([ADR-0019](docs/adr/0019-read-third-party-manifests-as-pinned-remote-resources.md)) |
 
 `make up`, `make up-<cluster>` and `scripts/preflight.sh [<role>...]` check
 the host before anything is created. They print one line per check, with the
@@ -813,12 +883,18 @@ need. Every cluster needs Linux on x86-64, cgroup v2, a reachable rootful
 Docker, `fs.inotify.max_user_instances` at 512 or more, `docker`, `kind`,
 `kubectl`, `jq`, `helm`, `flux`, `git`, `yq` v4.40.1 or newer and a valid
 configuration file. `sandbox-storage` also needs the module `loop`, and
-`sandbox-compute` the modules `openvswitch`, `geneve` and `vhost_net`.
+`sandbox-compute` the modules `openvswitch`, `geneve` and `vhost_net`. A
+profile that lists `cinder-nfs` on the management cluster also needs `nfs`
+and `nfsv4`; a module in the module tree of the kernel counts, because the
+kernel loads it at the first mount. `scripts/preflight.sh` loads no profile
+and does not check these two.
 `/dev/kvm`, the resolver's answer for a nip.io name and the OpenStack CLI with
 its plugins are reported as warnings. The warning for the resolver names
 `switches.resolver-fallback`, or says that the fallback is on. A configuration
-file without `addresses.pool`, `addresses.dns`, `addresses.rabbitmq` or
-`switches.resolver-fallback` fails the check of the configuration.
+file without `addresses.pool`, `addresses.dns`, `addresses.rabbitmq`,
+`switches.resolver-fallback`, `switches.glance`, `switches.barbican`,
+`switches.horizon` or `switches.fake-compute` fails the check of the
+configuration.
 
 Every kind node mounts `kind/containerd-nofile.conf`, which limits the open
 files of every pod to 1048576. kind runs containerd with
@@ -884,6 +960,23 @@ switches and, failing that, a documented requirement above 16 GiB.
 `parity` adds back what was left out and a second hypervisor node. Working
 estimate: 24 to 32 GiB.
 
+### Measured
+
+`make footprint` on an idle `controlplane`, after `make verify` passed its
+16 checks, on 2026-11-25, on a host with 27,800 MiB of memory and 16 CPUs:
+
+```text
+CLUSTER              REQUESTS_MIB WORKING_SET_MIB
+sandbox-management          13790           10291
+registry                        -              15
+total                       13790           10306
+```
+
+The control plane of all eight services, with Cinder on NFS and the fake
+compute, works in about 10 GiB on the management cluster, against
+13.5 GiB of requests. It is one measurement of the largest part of `full`;
+the verdict on point 10 is that of the profile `full`.
+
 ## Milestones
 
 Each milestone ends with checks taken from the upstream quick starts, so
@@ -900,7 +993,7 @@ milestone also records the output of `make footprint`.
 | 5 | Volumes on the hypervisor; profile `full` | Part 2 Step 7: attach, marker written and read back. The `cinder` key rotates and the server reads the volume again after a hard reboot |
 | 6 | Profile `parity`, on a host with the memory it needs | Quick Start (metal-stack) Part 1 and Part 2 complete: tunnel ping between two nodes, live migration, eviction, backup and restore, rotation under a running server, Horizon |
 | 7 | External storage and external compute over a VPN | A second RBD backend on an external Ceph serves volumes; a pool on an external cluster boots a server |
-| later | NFS backend (Part 3), observability, UIs, Tempest, chaos, an HA profile, a network cluster | |
+| later | NFS backend of Part 3 of the Quick Start (metal-stack), not the export of `cinder-nfs` that `controlplane` runs; observability, UIs, Tempest, chaos, an HA profile, a network cluster | |
 
 Milestones 2 and 3 do not depend on each other and can be built in either
 order. Milestone 4 does not depend on 3; milestone 5 needs both.
