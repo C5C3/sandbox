@@ -1,11 +1,12 @@
 #!/usr/bin/env bats
 # The profile controlplane against a real Docker: the eight services of
 # upstream's Quick Start (ControlPlane) with a fake compute and Cinder on
-# upstream's NFS export, on the managed message bus, on sandbox-management.
-# It checks the nine service operators, the ControlPlane and its bus, the
-# admission of the service sets of the profiles storage and full (point 11),
-# make verify twice and what it leaves, a second make up, make footprint and
-# make down. It needs a host that passes the host check for the management
+# upstream's NFS export, on the managed message bus, on sandbox-management,
+# with the orders of the module orders. It checks the nine service
+# operators, the ControlPlane and its bus, the seven example orders and their
+# Secrets, the admission of the service sets of the profiles storage and full
+# (point 11), make verify twice and what it leaves, a second make up, make
+# footprint and make down. It needs a host that passes the host check for the management
 # role with the kernel modules nfs and nfsv4, and has curl and the OpenStack
 # CLI with osc-placement and python-barbicanclient; it refuses to start while
 # a sandbox exists and ends with make down.
@@ -19,7 +20,8 @@ KUBECONFIG_DIR=$ROOT/.sandbox/kubeconfig
 SERVICE_OPERATORS=(keystone horizon glance placement barbican ovn neutron cinder nova)
 STORAGE=$BATS_TEST_DIRNAME/fixtures/controlplane-storage.yaml
 FULL=$BATS_TEST_DIRNAME/fixtures/controlplane-full.yaml
-CHECKS="keystone-token keystone-catalog glance-catalog glance-image placement-catalog placement-classes barbican-catalog barbican-secret neutron-catalog neutron-network cinder-catalog cinder-volume nova-catalog nova-services nova-server horizon-login"
+CHECKS="keystone-token keystone-catalog glance-catalog glance-image placement-catalog placement-classes barbican-catalog barbican-secret neutron-catalog neutron-network cinder-catalog cinder-volume nova-catalog nova-services nova-server horizon-login orders-ready orders-secrets orders-converge orders-rotation orders-teardown"
+ORDERS=keystoneusers.c5c3.io,keystoneprojects.c5c3.io,keystoneroleassignments.c5c3.io,keystonecatalogentries.c5c3.io,keystoneapplicationcredentials.c5c3.io,mariadbdatabases.c5c3.io,rabbitmqvhosts.c5c3.io
 
 sb_make() {
 	make --no-print-directory -C "$ROOT" "$@"
@@ -60,6 +62,16 @@ uid() {
 	kc management -n openstack get "$1" "$2" -o jsonpath='{.metadata.uid}'
 }
 
+# secret_has_keys <name> <key>...: succeeds when the Secret in workflow holds a
+# value for each key.
+secret_has_keys() {
+	local secret key
+	secret=$(kc management -n workflow get secret "$1" -o json) || return 1
+	for key in "${@:2}"; do
+		[ -n "$(jq -r --arg key "$key" '.data[$key] // empty' <<<"$secret")" ] || return 1
+	done
+}
+
 setup_file() {
 	if sandbox_exists; then
 		echo "a sandbox exists on this host; run make down first" >&2
@@ -74,12 +86,12 @@ teardown_file() {
 	fi
 }
 
-@test "make up PROFILE=controlplane checks the NFS modules and brings twelve stages Ready on the management cluster alone" {
+@test "make up PROFILE=controlplane checks the NFS modules and brings thirteen stages Ready on the management cluster alone" {
 	SANDBOX_STAGE_TIMEOUT=3600 run sb_make up PROFILE=controlplane
 	[ "$status" -eq 0 ]
 	[[ $output == *$'\nok module nfs: available\n'* ]]
 	[[ $output == *$'\nok module nfsv4: available\n'* ]]
-	[[ ${lines[-2]} =~ ^up:\ 12\ stages\ Ready\ on\ 1\ clusters\ at\ latest@sha256:[0-9a-f]{64}$ ]]
+	[[ ${lines[-2]} =~ ^up:\ 13\ stages\ Ready\ on\ 1\ clusters\ at\ latest@sha256:[0-9a-f]{64}$ ]]
 	[[ ${lines[-1]} == "export KUBECONFIG="* ]]
 	[ "$(kind get clusters 2>/dev/null | grep -cxE 'sandbox-(storage|compute)')" = 0 ]
 }
@@ -106,6 +118,21 @@ teardown_file() {
 	[ "$(kc management -n openstack get rabbitmqclusters.rabbitmq.com -o name)" = "rabbitmqcluster.rabbitmq.com/openstack-rabbitmq" ]
 }
 
+@test "the seven orders of workflow are Ready with their four Secrets, and the ControlPlane reports NamespaceAssignmentsReady" {
+	local controlplane orders
+	controlplane=$(kc management -n openstack get controlplanes.c5c3.io controlplane -o json)
+	[ "$(jq -c '.spec.namespaceAssignments' <<<"$controlplane")" = \
+		'[{"namespace":"workflow","allowedRoles":["member"],"allowCatalogEntries":true}]' ]
+	[ "$(jq -r '[.status.conditions[] | select(.type == "NamespaceAssignmentsReady")][0].status' <<<"$controlplane")" = True ]
+	orders=$(kc management -n workflow get "$ORDERS" -o json)
+	[ "$(jq -r '[.items[] | select(any(.status.conditions[]?; .type == "Ready" and .status == "True")) | .metadata.name] | sort | join(" ")' <<<"$orders")" = \
+		"workflow workflow-appcred workflow-bus workflow-db workflow-dns workflow-member workflow-project" ]
+	secret_has_keys workflow-credentials clouds.yaml password
+	secret_has_keys workflow-appcred-credentials clouds.yaml application_credential_id application_credential_secret
+	secret_has_keys workflow-db-credentials host port database username password
+	secret_has_keys workflow-bus-credentials transport_url host port username password vhost
+}
+
 @test "the service sets of storage and full are admitted, and the webhook refuses Nova without Glance and Cinder without a bus" {
 	run dry_run . "$STORAGE"
 	echo "$output"
@@ -124,13 +151,13 @@ teardown_file() {
 	[ "$(kc management get controlplanes.c5c3.io -A -o name)" = "controlplane.c5c3.io/controlplane" ]
 }
 
-@test "make verify passes the sixteen checks in their order" {
+@test "make verify passes the twenty-one checks in their order" {
 	skip_without_resolver
 	run sb_make verify
 	echo "$output"
 	[ "$status" -eq 0 ]
 	[ "$(grep -oE '^(ok|FAIL) [^:]+' <<<"$output" | paste -sd ' ')" = "$(printf 'ok %s ' $CHECKS | sed 's/ $//')" ]
-	[ "${lines[-1]}" = "verify: 16 of 16 checks passed" ]
+	[ "${lines[-1]}" = "verify: 21 of 21 checks passed" ]
 }
 
 @test "a second make verify passes and leaves no sandbox-verify resource" {
@@ -139,8 +166,8 @@ teardown_file() {
 	run sb_make verify
 	echo "$output"
 	[ "$status" -eq 0 ]
-	[ "${lines[-1]}" = "verify: 16 of 16 checks passed" ]
-	for list in "image list" "volume list" "network list" "server list" "flavor list" "secret list"; do
+	[ "${lines[-1]}" = "verify: 21 of 21 checks passed" ]
+	for list in "image list" "volume list" "network list" "server list" "flavor list" "secret list" "user list" "project list" "service list"; do
 		run bash -c 'eval "$(make --no-print-directory -C "$1" env)" && openstack $2 -f value' _ "$ROOT" "$list"
 		echo "$list: $output"
 		[ "$status" -eq 0 ]
@@ -156,7 +183,7 @@ teardown_file() {
 	[ -n "$controlplane" ]
 	run sb_make up PROFILE=controlplane
 	[ "$status" -eq 0 ]
-	[[ ${lines[-2]} =~ ^up:\ 12\ stages\ Ready\ on\ 1\ clusters\ at\ latest@sha256:[0-9a-f]{64}$ ]]
+	[[ ${lines[-2]} =~ ^up:\ 13\ stages\ Ready\ on\ 1\ clusters\ at\ latest@sha256:[0-9a-f]{64}$ ]]
 	[ "$(uid job controlplane-database-tenant)" = "$job" ]
 	[ "$(uid controlplanes.c5c3.io controlplane)" = "$controlplane" ]
 }
