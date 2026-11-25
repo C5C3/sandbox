@@ -10,7 +10,7 @@ setup() {
 # <root>/clusters/<role>/<module>/ against the stage contract and prints the
 # number of the first point it breaks.
 stage_contract() {
-	local root=$1 role=${2%/*} module=${2#*/} dir path dep
+	local root=$1 role=${2%/*} module=${2#*/} dir path dep names
 	dir=$root/clusters/$2
 
 	# 1. A Component whose resources are exactly stage.yaml.
@@ -28,11 +28,19 @@ stage_contract() {
 	path=$(yq '.spec.path' "$dir/stage.yaml")
 	[[ $path == ./* && $path != *..* ]] && [ -f "$root/${path#./}/kustomization.yaml" ] || { echo 3; return 1; }
 
-	# 4. The kubeconfig Secret of the role, and none for management.
+	# 4. The kubeconfig Secret of the role, and none for management. A stage
+	# of storage or compute without one applies its objects to the management
+	# cluster: the directory of its spec.path holds at least one HelmRelease,
+	# and each names the Secret of the role.
 	if [ "$role" = management ]; then
 		[ "$(yq '.spec | has("kubeConfig")' "$dir/stage.yaml")" = false ] || { echo 4; return 1; }
-	else
+	elif [ "$(yq '.spec | has("kubeConfig")' "$dir/stage.yaml")" = true ]; then
 		[ "$(yq '.spec.kubeConfig.secretRef.name' "$dir/stage.yaml")" = "kubeconfig-$role" ] || { echo 4; return 1; }
+	else
+		# One list over all files: yq separates the results of several
+		# documents with ---.
+		names=$(yq ea '[select(.kind == "HelmRelease") | .spec.kubeConfig.secretRef.name // ""] | .[]' "$root/${path#./}"/*.yaml)
+		[ -n "$names" ] && ! grep -qvxF -- "kubeconfig-$role" <<<"$names" || { echo 4; return 1; }
 	fi
 
 	# 5. Every dependency is the stage of an existing module.
@@ -61,11 +69,12 @@ component_patch() {
 	I=$2 yq '.patches[env(I)].patch' "$SANDBOX_ROOT/controlplane/components/$1/kustomization.yaml" | yq -o=json -I=0 '.'
 }
 
-# tree_copy: copies clusters/ and infrastructure/ into $BATS_TEST_TMPDIR/tree.
+# tree_copy: copies clusters/, infrastructure/ and compute/ into
+# $BATS_TEST_TMPDIR/tree.
 tree_copy() {
 	rm -rf -- "$BATS_TEST_TMPDIR/tree"
 	mkdir -- "$BATS_TEST_TMPDIR/tree"
-	cp -R -- "$SANDBOX_ROOT/clusters" "$SANDBOX_ROOT/infrastructure" "$BATS_TEST_TMPDIR/tree/"
+	cp -R -- "$SANDBOX_ROOT/clusters" "$SANDBOX_ROOT/infrastructure" "$SANDBOX_ROOT/compute" "$BATS_TEST_TMPDIR/tree/"
 }
 
 @test "every module of a cluster with a stage meets the stage contract" {
@@ -115,9 +124,32 @@ tree_copy() {
 4 storage/test stage.yaml del(.spec.kubeConfig)
 4 compute/test stage.yaml .spec.kubeConfig.secretRef.name = "kubeconfig-storage"
 4 management/test stage.yaml .spec.kubeConfig.secretRef.name = "kubeconfig-management"
+4 compute/access stage.yaml .spec.path = "./infrastructure/test"
 5 storage/test stage.yaml .spec.dependsOn[0].name = "management-nothere"
 5 compute/test stage.yaml .spec.dependsOn += [{"name": "network-test"}]
 EOF
+}
+
+@test "a second HelmRelease that names the Secret of its role keeps point 4" {
+	tree_copy
+	printf -- '---\n' >>"$BATS_TEST_TMPDIR/tree/compute/access/release.yaml"
+	yq '.metadata.name = "compute-access-2"' "$SANDBOX_ROOT/compute/access/release.yaml" >>"$BATS_TEST_TMPDIR/tree/compute/access/release.yaml"
+	[ "$(yq ea '[select(.kind == "HelmRelease")] | length' "$BATS_TEST_TMPDIR/tree/compute/access/release.yaml")" = 2 ]
+	run stage_contract "$BATS_TEST_TMPDIR/tree" compute/access
+	echo "point $output"
+	[ "$status" -eq 0 ]
+}
+
+@test "a HelmRelease of a stage without kubeConfig that names no Secret of its role breaks point 4" {
+	local expression
+	for expression in '.spec.kubeConfig.secretRef.name = "kubeconfig-storage"' 'del(.spec.kubeConfig)'; do
+		tree_copy
+		yq -i "$expression" "$BATS_TEST_TMPDIR/tree/compute/access/release.yaml"
+		run stage_contract "$BATS_TEST_TMPDIR/tree" compute/access
+		echo "$expression: point $output"
+		[ "$status" -eq 1 ]
+		[ "$output" = 4 ]
+	done
 }
 
 @test "a stage.yaml with a second document breaks point 2" {
@@ -396,11 +428,27 @@ EOF
 	done
 }
 
-@test "the stages of openbao, objectstore, platform, sizing, cinder-nfs and fake-compute substitute no variables" {
-	local module
-	for module in openbao objectstore platform sizing cinder-nfs fake-compute; do
-		[ "$(yq '.spec | has("postBuild")' "$SANDBOX_ROOT/clusters/management/$module/stage.yaml")" = false ]
+@test "the stages of openbao, objectstore, platform, sizing, cinder-nfs, fake-compute and compute access substitute no variables" {
+	local stage
+	for stage in management/{openbao,objectstore,platform,sizing,cinder-nfs,fake-compute} compute/access; do
+		echo "$stage"
+		[ "$(yq '.spec | has("postBuild")' "$SANDBOX_ROOT/clusters/$stage/stage.yaml")" = false ]
 	done
+}
+
+@test "the stage compute-access applies the ArtifactGenerator and the HelmRelease of the access chart on sandbox-management and waits for both" {
+	local dir=$SANDBOX_ROOT/compute/access ready expected
+	[ "$(yq -o=json -I=0 '[.spec.path, .spec.interval, .spec.retryInterval, .spec.timeout, (.spec | has("kubeConfig")), (.spec | has("dependsOn"))]' \
+		"$SANDBOX_ROOT/clusters/compute/access/stage.yaml")" = '["./compute/access","10m","1m","5m",false,false]' ]
+	ready="status.conditions.exists(c, c.type == 'Ready' && c.status == 'True' && c.observedGeneration == metadata.generation)"
+	expected=$(jq -n -c --arg ready "$ready" '[{apiVersion: "helm.toolkit.fluxcd.io/v2", kind: "HelmRelease", current: $ready},
+		{apiVersion: "source.extensions.fluxcd.io/v1beta1", kind: "ArtifactGenerator", current: $ready}]')
+	[ "$(yq -o=json -I=0 '.spec.healthCheckExprs' "$SANDBOX_ROOT/clusters/compute/access/stage.yaml")" = "$expected" ]
+	[ "$(yq -o=json -I=0 '.resources' "$dir/kustomization.yaml")" = '["chart.yaml","release.yaml"]' ]
+	[ "$(yq -o=json -I=0 '[.kind, .metadata.name, .metadata.namespace, .spec.sources, .spec.artifacts]' "$dir/chart.yaml")" = \
+		'["ArtifactGenerator","target-cluster-access","flux-system",[{"alias":"sandbox","kind":"OCIRepository","name":"sandbox"}],[{"name":"target-cluster-access","copy":[{"from":"@sandbox/vendor/cobaltcore/deploy/bases/target-cluster-access/","to":"@artifact/"}]}]]' ]
+	[ "$(yq -o=json -I=0 '[.kind, .metadata.name, .metadata.namespace, .spec.releaseName, .spec.targetNamespace, .spec.storageNamespace, .spec.install, .spec.chartRef, .spec.kubeConfig, .spec.values]' "$dir/release.yaml")" = \
+		'["HelmRelease","compute-access","flux-system","target-cluster-access","c5c3-access","c5c3-access",{"createNamespace":true},{"kind":"ExternalArtifact","name":"target-cluster-access"},{"secretRef":{"name":"kubeconfig-compute"}},{"namespaces":["openstack"],"privilegedNamespaces":["openstack"],"createNamespaces":true}]' ]
 }
 
 @test "the c5c3-operator depends on no release that controllers suspends" {

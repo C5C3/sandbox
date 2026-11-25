@@ -1,0 +1,19 @@
+# The OCIRepository sandbox holds the working tree, not a chart. The copy
+# with a trailing slash puts the chart directory of the vendored base into
+# target-cluster-access/ of the artifact, the layout of the Helm example of
+# the source-watcher documentation.
+apiVersion: source.extensions.fluxcd.io/v1beta1
+kind: ArtifactGenerator
+metadata:
+  name: target-cluster-access
+  namespace: flux-system
+spec:
+  sources:
+    - alias: sandbox
+      kind: OCIRepository
+      name: sandbox
+  artifacts:
+    - name: target-cluster-access
+      copy:
+        - from: "@sandbox/vendor/cobaltcore/deploy/bases/target-cluster-access/"
+          to: "@artifact/"

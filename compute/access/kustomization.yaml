@@ -1,0 +1,12 @@
+# The module access: upstream's chart target-cluster-access on
+# sandbox-compute, released from the hub. The compute cluster runs no Flux,
+# so both objects live in flux-system of sandbox-management. The
+# ArtifactGenerator of chart.yaml copies the chart out of the OCIRepository
+# sandbox into the ExternalArtifact target-cluster-access, and the
+# HelmRelease of release.yaml installs it on sandbox-compute through the
+# Secret kubeconfig-compute.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - chart.yaml
+  - release.yaml
