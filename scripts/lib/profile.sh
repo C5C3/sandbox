@@ -96,3 +96,18 @@ profile_load() {
 profile_modules() {
 	ROLE=$1 yq '(.modules[strenv(ROLE)] // []) | .[]' "$SANDBOX_PROFILE_FILE"
 }
+
+# cluster_modules <role>: prints the modules whose stages the role's cluster
+# runs: those of profile_modules and then resolver, when
+# SANDBOX_RESOLVER_FALLBACK is true and the profile does not list it. When
+# profile_modules fails, it prints nothing and returns its status.
+cluster_modules() {
+	local modules
+	modules=$(profile_modules "$1") || return
+	if [ -n "$modules" ]; then
+		printf '%s\n' "$modules"
+	fi
+	if [ "${SANDBOX_RESOLVER_FALLBACK:-false}" = true ] && ! grep -qxF resolver <<<"$modules"; then
+		echo resolver
+	fi
+}

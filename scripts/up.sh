@@ -127,6 +127,13 @@ config_load
 # variable or that becomes the same Flux variable as another key, so the run
 # stops before anything is created.
 cluster_vars >/dev/null
+# The resolver switch adds the module resolver, whose stage on
+# sandbox-management depends on the stage of loadbalancer; profile_load did
+# not see the added module, so the stage would wait until its timeout.
+modules=$(cluster_modules management) || exit 1
+if [ "$SANDBOX_RESOLVER_FALLBACK" = true ] && ! grep -qxF loadbalancer <<<"$modules"; then
+	die "switches.resolver-fallback needs the module loadbalancer on sandbox-management, the profile $SANDBOX_PROFILE does not list it"
+fi
 for role in "${SANDBOX_ROLES[@]}"; do
 	if [[ " $SANDBOX_PROFILE_CLUSTERS " != *" $role "* ]] && sandbox_cluster "$role"; then
 		die "$(cluster_name "$role") exists, the profile $SANDBOX_PROFILE does not list it; run make down first"

@@ -205,3 +205,49 @@ profile_fails_with() {
 	[ "$status" -eq 1 ]
 	[ "$output" = "error: config: switches.hypervisor-nodes must be an integer of 1 or more, got '0'" ]
 }
+
+# modules_file <yaml>: writes the text as a profile into the test's directory
+# and points SANDBOX_PROFILE_FILE at it, as profile_load would.
+modules_file() {
+	export SANDBOX_PROFILE_FILE=$BATS_TEST_TMPDIR/modules.yaml
+	printf '%s\n' "$1" >"$SANDBOX_PROFILE_FILE"
+}
+
+@test "cluster_modules prints what profile_modules prints with the resolver switch off or unset" {
+	local role
+	modules_file $'clusters: [management, storage, compute]\nmodules:\n  management: [b, a]\n  storage: []'
+	for value in unset false; do
+		if [ "$value" = unset ]; then unset SANDBOX_RESOLVER_FALLBACK; else export SANDBOX_RESOLVER_FALLBACK=$value; fi
+		for role in management storage compute; do
+			[ "$(cluster_modules "$role")" = "$(profile_modules "$role")" ]
+		done
+	done
+	[ "$(cluster_modules management)" = $'b\na' ]
+}
+
+@test "with the resolver switch on cluster_modules adds resolver once to every role" {
+	export SANDBOX_RESOLVER_FALLBACK=true
+	modules_file $'clusters: [management, storage, compute]\nmodules:\n  management: [b, a]\n  storage: []'
+	run cluster_modules management
+	[ "$status" -eq 0 ]
+	[ "$output" = $'b\na\nresolver' ]
+	for role in storage compute; do
+		run cluster_modules "$role"
+		[ "$status" -eq 0 ]
+		[ "$output" = resolver ]
+	done
+
+	modules_file $'clusters: [management]\nmodules:\n  management: [resolver, a]'
+	run cluster_modules management
+	[ "$status" -eq 0 ]
+	[ "$output" = $'resolver\na' ]
+}
+
+@test "cluster_modules prints nothing and fails when profile_modules fails" {
+	local out rc=0
+	export SANDBOX_RESOLVER_FALLBACK=true SANDBOX_PROFILE_FILE=$BATS_TEST_TMPDIR/missing.yaml
+	# yq names the missing file on stderr; stdout stays empty.
+	out=$(cluster_modules management 2>/dev/null) || rc=$?
+	[ "$rc" -ne 0 ]
+	[ "$out" = "" ]
+}
