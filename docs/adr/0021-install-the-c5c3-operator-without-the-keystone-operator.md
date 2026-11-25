@@ -1,6 +1,6 @@
 # ADR-0021: Install the c5c3-operator without the keystone-operator
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-25
 - Source: [#8](https://github.com/C5C3/sandbox/issues/8)
 
