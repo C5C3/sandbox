@@ -19,6 +19,7 @@
 # GitHub. git reads no configuration of the user.
 unset SANDBOX_CONFIG SANDBOX_SUBNET SANDBOX_GATEWAY_ADDRESS \
 	SANDBOX_ADDRESS_POOL SANDBOX_DNS_ADDRESS SANDBOX_RABBITMQ_ADDRESS SANDBOX_RESOLVER_FALLBACK \
+	SANDBOX_SWITCH_GLANCE SANDBOX_SWITCH_BARBICAN SANDBOX_SWITCH_HORIZON SANDBOX_SWITCH_FAKE_COMPUTE \
 	SANDBOX_REGISTRY_IMAGE SANDBOX_HYPERVISOR_NODES SANDBOX_FLUX_OPERATOR_VERSION \
 	SANDBOX_PROFILE SANDBOX_PROFILE_FILE SANDBOX_PROFILE_DIR SANDBOX_PROFILE_CLUSTERS \
 	SANDBOX_REVISION SANDBOX_STAGE_TIMEOUT SANDBOX_SOURCE_TIMEOUT \
@@ -62,6 +63,25 @@ profile_with() {
 	mkdir -p -- "$BATS_TEST_TMPDIR/profiles"
 	printf '%s\n' "$1" >"$BATS_TEST_TMPDIR/profiles/case.yaml"
 	export SANDBOX_PROFILE_DIR=$BATS_TEST_TMPDIR/profiles SANDBOX_PROFILE=case
+}
+
+# module_without_stage <role> <module>: points SANDBOX_ROOT at a copy of
+# clusters/, profiles/, scripts/ and config.yaml in the test's directory,
+# made at the first call, and writes the module there as a module without a
+# stage: a patches/kustomization.yaml without patches, alone. scripts/ holds
+# the jq modules, such as ready.jq, that the functions include from
+# SANDBOX_ROOT.
+module_without_stage() {
+	if [ "$SANDBOX_ROOT" != "$BATS_TEST_TMPDIR/tree" ]; then
+		mkdir -- "$BATS_TEST_TMPDIR/tree"
+		cp -R -- "$SANDBOX_ROOT/clusters" "$SANDBOX_ROOT/profiles" "$SANDBOX_ROOT/scripts" \
+			"$SANDBOX_ROOT/config.yaml" "$BATS_TEST_TMPDIR/tree/"
+		SANDBOX_ROOT=$BATS_TEST_TMPDIR/tree
+	fi
+	rm -rf -- "$SANDBOX_ROOT/clusters/$1/$2"
+	mkdir -p -- "$SANDBOX_ROOT/clusters/$1/$2/patches"
+	printf 'apiVersion: kustomize.config.k8s.io/v1alpha1\nkind: Component\npatches: []\n' \
+		>"$SANDBOX_ROOT/clusters/$1/$2/patches/kustomization.yaml"
 }
 
 # test_git <argument>...: runs git with an identity and the branch main.

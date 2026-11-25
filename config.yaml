@@ -20,6 +20,14 @@ switches:
   hypervisor-nodes: 1
   # Read by cluster_modules in scripts/lib/profile.sh: true adds the module resolver to every cluster.
   resolver-fallback: false
+  # Read by cluster_modules in scripts/lib/profile.sh: true adds the module glance to sandbox-management.
+  glance: false
+  # Read by cluster_modules in scripts/lib/profile.sh: true adds the module barbican to sandbox-management.
+  barbican: false
+  # Read by cluster_modules in scripts/lib/profile.sh: true adds the module horizon to sandbox-management.
+  horizon: false
+  # Read by cluster_modules in scripts/lib/profile.sh: true adds the module fake-compute to sandbox-management.
+  fake-compute: false
 upstream:
   # Read by config_load in scripts/lib/common.sh: the commit of C5C3/cobaltcore that make vendor checks out. scripts/pin.sh moves it.
   cobaltcore: 15a0323e243c7f53b91200f193a58b5b41d41f6a

@@ -131,14 +131,16 @@ _cidr_contains() {
 # config_load: reads the output of config_merged and exports SANDBOX_SUBNET,
 # SANDBOX_GATEWAY_ADDRESS, SANDBOX_ADDRESS_POOL, SANDBOX_DNS_ADDRESS,
 # SANDBOX_RABBITMQ_ADDRESS, SANDBOX_REGISTRY_IMAGE, SANDBOX_HYPERVISOR_NODES,
-# SANDBOX_RESOLVER_FALLBACK, SANDBOX_FLUX_OPERATOR_VERSION and
-# SANDBOX_UPSTREAM_COMMIT. A missing key is an error; no script carries a
-# default for these ten. The pool lies inside the subnet, and the Gateway,
-# DNS and RabbitMQ addresses, three different ones, inside the pool: MetalLB
-# gives a Service no address outside its pool.
+# SANDBOX_RESOLVER_FALLBACK, SANDBOX_SWITCH_GLANCE, SANDBOX_SWITCH_BARBICAN,
+# SANDBOX_SWITCH_HORIZON, SANDBOX_SWITCH_FAKE_COMPUTE,
+# SANDBOX_FLUX_OPERATOR_VERSION and SANDBOX_UPSTREAM_COMMIT. A missing key is
+# an error; no script carries a default for these fourteen. The pool lies
+# inside the subnet, and the Gateway, DNS and RabbitMQ addresses, three
+# different ones, inside the pool: MetalLB gives a Service no address outside
+# its pool.
 config_load() {
 	local merged key value subnet gateway pool dns rabbitmq nodes fallback operator upstream
-	local -A values=()
+	local -A values=() switches=()
 
 	merged=$(config_merged) || exit 1
 	for key in network.subnet addresses.gateway registry.image switches.hypervisor-nodes flux.operator upstream.cobaltcore \
@@ -152,6 +154,11 @@ config_load() {
 	# empty string.
 	fallback=$(yq '.switches["resolver-fallback"] | select(. != null)' - <<<"$merged")
 	[ -n "$fallback" ] || die "config: switches.resolver-fallback is not set"
+	for key in glance barbican horizon fake-compute; do
+		value=$(KEY=$key yq '.switches[strenv(KEY)] | select(. != null)' - <<<"$merged")
+		[ -n "$value" ] || die "config: switches.$key is not set"
+		switches[$key]=$value
+	done
 	subnet=${values[network.subnet]} gateway=${values[addresses.gateway]} nodes=${values[switches.hypervisor-nodes]}
 	operator=${values[flux.operator]} upstream=${values[upstream.cobaltcore]}
 	pool=${values[addresses.pool]} dns=${values[addresses.dns]} rabbitmq=${values[addresses.rabbitmq]}
@@ -174,6 +181,11 @@ config_load() {
 		die "config: addresses.rabbitmq '$rabbitmq' is not an IPv4 address"
 	[[ $fallback == true || $fallback == false ]] ||
 		die "config: switches.resolver-fallback must be true or false, got '$fallback'"
+	for key in glance barbican horizon fake-compute; do
+		value=${switches[$key]}
+		[[ $value == true || $value == false ]] ||
+			die "config: switches.$key must be true or false, got '$value'"
+	done
 	_cidr_contains "$subnet" "$pool" ||
 		die "config: addresses.pool $pool is not inside network.subnet $subnet"
 	_cidr_contains "$pool" "$gateway" ||
@@ -197,6 +209,10 @@ config_load() {
 	export SANDBOX_REGISTRY_IMAGE=${values[registry.image]}
 	export SANDBOX_HYPERVISOR_NODES=$nodes
 	export SANDBOX_RESOLVER_FALLBACK=$fallback
+	export SANDBOX_SWITCH_GLANCE=${switches[glance]}
+	export SANDBOX_SWITCH_BARBICAN=${switches[barbican]}
+	export SANDBOX_SWITCH_HORIZON=${switches[horizon]}
+	export SANDBOX_SWITCH_FAKE_COMPUTE=${switches[fake-compute]}
 	export SANDBOX_FLUX_OPERATOR_VERSION=$operator
 	export SANDBOX_UPSTREAM_COMMIT=$upstream
 }

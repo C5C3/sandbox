@@ -244,13 +244,15 @@ ensure_kubeconfig_secret() {
 
 # root_manifest <role>: prints the root Kustomization cluster-<role>. It
 # applies clusters/<role>/ with the modules cluster_modules prints for the
-# role as components, which puts their stages on sandbox-management, and
-# labels the stages with the role. After all modules it lists <module>/patches
-# for each of them that has clusters/<role>/<module>/patches/kustomization.yaml,
-# a Component whose patches change the stages of other modules: every stage
-# exists before the first of them runs, and a patch whose stage the profile
-# does not list changes nothing. With prune, a module taken off the list
-# loses its stage, and the stage removes what it applied on its cluster.
+# role that have a stage as components, which puts their stages on
+# sandbox-management, and labels the stages with the role. After all modules
+# it lists <module>/patches for each of them that has
+# clusters/<role>/<module>/patches/kustomization.yaml, a Component whose
+# patches change the stages of other modules; a module without a stage is
+# that Component alone. Every stage exists before the first of them runs,
+# and a patch whose stage the profile does not list changes nothing. With
+# prune, a module taken off the list loses its stage, and the stage removes
+# what it applied on its cluster.
 root_manifest() {
 	local role=$1 modules module
 	require_roles "$role"
@@ -276,7 +278,9 @@ EOT
 	if [ -n "$modules" ]; then
 		echo '  components:'
 		for module in $modules; do
-			printf '    - %s\n' "$module"
+			if module_has_stage "$role" "$module"; then
+				printf '    - %s\n' "$module"
+			fi
 		done
 		for module in $modules; do
 			if [ -f "$SANDBOX_ROOT/clusters/$role/$module/patches/kustomization.yaml" ]; then
@@ -300,7 +304,7 @@ ensure_root() {
 }
 
 # wait_stages: polls the Kustomizations of sandbox-management every 2 s until
-# the root and every stage of the cluster_modules of each attached role is
+# the root and every stage of the cluster_stages of each attached role is
 # Ready with SANDBOX_REVISION as its last applied revision, for at most
 # SANDBOX_STAGE_TIMEOUT seconds, by default 600. A stage that is Ready at an
 # older revision is not ready.
@@ -311,7 +315,7 @@ wait_stages() {
 	attached=$(attached_roles) || exit 1
 	for role in $attached; do
 		names+=("cluster-$role")
-		modules=$(cluster_modules "$role") || exit 1
+		modules=$(cluster_stages "$role") || exit 1
 		for module in $modules; do
 			names+=("$role-$module")
 		done
@@ -373,18 +377,22 @@ resolver_hint() {
 }
 
 # hub_sync: installs Flux on sandbox-management and makes it apply the
-# cluster_modules of every attached cluster, then waits for their stages.
-# It stops before the first step when a stage depends on a stage of a
-# cluster that is not attached, because no root would create that stage.
-# Every step is safe to repeat; a failed step stops the run and leaves what
-# the steps before it applied.
+# cluster_modules of every attached cluster, then waits for their stages and
+# logs how many stages, those of cluster_stages, are Ready. It stops before
+# the first step when a stage depends on a stage of a cluster that is not
+# attached, because no root would create that stage. Every step is safe to
+# repeat; a failed step stops the run and leaves what the steps before it
+# applied.
 hub_sync() {
 	local attached role modules module dep stages=0
 	attached=$(attached_roles) || exit 1
 	for role in $attached; do
-		modules=$(cluster_modules "$role") || exit 1
+		modules=$(cluster_stages "$role") || exit 1
 		for module in $modules; do
-			# profile_load has read every stage.yaml of the profile.
+			# profile_load has read the stage.yaml of every listed
+			# module; make validate renders those of resolver and of
+			# the modules the switches add, with every module of the
+			# tree.
 			for dep in $(yq '.spec.dependsOn // [] | .[].name' "$SANDBOX_ROOT/clusters/$role/$module/stage.yaml"); do
 				[[ " $attached " == *" ${dep%%-*} "* ]] ||
 					die "the stage $role-$module depends on $dep, but $(cluster_name "${dep%%-*}") is not part of the sandbox; run make up-${dep%%-*} first"
@@ -404,7 +412,7 @@ hub_sync() {
 	done
 	wait_stages
 	for role in $attached; do
-		modules=$(cluster_modules "$role") || exit 1
+		modules=$(cluster_stages "$role") || exit 1
 		stages=$((stages + $(wc -w <<<"$modules")))
 	done
 	log "$stages stages Ready on $(wc -w <<<"$attached") clusters at $SANDBOX_REVISION"
