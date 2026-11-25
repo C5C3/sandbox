@@ -1,0 +1,29 @@
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: management-openbao
+  namespace: flux-system
+spec:
+  dependsOn:
+    - name: management-pki
+  interval: 10m
+  retryInterval: 1m
+  timeout: 15m
+  path: ./infrastructure/openbao
+  prune: true
+  wait: true
+  sourceRef:
+    kind: OCIRepository
+    name: sandbox
+  # No postBuild: the upstream scripts hold ${...}, which the strict
+  # substitution of the hub would read as variables. kstatus waits for the
+  # Job to complete but reads no Ready condition, so the release and the store
+  # have an expression; the conditions of the store carry no
+  # observedGeneration.
+  healthCheckExprs:
+    - apiVersion: helm.toolkit.fluxcd.io/v2
+      kind: HelmRelease
+      current: status.conditions.exists(c, c.type == 'Ready' && c.status == 'True' && c.observedGeneration == metadata.generation)
+    - apiVersion: external-secrets.io/v1
+      kind: ClusterSecretStore
+      current: status.conditions.exists(c, c.type == 'Ready' && c.status == 'True')
