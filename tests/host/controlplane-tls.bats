@@ -1,12 +1,14 @@
 #!/usr/bin/env bats
 # The eight services of the profile controlplane on the TLS message bus of the
 # module messaging-tls, against a real Docker: point 4 for the bus consumers
-# Neutron, Cinder and Nova. It runs make up PROFILE=identity and grows that
-# sandbox into the scratch profile controlplane-tls, the modules of the profile
-# controlplane with messaging-tls and the same switches, which lives outside
-# the tree in the test's directory. It checks that the ControlPlane stays and
-# the tenant Job runs again, the bus of the ControlPlane, make verify, the
-# queues and connections of the broker after it, and make down. It needs what
+# Neutron, Cinder and Nova. It runs the scratch profile identity-bare, the
+# modules of identity without orders, and grows that sandbox into the scratch
+# profile controlplane-tls, the modules of the profile controlplane with
+# messaging-tls and the same switches. Both live outside the tree in the
+# test's directory. It checks that the ControlPlane stays while it gains the
+# namespace assignment of orders and the tenant Job runs again, the bus of
+# the ControlPlane, make verify, the queues and connections of the broker
+# after it, and make down. It needs what
 # tests/host/controlplane.bats needs, refuses to start while a sandbox exists
 # and ends with make down.
 #
@@ -62,10 +64,15 @@ setup_file() {
 	fi
 	touch "$BATS_FILE_TMPDIR/owned"
 	mkdir -p -- "$BATS_FILE_TMPDIR/profiles"
+	cat >"$BATS_FILE_TMPDIR/profiles/identity-bare.yaml" <<'EOF'
+clusters: [management]
+modules:
+  management: [crds, controllers, loadbalancer, pki, gateway, openbao, platform, sizing, messaging-tls, controlplane]
+EOF
 	cat >"$BATS_FILE_TMPDIR/profiles/controlplane-tls.yaml" <<'EOF'
 clusters: [management]
 modules:
-  management: [crds, controllers, loadbalancer, pki, gateway, openbao, objectstore, platform, sizing, messaging-tls, controlplane, placement, neutron, cinder, cinder-nfs, nova]
+  management: [crds, controllers, loadbalancer, pki, gateway, openbao, objectstore, platform, sizing, messaging-tls, controlplane, placement, neutron, cinder, cinder-nfs, nova, orders]
 switches:
   glance: true
   barbican: true
@@ -80,8 +87,8 @@ teardown_file() {
 	fi
 }
 
-@test "make up PROFILE=identity brings ten stages Ready" {
-	SANDBOX_STAGE_TIMEOUT=3600 run sb_make up PROFILE=identity
+@test "make up PROFILE=identity-bare brings ten stages Ready" {
+	SANDBOX_STAGE_TIMEOUT=3600 SANDBOX_PROFILE_DIR=$BATS_FILE_TMPDIR/profiles run sb_make up PROFILE=identity-bare
 	[ "$status" -eq 0 ]
 	[[ ${lines[-2]} =~ ^up:\ 10\ stages\ Ready\ on\ 1\ clusters\ at\ latest@sha256:[0-9a-f]{64}$ ]]
 	[[ $output != *"module nfs"* ]]
@@ -91,10 +98,10 @@ teardown_file() {
 	[ -s "$BATS_FILE_TMPDIR/job.uid" ]
 }
 
-@test "identity grows into controlplane-tls with thirteen stages, the same ControlPlane and a new run of the tenant Job" {
+@test "identity-bare grows into controlplane-tls with fourteen stages, the same ControlPlane and a new run of the tenant Job" {
 	SANDBOX_STAGE_TIMEOUT=3600 SANDBOX_PROFILE_DIR=$BATS_FILE_TMPDIR/profiles run sb_make up PROFILE=controlplane-tls
 	[ "$status" -eq 0 ]
-	[[ ${lines[-2]} =~ ^up:\ 13\ stages\ Ready\ on\ 1\ clusters\ at\ latest@sha256:[0-9a-f]{64}$ ]]
+	[[ ${lines[-2]} =~ ^up:\ 14\ stages\ Ready\ on\ 1\ clusters\ at\ latest@sha256:[0-9a-f]{64}$ ]]
 	[ "$(uid controlplanes.c5c3.io controlplane)" = "$(<"$BATS_FILE_TMPDIR/controlplane.uid")" ]
 	[ "$(uid job controlplane-database-tenant)" != "$(<"$BATS_FILE_TMPDIR/job.uid")" ]
 	[ "$(kc management -n openstack get job controlplane-database-tenant -o jsonpath='{.status.succeeded}')" = 1 ]
@@ -112,12 +119,12 @@ teardown_file() {
 	[ "$(kc management -n openstack get rabbitmqclusters.rabbitmq.com -o name)" = "rabbitmqcluster.rabbitmq.com/shared-rabbitmq" ]
 }
 
-@test "make verify passes the sixteen checks on the TLS bus" {
+@test "make verify passes the twenty-one checks on the TLS bus" {
 	skip_without_resolver
 	run sb_make verify
 	echo "$output"
 	[ "$status" -eq 0 ]
-	[ "${lines[-1]}" = "verify: 16 of 16 checks passed" ]
+	[ "${lines[-1]}" = "verify: 21 of 21 checks passed" ]
 }
 
 # The services declare their topic queues once they consume from the bus,

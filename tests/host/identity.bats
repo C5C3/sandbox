@@ -1,14 +1,16 @@
 #!/usr/bin/env bats
 # The profile identity against a real Docker: Keystone alone on the TLS
-# message bus of the module messaging-tls, on sandbox-management. It checks
-# the keystone-operator, the three checks of point 4 (the listener with the
-# sandbox CA, the credentials of both transport URL Secrets, and the
-# admission of a ControlPlane with remoteCompute on this bus), the
-# ControlPlane and its database tenant onboarding Job, make env and
-# make verify, a second make up, a deleted Job and make down. It needs a host
-# that passes the host check for the management role and has openssl and the
-# OpenStack CLI, refuses to start while a sandbox exists and ends with
-# make down.
+# message bus of the module messaging-tls, on sandbox-management, with the
+# orders of the module orders. It checks the keystone-operator, the three
+# checks of point 4 (the listener with the sandbox CA, the credentials of
+# both transport URL Secrets, and the admission of a ControlPlane with
+# remoteCompute on this bus), the ControlPlane and its database tenant
+# onboarding Job, six of the seven example orders and the refused vhost, a
+# password rotated by hand that survives a reconcile, make env and make
+# verify, what make verify leaves, a second make up, a deleted Job and
+# make down. It needs a host that passes the host check for the management
+# role and has openssl and the OpenStack CLI, refuses to start while a
+# sandbox exists and ends with make down.
 #
 # The tests run in file order, and each one starts from the state the one
 # before left. The tests that rely on the host's resolver skip when the host
@@ -18,6 +20,8 @@ ROOT=$(cd "$BATS_TEST_DIRNAME/../.." && pwd)
 KUBECONFIG_DIR=$ROOT/.sandbox/kubeconfig
 SERVICE_OPERATORS=(keystone horizon glance placement barbican ovn neutron cinder nova)
 FIXTURE=$BATS_TEST_DIRNAME/fixtures/controlplane-remote-compute.yaml
+ORDERS=keystoneusers.c5c3.io,keystoneprojects.c5c3.io,keystoneroleassignments.c5c3.io,keystonecatalogentries.c5c3.io,keystoneapplicationcredentials.c5c3.io,mariadbdatabases.c5c3.io,rabbitmqvhosts.c5c3.io
+ORDER_KINDS=(keystoneuser keystoneproject keystoneroleassignment keystonecatalogentry keystoneapplicationcredential mariadbdatabase rabbitmqvhost)
 
 sb_make() {
 	make --no-print-directory -C "$ROOT" "$@"
@@ -97,6 +101,28 @@ controlplane_ready() {
 		-o jsonpath='{.status.conditions[?(@.type=="Ready")].status}'
 }
 
+# stage_ready <name>: prints the status of the condition Ready of the stage.
+stage_ready() {
+	kc management -n flux-system get kustomizations.kustomize.toolkit.fluxcd.io "$1" \
+		-o jsonpath='{.status.conditions[?(@.type=="Ready")].status}'
+}
+
+# password_generation: succeeds when the KeystoneUser workflow holds
+# generation 2 of its password in Keystone.
+password_generation() {
+	[ "$(kc management -n workflow get keystoneusers.c5c3.io workflow -o jsonpath='{.status.passwordGeneration}')" = 2 ]
+}
+
+# secret_has_keys <name> <key>...: succeeds when the Secret in workflow holds a
+# value for each key.
+secret_has_keys() {
+	local secret key
+	secret=$(kc management -n workflow get secret "$1" -o json) || return 1
+	for key in "${@:2}"; do
+		[ -n "$(jq -r --arg key "$key" '.data[$key] // empty' <<<"$secret")" ] || return 1
+	done
+}
+
 setup_file() {
 	if sandbox_exists; then
 		echo "a sandbox exists on this host; run make down first" >&2
@@ -111,10 +137,10 @@ teardown_file() {
 	fi
 }
 
-@test "make up PROFILE=identity brings ten stages Ready on the management cluster alone" {
+@test "make up PROFILE=identity brings eleven stages Ready on the management cluster alone" {
 	SANDBOX_STAGE_TIMEOUT=2400 run sb_make up PROFILE=identity
 	[ "$status" -eq 0 ]
-	[[ ${lines[-2]} =~ ^up:\ 10\ stages\ Ready\ on\ 1\ clusters\ at\ latest@sha256:[0-9a-f]{64}$ ]]
+	[[ ${lines[-2]} =~ ^up:\ 11\ stages\ Ready\ on\ 1\ clusters\ at\ latest@sha256:[0-9a-f]{64}$ ]]
 	[[ ${lines[-1]} == "export KUBECONFIG="* ]]
 	[ "$(kind get clusters 2>/dev/null | grep -cxE 'sandbox-(storage|compute)')" = 0 ]
 }
@@ -191,6 +217,37 @@ teardown_file() {
 	tenant_done
 }
 
+@test "the ControlPlane assigns workflow, six orders are Ready and RabbitMQVhost workflow-bus reports MessagingNotManaged with the stage of orders Ready" {
+	local orders
+	[ "$(kc management -n openstack get controlplanes.c5c3.io controlplane -o json | jq -c '.spec.namespaceAssignments')" = \
+		'[{"namespace":"workflow","allowedRoles":["member"],"allowCatalogEntries":true}]' ]
+	[ "$(stage_ready management-orders)" = True ]
+	orders=$(kc management -n workflow get "$ORDERS" -o json)
+	[ "$(jq -r '[.items[] | select(any(.status.conditions[]?; .type == "Ready" and .status == "True")) | .metadata.name] | sort | join(" ")' <<<"$orders")" = \
+		"workflow workflow-appcred workflow-db workflow-dns workflow-member workflow-project" ]
+	[ "$(jq -r '.items[] | select(.kind == "RabbitMQVhost") | "\(.metadata.name) \([.status.conditions[] | select(.type == "VhostReady")][0] | "\(.status) \(.reason)")"' <<<"$orders")" = \
+		"workflow-bus False MessagingNotManaged" ]
+	secret_has_keys workflow-credentials clouds.yaml password
+	secret_has_keys workflow-appcred-credentials clouds.yaml application_credential_id application_credential_secret
+	secret_has_keys workflow-db-credentials host port database username password
+	run kc management -n workflow get secret workflow-bus-credentials
+	[ "$status" -ne 0 ]
+	[[ $output == *NotFound* ]]
+}
+
+# Flux would take back a field that kubectl patched, and the CRD refuses to
+# lower passwordGeneration; the example orders carry ssa: Merge.
+@test "a password of the example user rotated by hand survives a reconcile of the stage of orders" {
+	kc management -n workflow patch keystoneusers.c5c3.io workflow --type merge -p '{"spec":{"passwordGeneration":2}}' >/dev/null
+	run eventually 300 password_generation
+	[ "$status" -eq 0 ]
+	run flux --kubeconfig "$KUBECONFIG_DIR/management.yaml" -n flux-system reconcile kustomization management-orders
+	echo "$output"
+	[ "$status" -eq 0 ]
+	[ "$(stage_ready management-orders)" = True ]
+	[ "$(kc management -n workflow get keystoneusers.c5c3.io workflow -o jsonpath='{.spec.passwordGeneration}')" = 2 ]
+}
+
 @test "make env loads a client that gets a token with the sandbox CA and none without it" {
 	skip_without_resolver
 	run bash -c 'eval "$(make --no-print-directory -C "$1" env)" && openstack token issue -f value -c id >/dev/null' _ "$ROOT"
@@ -203,13 +260,42 @@ teardown_file() {
 	[[ $output == *"CERTIFICATE_VERIFY_FAILED"* || $output == *"certificate verify failed"* ]]
 }
 
-@test "make verify passes the two checks of Keystone" {
+@test "make verify passes the two checks of Keystone and the five of the orders" {
 	skip_without_resolver
 	run sb_make verify
 	echo "$output"
 	[ "$status" -eq 0 ]
-	[ "$(grep -oE '^(ok|FAIL) [^:]+' <<<"$output" | paste -sd ' ')" = "ok keystone-token ok keystone-catalog" ]
-	[ "${lines[-1]}" = "verify: 2 of 2 checks passed" ]
+	[ "$(grep -oE '^(ok|FAIL) [^:]+' <<<"$output" | paste -sd ' ')" = \
+		"ok keystone-token ok keystone-catalog ok orders-ready ok orders-secrets ok orders-converge ok orders-rotation ok orders-teardown" ]
+	grep -qxF 'ok orders-ready: 6 orders in workflow are Ready, RabbitMQVhost workflow/workflow-bus reports MessagingNotManaged on a bus that serves no vhost orders' <<<"$output"
+	grep -qxF 'ok orders-converge: the 6 scratch orders in workflow are Ready with their Secrets' <<<"$output"
+	[ "${lines[-1]}" = "verify: 7 of 7 checks passed" ]
+}
+
+@test "make verify leaves no sandbox-verify order, Secret, labelled child, user, project or service" {
+	local names resources kind json left list
+	skip_without_resolver
+	names=$(kc management get "$ORDERS" -A -o name)
+	[[ $names != *sandbox-verify* ]]
+	names=$(kc management -n workflow get secrets -o name)
+	[[ $names != *sandbox-verify* ]]
+	# Every resource the API server lists, whatever its kind.
+	resources=$(kc management api-resources --verbs=list -o name | paste -sd ,)
+	for kind in "${ORDER_KINDS[@]}"; do
+		json=$(kc management get "$resources" -A -l "c5c3.io/$kind-name" -o json)
+		left=$(jq -r --arg label "c5c3.io/$kind-name" '.items[] | select(.metadata.labels[$label] | startswith("sandbox-verify"))
+			| "\(.kind) \(.metadata.namespace)/\(.metadata.name)"' <<<"$json")
+		echo "$kind: $left"
+		[ -z "$left" ]
+	done
+	for list in "user list -f value -c Name|sandbox-verify" "project list -f value -c Name|sandbox-verify-project" "service list -f value -c Type|sandbox-verify"; do
+		run bash -c 'eval "$(make --no-print-directory -C "$1" env)" && openstack $2' _ "$ROOT" "${list%%|*}"
+		echo "${list%%|*}: $output"
+		[ "$status" -eq 0 ]
+		[ -n "$output" ]
+		run grep -qxF -- "${list#*|}" <<<"$output"
+		[ "$status" -ne 0 ]
+	done
 }
 
 @test "a second make up PROFILE=identity keeps the Job and the ControlPlane" {
@@ -220,7 +306,7 @@ teardown_file() {
 	[ -n "$controlplane" ]
 	run sb_make up PROFILE=identity
 	[ "$status" -eq 0 ]
-	[[ ${lines[-2]} =~ ^up:\ 10\ stages\ Ready\ on\ 1\ clusters\ at\ latest@sha256:[0-9a-f]{64}$ ]]
+	[[ ${lines[-2]} =~ ^up:\ 11\ stages\ Ready\ on\ 1\ clusters\ at\ latest@sha256:[0-9a-f]{64}$ ]]
 	[ "$(job_field '{.metadata.uid}')" = "$job" ]
 	[ "$(kc management -n openstack get controlplanes.c5c3.io controlplane -o jsonpath='{.metadata.uid}')" = "$controlplane" ]
 }
