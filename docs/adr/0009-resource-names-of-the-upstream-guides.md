@@ -26,4 +26,4 @@ The commands and troubleshooting tables of the upstream guides apply unchanged. 
 
 A second instance beside the first gets a name of its own. An external Ceph registered beside the kind one becomes a second `CinderBackend` entry named `ceph2`, with a `cinder-volume` Deployment of its own, so that `ceph1` on kind and `ceph2` external can be compared in one control plane. An external compute cluster gets a chassis, a metadata agent and a pool with names of their own.
 
-[#9](https://github.com/C5C3/sandbox/issues/9) builds the `ControlPlane`, the `OVNCentral` and the namespace, and [#14](https://github.com/C5C3/sandbox/issues/14) builds `ceph1` and `cephbk`.
+[#9](https://github.com/C5C3/sandbox/issues/9) builds the `ControlPlane`, [#10](https://github.com/C5C3/sandbox/issues/10) the `OVNCentral`, and [#14](https://github.com/C5C3/sandbox/issues/14) `ceph1` and `cephbk`. The namespace `openstack` comes from upstream's base `operators`.

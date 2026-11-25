@@ -25,6 +25,7 @@ Each file in this directory records one decision with its context, the alternati
 | [ADR-0019](0019-read-third-party-manifests-as-pinned-remote-resources.md) | Read third-party manifests as pinned remote resources | Proposed |
 | [ADR-0020](0020-unseal-the-shared-openbao-once-with-upstream-scripts.md) | Unseal the shared OpenBao once with upstream's scripts | Accepted |
 | [ADR-0021](0021-install-the-c5c3-operator-without-the-keystone-operator.md) | Install the c5c3-operator without the keystone-operator | Accepted |
+| [ADR-0022](0022-let-a-module-patch-the-stages-of-other-modules.md) | Let a module patch the stages of other modules | Proposed |
 
 ## Points to prove first
 
