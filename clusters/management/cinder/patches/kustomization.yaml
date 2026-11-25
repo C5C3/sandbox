@@ -1,0 +1,48 @@
+# The module cinder runs the Block Storage service and has no stage of its
+# own. It appends the Component components/cinder to the stage of the module
+# controlplane and resumes the cinder-operator, which controllers suspends,
+# on one replica. Upstream admits services.cinder only with a backend, which
+# a backend module such as cinder-nfs adds; without one, the stage
+# management-controlplane reports the refusal. Without the module
+# controlplane the first patch changes nothing, while the second still
+# resumes the operator, which then waits for the keystone-operator that only
+# controlplane resumes, so the module belongs beside controlplane.
+#
+# The Flux patch tests that controllers suspended the release before it
+# resumes it: replace alone would add the field, so a render with every
+# service module would not need the suspension, and make validate would
+# report that patch of infrastructure/controllers as dead.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+patches:
+  - target:
+      group: kustomize.toolkit.fluxcd.io
+      kind: Kustomization
+      name: management-controlplane
+    patch: |
+      - op: add
+        path: /spec/components/-
+        value: components/cinder
+  - target:
+      group: kustomize.toolkit.fluxcd.io
+      kind: Kustomization
+      name: management-controllers
+    patch: |
+      - op: add
+        path: /spec/patches/-
+        value:
+          target:
+            group: helm.toolkit.fluxcd.io
+            kind: HelmRelease
+            name: cinder-operator
+            namespace: cinder-system
+          patch: |
+            - op: test
+              path: /spec/suspend
+              value: true
+            - op: replace
+              path: /spec/suspend
+              value: false
+            - op: replace
+              path: /spec/values/replicas
+              value: 1

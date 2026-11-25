@@ -1,0 +1,22 @@
+# The OVN central of Step 3 of upstream's Quick Start (ControlPlane) at the
+# pin, as vendor/cobaltcore/deploy/overlays/metal-stack/controlplane/ovncentral.yaml
+# carries it: single-member Raft clusters and a single northd, with the
+# certificates of the ClusterIssuer openstack-ovn-ca-issuer. The ControlPlane
+# references it by name and does not own it; its Ready condition OVNReady
+# gates NeutronReady.
+apiVersion: ovn.openstack.c5c3.io/v1alpha1
+kind: OVNCentral
+metadata:
+  name: controlplane-ovn
+  namespace: openstack
+spec:
+  tls:
+    issuerRef:
+      name: openstack-ovn-ca-issuer
+  northbound:
+    replicas: 1
+  southbound:
+    replicas: 1
+  northd:
+    deployment:
+      replicas: 1

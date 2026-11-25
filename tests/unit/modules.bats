@@ -55,6 +55,12 @@ find_addresses() {
 		-o -path "$1/tests" -o -path "$1/docs" \) -prune -o -type f -name '*.yaml' ! -path "$1/config.yaml" -print0)
 }
 
+# component_patch <component> <index>: prints the patch with the index of the
+# Component controlplane/components/<component> as JSON on one line.
+component_patch() {
+	I=$2 yq '.patches[env(I)].patch' "$SANDBOX_ROOT/controlplane/components/$1/kustomization.yaml" | yq -o=json -I=0 '.'
+}
+
 # tree_copy: copies clusters/ and infrastructure/ into $BATS_TEST_TMPDIR/tree.
 tree_copy() {
 	rm -rf -- "$BATS_TEST_TMPDIR/tree"
@@ -62,16 +68,29 @@ tree_copy() {
 	cp -R -- "$SANDBOX_ROOT/clusters" "$SANDBOX_ROOT/infrastructure" "$BATS_TEST_TMPDIR/tree/"
 }
 
-@test "every module of a cluster meets the stage contract" {
+@test "every module of a cluster with a stage meets the stage contract" {
 	local dir count=0
 	for dir in "$SANDBOX_ROOT"/clusters/*/*/; do
 		dir=${dir%/}
+		[ -f "$dir/stage.yaml" ] || continue
 		run stage_contract "$SANDBOX_ROOT" "${dir#"$SANDBOX_ROOT"/clusters/}"
 		echo "${dir#"$SANDBOX_ROOT"/}: point $output"
 		[ "$status" -eq 0 ]
 		count=$((count + 1))
 	done
 	[ "$count" -ge 3 ]
+}
+
+@test "every module of a cluster without a stage holds exactly patches/kustomization.yaml" {
+	local dir count=0
+	for dir in "$SANDBOX_ROOT"/clusters/*/*/; do
+		dir=${dir%/}
+		[ ! -f "$dir/stage.yaml" ] || continue
+		echo "${dir#"$SANDBOX_ROOT"/}"
+		[ "$(cd -- "$dir" && find . -mindepth 1 | LC_ALL=C sort | paste -sd ' ')" = "./patches ./patches/kustomization.yaml" ]
+		count=$((count + 1))
+	done
+	[ "$count" -ge 7 ]
 }
 
 @test "the stage contract names the first point a broken module breaks" {
@@ -221,6 +240,139 @@ EOF
 		'[["components/keystone"],3]' ]
 }
 
+@test "each service module appends its component to the stage of controlplane and resumes its releases on one replica in the stage of controllers" {
+	local module releases release file ops expected count i
+	while read -r module releases; do
+		file=$SANDBOX_ROOT/clusters/management/$module/patches/kustomization.yaml
+		echo "$module"
+		[ ! -e "$SANDBOX_ROOT/clusters/management/$module/stage.yaml" ]
+		[ "$(yq -o=json -I=0 '[.patches[].target.name]' "$file")" = '["management-controlplane","management-controllers"]' ]
+		[ "$(yq '.patches[0].patch' "$file" | yq -o=json -I=0 '[.[] | select(.path == "/spec/components/-")]')" = \
+			"[{\"op\":\"add\",\"path\":\"/spec/components/-\",\"value\":\"components/$module\"}]" ]
+		[ -f "$SANDBOX_ROOT/controlplane/components/$module/kustomization.yaml" ]
+		ops=$(yq '.patches[1].patch' "$file")
+		[ "$(yq -o=json -I=0 '[.[] | [.op, .path]] | unique' - <<<"$ops")" = '[["add","/spec/patches/-"]]' ]
+		expected=
+		for release in $releases; do
+			expected+="${expected:+,}{\"group\":\"helm.toolkit.fluxcd.io\",\"kind\":\"HelmRelease\",\"name\":\"$release-operator\",\"namespace\":\"$release-system\"}"
+		done
+		[ "$(yq -o=json -I=0 '[.[].value.target]' - <<<"$ops")" = "[$expected]" ]
+		# Each resume first tests the suspension of controllers.
+		count=$(yq 'length' - <<<"$ops")
+		for ((i = 0; i < count; i++)); do
+			[ "$(I=$i yq '.[env(I)].value.patch' - <<<"$ops" | yq -o=json -I=0 '.')" = \
+				'[{"op":"test","path":"/spec/suspend","value":true},{"op":"replace","path":"/spec/suspend","value":false},{"op":"replace","path":"/spec/values/replicas","value":1}]' ]
+		done
+	done <<'EOF'
+glance glance
+placement placement
+barbican barbican
+neutron ovn neutron
+cinder cinder
+nova nova
+horizon horizon
+EOF
+}
+
+@test "glance and cinder-nfs append the dependency on the stage they need, and the other service modules none" {
+	local module dir=$SANDBOX_ROOT/clusters/management
+	[ "$(yq '.patches[0].patch' "$dir/glance/patches/kustomization.yaml" | yq -o=json -I=0 '.')" = \
+		'[{"op":"add","path":"/spec/components/-","value":"components/glance"},{"op":"add","path":"/spec/dependsOn/-","value":{"name":"management-objectstore"}}]' ]
+	[ "$(yq -o=json -I=0 '[.patches[].target.name]' "$dir/cinder-nfs/patches/kustomization.yaml")" = '["management-controlplane"]' ]
+	[ "$(yq '.patches[0].patch' "$dir/cinder-nfs/patches/kustomization.yaml" | yq -o=json -I=0 '.')" = \
+		'[{"op":"add","path":"/spec/components/-","value":"components/cinder-nfs"},{"op":"add","path":"/spec/dependsOn/-","value":{"name":"management-cinder-nfs"}}]' ]
+	[ -f "$SANDBOX_ROOT/controlplane/components/cinder-nfs/kustomization.yaml" ]
+	for module in placement barbican neutron cinder nova horizon; do
+		echo "$module"
+		[ "$(yq '.patches[0].patch' "$dir/$module/patches/kustomization.yaml" | yq '[.[] | select(.path == "/spec/dependsOn/-")] | length')" = 0 ]
+	done
+}
+
+@test "the stage of cinder-nfs runs the NFS export after controllers, and the stage of fake-compute the fake compute after controlplane" {
+	local dir=$SANDBOX_ROOT/clusters/management
+	[ "$(yq -o=json -I=0 '[.spec.dependsOn, .spec.path, .spec.timeout]' "$dir/cinder-nfs/stage.yaml")" = \
+		'[[{"name":"management-controllers"}],"./infrastructure/nfs","10m"]' ]
+	[ "$(yq -o=json -I=0 '.spec.healthCheckExprs' "$dir/cinder-nfs/stage.yaml")" = \
+		"$(yq -o=json -I=0 '.spec.healthCheckExprs' "$dir/platform/stage.yaml")" ]
+	[ "$(yq -o=json -I=0 '[.spec.dependsOn, .spec.path, .spec.timeout]' "$dir/fake-compute/stage.yaml")" = \
+		'[[{"name":"management-controlplane"}],"./controlplane/fake-compute","10m"]' ]
+}
+
+@test "each component of a service patches the ControlPlane controlplane with its block behind the Gateway openstack-gw" {
+	local component service file patch rest
+	for component in glance placement barbican neutron cinder nova horizon cinder-nfs; do
+		file=$SANDBOX_ROOT/controlplane/components/$component/kustomization.yaml
+		service=${component%-nfs}
+		echo "$component"
+		[ "$(yq -o=json -I=0 '[.apiVersion, .kind]' "$file")" = '["kustomize.config.k8s.io/v1alpha1","Component"]' ]
+		[ "$(yq -o=json -I=0 '.patches[0].target' "$file")" = \
+			'{"group":"c5c3.io","version":"v1alpha1","kind":"ControlPlane","name":"controlplane","namespace":"openstack"}' ]
+		patch=$(component_patch "$component" 0)
+		[ "$(jq -c '[.apiVersion, .kind, .metadata.name, .metadata.namespace, (.spec.services | keys)]' <<<"$patch")" = \
+			"[\"c5c3.io/v1alpha1\",\"ControlPlane\",\"controlplane\",\"openstack\",[\"$service\"]]" ]
+		if [ "$component" = cinder-nfs ]; then
+			[ "$(jq -c '.spec.services.cinder' <<<"$patch")" = \
+				'{"backends":[{"name":"nfs1","type":"NFS","nfs":{"server":"nfs-server.openstack.svc.cluster.local","path":"/volumes"}}]}' ]
+			continue
+		fi
+		[ "$(jq -c ".spec.services.$service.gateway" <<<"$patch")" = \
+			"{\"parentRef\":{\"name\":\"openstack-gw\"},\"hostname\":\"$service.\${ADDRESSES_GATEWAY//./-}.nip.io\"}" ]
+		[ "$(jq ".spec.services.$service | has(\"publicEndpoint\")" <<<"$patch")" = false ]
+		# Beside the gateway, the block of Step 4 and nothing else.
+		case $component in
+		glance) rest='{"backends":[{"name":"default","type":"S3","isDefault":true,"s3":{"endpoint":"http://garage.shared-services.svc.cluster.local:3900","bucket":"glance-images","region":"garage","credentialsSecretRef":{"name":"garage-s3-credentials"}}}]}' ;;
+		barbican) rest='{"secretStore":{"dedicated":{}}}' ;;
+		neutron) rest='{"ovn":{"centralRef":{"name":"controlplane-ovn"}}}' ;;
+		*) rest='{}' ;;
+		esac
+		[ "$(jq -c ".spec.services.$service | del(.gateway)" <<<"$patch")" = "$rest" ]
+	done
+	# A merge patch replaces a list, so cinder-nfs alone sets backends.
+	[ "$(component_patch cinder 0 | jq '.spec.services.cinder | has("backends")')" = false ]
+}
+
+@test "the three bus consumers declare messaging: {} in the patch of their block, and the other components no messaging" {
+	local component expected
+	for component in glance placement barbican neutron cinder nova horizon cinder-nfs; do
+		case $component in
+		neutron | cinder | nova) expected="[{\"messaging\":{}},[\"$component\"]]" ;;
+		*) expected="[null,[\"${component%-nfs}\"]]" ;;
+		esac
+		echo "$component"
+		[ "$(component_patch "$component" 0 | jq -c '[.spec.infrastructure, (.spec.services | keys)]')" = "$expected" ]
+	done
+}
+
+@test "the six database services add their TENANT_SERVICE_ variable to the container tenant of the Job, and horizon and cinder-nfs none" {
+	local component file
+	[ "$(yq 'select(.kind == "Job") | .spec.template.spec.containers[0].name' "$SANDBOX_ROOT/controlplane/tenant.yaml")" = tenant ]
+	for component in glance placement barbican neutron cinder nova; do
+		file=$SANDBOX_ROOT/controlplane/components/$component/kustomization.yaml
+		echo "$component"
+		[ "$(yq '.patches | length' "$file")" = 2 ]
+		[ "$(yq -o=json -I=0 '.patches[1].target' "$file")" = \
+			'{"group":"batch","version":"v1","kind":"Job","name":"controlplane-database-tenant","namespace":"openstack"}' ]
+		[ "$(component_patch "$component" 1 | jq -c '[.apiVersion, .kind, .metadata.name, .metadata.namespace, .spec.template.spec.containers]')" = \
+			"[\"batch/v1\",\"Job\",\"controlplane-database-tenant\",\"openstack\",[{\"name\":\"tenant\",\"env\":[{\"name\":\"TENANT_SERVICE_${component^^}\",\"value\":\"$component\"}]}]]" ]
+	done
+	for component in horizon cinder-nfs; do
+		echo "$component"
+		[ "$(yq '.patches | length' "$SANDBOX_ROOT/controlplane/components/$component/kustomization.yaml")" = 1 ]
+	done
+}
+
+@test "the component neutron holds the OVNCentral controlplane-ovn, horizon the ExternalSecret of its secret key, and no other component a resource" {
+	local dir=$SANDBOX_ROOT/controlplane/components component
+	[ "$(yq -o=json -I=0 '.resources' "$dir/neutron/kustomization.yaml")" = '["ovncentral.yaml"]' ]
+	[ "$(yq -o=json -I=0 '.' "$dir/neutron/ovncentral.yaml")" = \
+		'{"apiVersion":"ovn.openstack.c5c3.io/v1alpha1","kind":"OVNCentral","metadata":{"name":"controlplane-ovn","namespace":"openstack"},"spec":{"tls":{"issuerRef":{"name":"openstack-ovn-ca-issuer"}},"northbound":{"replicas":1},"southbound":{"replicas":1},"northd":{"deployment":{"replicas":1}}}}' ]
+	[ "$(yq -o=json -I=0 '.resources' "$dir/horizon/kustomization.yaml")" = \
+		'["../../../vendor/cobaltcore/deploy/bases/devstack/infrastructure/horizon-secret-key-externalsecret.yaml"]' ]
+	for component in glance placement barbican cinder nova cinder-nfs; do
+		[ "$(yq 'has("resources")' "$dir/$component/kustomization.yaml")" = false ]
+	done
+}
+
 @test "the Job controlplane-database-tenant is forced, pins its image by digest and mounts the generated scripts, which Flux does not substitute" {
 	local file=$SANDBOX_ROOT/controlplane/tenant.yaml job='select(.kind == "Job")' generator
 	[ "$(yq "$job | .metadata.name + \" \" + .metadata.annotations[\"kustomize.toolkit.fluxcd.io/force\"]" "$file")" = \
@@ -244,9 +396,9 @@ EOF
 	done
 }
 
-@test "the stages of openbao, objectstore, platform and sizing substitute no variables" {
+@test "the stages of openbao, objectstore, platform, sizing, cinder-nfs and fake-compute substitute no variables" {
 	local module
-	for module in openbao objectstore platform sizing; do
+	for module in openbao objectstore platform sizing cinder-nfs fake-compute; do
 		[ "$(yq '.spec | has("postBuild")' "$SANDBOX_ROOT/clusters/management/$module/stage.yaml")" = false ]
 	done
 }

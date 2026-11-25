@@ -221,6 +221,14 @@ nfs_profile() {
 	done
 }
 
+@test "profile_load of controlplane makes the host check test the modules nfs and nfsv4" {
+	export SANDBOX_PROFILE=controlplane
+	profile_load
+	run preflight_run management
+	[ "$status" -eq 0 ]
+	[[ $output == *$'\n'"ok module nfs: available"$'\n'"ok module nfsv4: available"$'\n'* ]]
+}
+
 # preflight_copy: copies scripts/ into the test's directory, with the probes
 # of healthy_host in place of those of its scripts/lib/preflight.sh.
 preflight_copy() {
@@ -236,6 +244,16 @@ preflight_copy() {
 	[ "$status" -eq 0 ]
 	[ "${lines[-1]}" = "preflight: 0 failed, 0 warnings" ]
 	[[ $output != *"module nfs"* ]]
+}
+
+@test "scripts/preflight.sh does not check the modules nfs and nfsv4 when SANDBOX_PROFILE_FILE is set by hand" {
+	preflight_copy
+	# controlplane lists cinder-nfs on management.
+	export SANDBOX_PROFILE_FILE=$SANDBOX_ROOT/profiles/controlplane.yaml
+	run "$BATS_TEST_TMPDIR/scripts/preflight.sh" management
+	[ "$status" -eq 0 ]
+	[ "${lines[-1]}" = "preflight: 0 failed, 0 warnings" ]
+	[[ $output != *"command not found"* && $output != *"module nfs"* ]]
 }
 
 @test "scripts/preflight.sh fails a configuration without a switch of a service module" {

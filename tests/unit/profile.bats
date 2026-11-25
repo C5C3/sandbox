@@ -422,3 +422,20 @@ switches_on() {
 	[ "$status" -eq 0 ]
 	[ "$output" = $'test\ncrds\nfake-compute\nresolver' ]
 }
+
+@test "profile_load loads controlplane with the management cluster alone and its 15 modules, 12 stages with its switches" {
+	export SANDBOX_PROFILE=controlplane
+	profile_load
+	[ "$SANDBOX_PROFILE_CLUSTERS" = management ]
+	run profile_modules management
+	[ "$status" -eq 0 ]
+	[ "$output" = $'crds\ncontrollers\nloadbalancer\npki\ngateway\nopenbao\nobjectstore\nplatform\nsizing\ncontrolplane\nplacement\nneutron\ncinder\ncinder-nfs\nnova' ]
+
+	config_load
+	run cluster_modules management
+	[ "$status" -eq 0 ]
+	[ "$output" = $'crds\ncontrollers\nloadbalancer\npki\ngateway\nopenbao\nobjectstore\nplatform\nsizing\ncontrolplane\nplacement\nneutron\ncinder\ncinder-nfs\nnova\nglance\nbarbican\nhorizon\nfake-compute' ]
+	run cluster_stages management
+	[ "$status" -eq 0 ]
+	[ "$output" = $'crds\ncontrollers\nloadbalancer\npki\ngateway\nopenbao\nobjectstore\nplatform\nsizing\ncontrolplane\ncinder-nfs\nfake-compute' ]
+}

@@ -1,9 +1,13 @@
 # The ControlPlane controlplane in openstack, the base of the module
 # controlplane. One Component per service adds its block to spec.services
-# (components/keystone), and the module messaging-tls adds the brownfield
-# messaging block (components/messaging-tls). The SizingProfile sandbox sizes
-# it; admission stores database.replicas and database.storageSize from it,
-# and both are immutable afterwards, so the base leaves them unset.
+# (components/keystone, glance, placement, barbican, neutron, cinder, nova
+# and horizon), components/cinder-nfs adds the volume backend of cinder, and
+# the module messaging-tls adds the brownfield messaging block
+# (components/messaging-tls). Neutron, cinder and nova declare an empty
+# messaging block, which the webhook turns into the managed bus unless
+# messaging-tls is there. The SizingProfile sandbox sizes it; admission
+# stores database.replicas and database.storageSize from it, and both are
+# immutable afterwards, so the base leaves them unset.
 #
 # infrastructure.database, infrastructure.cache and korc are the defaults of
 # upstream's defaulting webhook. They are spelled out because the CRD schema

@@ -1,0 +1,10 @@
+# A nova-compute on nova's fake virt driver, upstream's kind overlay
+# unchanged: the ConfigMap controlplane-fake-compute-conf and the Deployment
+# controlplane-fake-compute in openstack. The Deployment mounts the Secret
+# controlplane-nova-compute-config, which the projected Nova publishes once
+# NovaReady is True, so the stage runs after management-controlplane. It
+# registers under the name of its node, and its servers run nothing.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../vendor/cobaltcore/deploy/overlays/kind/fake-compute

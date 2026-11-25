@@ -1,22 +1,29 @@
 # The Job controlplane-database-tenant runs tenant.sh beside this file, which
-# waits for the MariaDB openstack-db of the ControlPlane, reads the root token
-# of the shared OpenBao and runs upstream's setup-database-tenant.sh for the
-# ControlPlane openstack/controlplane. The script writes the database-engine
-# connection and role of Keystone, without which the ControlPlane stays at
-# DBCredentialsReady=False. Flux applies the ControlPlane and the Job in one
-# pass and waits for both: the c5c3-operator creates the MariaDB, the Job
-# onboards the tenant, and the ControlPlane turns Ready.
+# waits for the MariaDB openstack-db of the ControlPlane and then until the
+# ControlPlane openstack/controlplane declares every service a variable
+# TENANT_SERVICE_<SERVICE> of the container names, reads the root token of the
+# shared OpenBao and runs upstream's setup-database-tenant.sh for the
+# ControlPlane. The script writes the database-engine connection and role of
+# Keystone and of each service with a database the ControlPlane declares,
+# without which the ControlPlane stays at DBCredentialsReady=False. Flux
+# applies the ControlPlane and the Job in one pass and waits for both: the
+# c5c3-operator creates the MariaDB, the Job onboards the tenant, and the
+# ControlPlane turns Ready.
 #
 # kustomize.toolkit.fluxcd.io/force: enabled makes Flux create the Job again
-# when its spec changes, which a change of tenant.sh or of upstream's scripts
-# does through the name of the generated ConfigMap. README.md, section "The
-# database tenant onboarding", says how to run it again by hand.
+# when its spec changes. A change of tenant.sh or of upstream's scripts
+# changes it through the name of the generated ConfigMap, and a change in the
+# set of TENANT_SERVICE_<SERVICE> variables, which the service components of
+# the stage add, through the env of the container, so the script writes the
+# roles of a new service. README.md, section "The database tenant
+# onboarding", says how to run it again by hand.
 #
-# The Role in openstack lets the upstream script read the ControlPlane, the
-# MariaDB and its root Secret. openstack-db-root is the name the
-# mariadb-operator's webhook gives that Secret, because the c5c3-operator sets
-# none. The Role in shared-services lets the runner read the root token and
-# the script exec into openbao-0, where it runs every bao command.
+# The Role in openstack lets the runner read the MariaDB and the ControlPlane,
+# and the upstream script read both and the root Secret of the MariaDB.
+# openstack-db-root is the name the mariadb-operator's webhook gives that
+# Secret, because the c5c3-operator sets none. The Role in shared-services lets
+# the runner read the root token and the script exec into openbao-0, where it
+# runs every bao command.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
