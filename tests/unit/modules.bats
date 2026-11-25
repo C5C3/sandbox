@@ -164,6 +164,20 @@ EOF
 		'[{"apiGroups":[""],"resources":["secrets"],"verbs":["create"]}]' ]
 }
 
+@test "every rule of the Role rabbitmq-transport names its objects" {
+	local file=$SANDBOX_ROOT/infrastructure/messaging-tls/transport.yaml roles='select(.kind == "Role")'
+	[ "$(yq ea "[$roles] | length" "$file")" = 1 ]
+	[ "$(yq ea -o=json -I=0 "[$roles | .rules[] | select((.resourceNames // []) | length == 0)]" "$file")" = '[]' ]
+}
+
+@test "the stage of messaging-tls substitutes from cluster-vars" {
+	local module
+	for module in messaging-tls; do
+		[ "$(yq -o=json -I=0 '.spec.postBuild' "$SANDBOX_ROOT/clusters/management/$module/stage.yaml")" = \
+			'{"substituteFrom":[{"kind":"ConfigMap","name":"cluster-vars"}]}' ]
+	done
+}
+
 @test "the stages of openbao, objectstore, platform and sizing substitute no variables" {
 	local module
 	for module in openbao objectstore platform sizing; do

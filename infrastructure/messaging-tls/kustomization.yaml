@@ -1,0 +1,34 @@
+# The message bus of the sandbox: upstream's development RabbitmqCluster
+# shared-rabbitmq in openstack with a TLS listener alone, published as a
+# Service of type LoadBalancer on addresses.rabbitmq, its certificate from the
+# sandbox CA, and the transport URL Secrets of a brownfield messaging block.
+# The RabbitMQ Cluster Operator is a Flux Kustomization of controllers.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../vendor/cobaltcore/deploy/bases/messaging
+  - certificate.yaml
+  - transport.yaml
+patches:
+  # The operator then publishes 5671 and the TLS ports of the management and
+  # metrics plugins, and no 5672. The sandbox CA is name-constrained to
+  # nip.io, so every client, the pods of this cluster included, dials
+  # rabbitmq.<a-b-c-d>.nip.io:5671 on this address.
+  - target:
+      group: rabbitmq.com
+      version: v1beta1
+      kind: RabbitmqCluster
+      name: shared-rabbitmq
+      namespace: openstack
+    patch: |
+      - op: add
+        path: /spec/tls
+        value:
+          secretName: shared-rabbitmq-tls
+          disableNonTLSListeners: true
+      - op: add
+        path: /spec/service
+        value:
+          type: LoadBalancer
+          annotations:
+            metallb.io/loadBalancerIPs: ${ADDRESSES_RABBITMQ}

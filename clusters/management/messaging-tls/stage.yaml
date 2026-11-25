@@ -1,0 +1,38 @@
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: management-messaging-tls
+  namespace: flux-system
+spec:
+  dependsOn:
+    - name: management-pki
+    - name: management-loadbalancer
+  interval: 10m
+  retryInterval: 1m
+  timeout: 10m
+  path: ./infrastructure/messaging-tls
+  prune: true
+  wait: true
+  sourceRef:
+    kind: OCIRepository
+    name: sandbox
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: cluster-vars
+  # kstatus counts a Certificate as ready once it exists and reads neither the
+  # conditions of a RabbitmqCluster nor those of External Secrets, whose
+  # conditions carry no observedGeneration.
+  healthCheckExprs:
+    - apiVersion: cert-manager.io/v1
+      kind: Certificate
+      current: status.conditions.exists(c, c.type == 'Ready' && c.status == 'True' && c.observedGeneration == metadata.generation)
+    - apiVersion: rabbitmq.com/v1beta1
+      kind: RabbitmqCluster
+      current: status.conditions.exists(c, c.type == 'AllReplicasReady' && c.status == 'True') && status.conditions.exists(c, c.type == 'ReconcileSuccess' && c.status == 'True')
+    - apiVersion: external-secrets.io/v1
+      kind: ExternalSecret
+      current: status.conditions.exists(c, c.type == 'Ready' && c.status == 'True')
+    - apiVersion: external-secrets.io/v1
+      kind: SecretStore
+      current: status.conditions.exists(c, c.type == 'Ready' && c.status == 'True')
