@@ -11,9 +11,10 @@
 #   vendor       the configuration loads, and vendor/cobaltcore is a
 #                checkout at its pin; local changes are reported, not failed
 #   render       the root of each cluster with every module that has a
-#                stage.yaml, and every stage of those roots, render with
-#                flux build kustomization --dry-run --strict-substitute; a
-#                stage reads the variables of cluster-vars
+#                stage.yaml or a patches/kustomization.yaml, and every stage
+#                of those roots, render with flux build kustomization
+#                --dry-run --strict-substitute; a stage reads the variables
+#                of cluster-vars
 #   schemas      the JSON schemas of the sources in scripts/crd-sources.yaml
 #                are downloaded, or converted from CRDs of the tree or of a
 #                downloaded YAML stream
@@ -202,15 +203,18 @@ check_render() {
 	mkdir -p -- "$tmp/profiles" "$tmp/roots" "$tmp/stages"
 	echo '{}' >"$tmp/novars.json"
 
-	# The profile all lists every module of the tree.
+	# The profile all lists every module of the tree, with a stage or
+	# without one.
 	{
 		(IFS=,; echo "clusters: [${SANDBOX_ROLES[*]}]")
 		echo 'modules:'
 		for role in "${SANDBOX_ROLES[@]}"; do
 			modules=()
-			for module in "$tree/clusters/$role"/*/stage.yaml; do
-				module=${module%/stage.yaml}
-				modules+=("${module##*/}")
+			for module in "$tree/clusters/$role"/*/; do
+				module=${module%/}
+				if [ -f "$module/stage.yaml" ] || [ -f "$module/patches/kustomization.yaml" ]; then
+					modules+=("${module##*/}")
+				fi
 			done
 			names=$(printf '%s\n' "${modules[@]}" | LC_ALL=C sort | paste -sd ',' | sed 's/,/, /g')
 			printf '  %s: [%s]\n' "$role" "$names"

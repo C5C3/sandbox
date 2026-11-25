@@ -15,6 +15,10 @@ setup() {
 	[ "$SANDBOX_REGISTRY_IMAGE" = registry:3 ]
 	[ "$SANDBOX_HYPERVISOR_NODES" = 1 ]
 	[ "$SANDBOX_RESOLVER_FALLBACK" = false ]
+	[ "$SANDBOX_SWITCH_GLANCE" = false ]
+	[ "$SANDBOX_SWITCH_BARBICAN" = false ]
+	[ "$SANDBOX_SWITCH_HORIZON" = false ]
+	[ "$SANDBOX_SWITCH_FAKE_COMPUTE" = false ]
 	[ "$SANDBOX_FLUX_OPERATOR_VERSION" = 0.63.1 ]
 	# The pin moves with upstream, so the test reads it.
 	[ "$SANDBOX_UPSTREAM_COMMIT" = "$(yq '.upstream.cobaltcore' "$SANDBOX_ROOT/config.yaml")" ]
@@ -30,7 +34,8 @@ setup() {
 
 @test "config_load fails for each key that is absent" {
 	for key in network.subnet addresses.gateway registry.image switches.hypervisor-nodes flux.operator upstream.cobaltcore \
-		addresses.pool addresses.dns addresses.rabbitmq switches.resolver-fallback; do
+		addresses.pool addresses.dns addresses.rabbitmq switches.resolver-fallback \
+		switches.glance switches.barbican switches.horizon switches.fake-compute; do
 		config_with "del(.${key%%.*}[\"${key#*.}\"])"
 		run config_load
 		[ "$status" -eq 1 ]
@@ -38,8 +43,9 @@ setup() {
 	done
 }
 
-@test "config_load treats a null pool, DNS address, RabbitMQ address or resolver switch as not set" {
-	for key in addresses.pool addresses.dns addresses.rabbitmq switches.resolver-fallback; do
+@test "config_load treats a null pool, DNS address, RabbitMQ address or switch as not set" {
+	for key in addresses.pool addresses.dns addresses.rabbitmq switches.resolver-fallback \
+		switches.glance switches.barbican switches.horizon switches.fake-compute; do
 		config_with ".${key%%.*}[\"${key#*.}\"] = null"
 		run config_load
 		[ "$status" -eq 1 ]
@@ -57,6 +63,49 @@ setup() {
 
 @test "config_load rejects a resolver switch that is neither true nor false" {
 	config_with '.switches["resolver-fallback"] = "maybe"'
+	run config_load
+	[ "$status" -eq 1 ]
+	[ "$output" = "error: config: switches.resolver-fallback must be true or false, got 'maybe'" ]
+}
+
+@test "config_load treats an empty switch of a service module as not set" {
+	for key in glance barbican horizon fake-compute; do
+		config_with ".switches[\"$key\"] = \"\""
+		run config_load
+		[ "$status" -eq 1 ]
+		[ "$output" = "error: config: switches.$key is not set" ]
+	done
+}
+
+@test "config_load reads false and true as values of the switches of the service modules" {
+	local key variable value
+	for key in glance barbican horizon fake-compute; do
+		variable=SANDBOX_SWITCH_${key^^}
+		variable=${variable//-/_}
+		for value in true false; do
+			config_with ".switches[\"$key\"] = $value"
+			config_load
+			[ "${!variable}" = "$value" ]
+		done
+	done
+}
+
+@test "config_load rejects a switch of a service module that is neither true nor false" {
+	for key in glance barbican horizon fake-compute; do
+		config_with ".switches[\"$key\"] = \"yes\""
+		run config_load
+		[ "$status" -eq 1 ]
+		[ "$output" = "error: config: switches.$key must be true or false, got 'yes'" ]
+	done
+}
+
+@test "config_load checks that the switches are set before it checks their values" {
+	config_with '.switches.glance = "yes" | del(.switches["fake-compute"])'
+	run config_load
+	[ "$status" -eq 1 ]
+	[ "$output" = "error: config: switches.fake-compute is not set" ]
+
+	config_with '.switches["resolver-fallback"] = "maybe" | .switches.horizon = "yes"'
 	run config_load
 	[ "$status" -eq 1 ]
 	[ "$output" = "error: config: switches.resolver-fallback must be true or false, got 'maybe'" ]

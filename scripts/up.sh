@@ -135,6 +135,21 @@ modules=$(cluster_modules management) || exit 1
 if [ "$SANDBOX_RESOLVER_FALLBACK" = true ] && ! grep -qxF loadbalancer <<<"$modules"; then
 	die "switches.resolver-fallback needs the module loadbalancer on sandbox-management, the profile $SANDBOX_PROFILE does not list it"
 fi
+# The switches glance, barbican, horizon and fake-compute add the module of
+# their name. The first three patch the stage of controlplane, glance makes
+# it depend on the stage of objectstore, and the stage of fake-compute
+# depends on that of controlplane and runs a compute for the Nova of nova.
+# profile_load did not see the added modules, so the run stops here at the
+# first module that one of them needs and the profile does not list.
+for need in glance:controlplane glance:objectstore barbican:controlplane horizon:controlplane \
+	fake-compute:controlplane fake-compute:nova; do
+	switch=${need%%:*} module=${need#*:}
+	variable=SANDBOX_SWITCH_${switch^^}
+	variable=${variable//-/_}
+	if [ "${!variable}" = true ] && ! grep -qxF "$module" <<<"$modules"; then
+		die "switches.$switch needs the module $module on sandbox-management, the profile $SANDBOX_PROFILE does not list it"
+	fi
+done
 for role in "${SANDBOX_ROLES[@]}"; do
 	if [[ " $SANDBOX_PROFILE_CLUSTERS " != *" $role "* ]] && sandbox_cluster "$role"; then
 		die "$(cluster_name "$role") exists, the profile $SANDBOX_PROFILE does not list it; run make down first"

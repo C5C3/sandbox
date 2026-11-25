@@ -323,7 +323,7 @@ scaffold_attached() {
 	[ "$status" -eq 0 ]
 	[ "$(yq '[.apiVersion, .kind, .metadata.name, .metadata.namespace] | join(" ")' - <<<"$output")" = "v1 ConfigMap cluster-vars flux-system" ]
 	[ "$(yq -o=json -I=0 '.metadata.labels' - <<<"$output")" = '{"reconcile.fluxcd.io/watch":"Enabled"}' ]
-	[ "$(yq -o=json -I=0 '.data' - <<<"$output")" = '{"NETWORK_SUBNET":"172.30.0.0/16","ADDRESSES_GATEWAY":"172.30.255.10","ADDRESSES_POOL":"172.30.255.0/24","ADDRESSES_DNS":"172.30.255.53","ADDRESSES_RABBITMQ":"172.30.255.11","REGISTRY_IMAGE":"registry:3","SWITCHES_HYPERVISOR_NODES":"1","SWITCHES_RESOLVER_FALLBACK":"false","UPSTREAM_COBALTCORE":"'"$pin"'","FLUX_OPERATOR":"0.63.1"}' ]
+	[ "$(yq -o=json -I=0 '.data' - <<<"$output")" = '{"NETWORK_SUBNET":"172.30.0.0/16","ADDRESSES_GATEWAY":"172.30.255.10","ADDRESSES_POOL":"172.30.255.0/24","ADDRESSES_DNS":"172.30.255.53","ADDRESSES_RABBITMQ":"172.30.255.11","REGISTRY_IMAGE":"registry:3","SWITCHES_HYPERVISOR_NODES":"1","SWITCHES_RESOLVER_FALLBACK":"false","SWITCHES_GLANCE":"false","SWITCHES_BARBICAN":"false","SWITCHES_HORIZON":"false","SWITCHES_FAKE_COMPUTE":"false","UPSTREAM_COBALTCORE":"'"$pin"'","FLUX_OPERATOR":"0.63.1"}' ]
 	[ "$(yq '[.data[] | tag] | unique | join(" ")' - <<<"$output")" = '!!str' ]
 }
 
@@ -371,6 +371,34 @@ scaffold_attached() {
 	run "$BATS_TEST_TMPDIR/scripts/up.sh"
 	[ "$status" -eq 1 ]
 	[ "$output" = 'error: switches.resolver-fallback needs the module loadbalancer on sandbox-management, the profile scaffold does not list it' ]
+}
+
+@test "up.sh stops before it calls kind or Docker when a switch of a service module lacks a module it needs" {
+	local case profile switch
+	cp -R -- "$SANDBOX_ROOT/scripts" "$SANDBOX_ROOT/profiles" "$SANDBOX_ROOT/clusters" "$BATS_TEST_TMPDIR/"
+	# The host check passes.
+	echo 'preflight_run() { :; }' >"$BATS_TEST_TMPDIR/scripts/lib/preflight.sh"
+	export -f docker kind
+	# gateway lists neither controlplane nor objectstore; the run names the
+	# first module that glance needs.
+	for case in platform:horizon:controlplane identity:fake-compute:nova \
+		platform:glance:controlplane identity:glance:objectstore gateway:glance:controlplane \
+		platform:barbican:controlplane platform:fake-compute:controlplane; do
+		IFS=: read -r profile switch module <<<"$case"
+		export SANDBOX_PROFILE=$profile
+		config_with ".switches[\"$switch\"] = true"
+		run "$BATS_TEST_TMPDIR/scripts/up.sh"
+		[ "$status" -eq 1 ]
+		[ "$output" = "error: switches.$switch needs the module $module on sandbox-management, the profile $profile does not list it" ]
+	done
+
+	# With two switches on, the run names the module of the switch it checks
+	# first, horizon before fake-compute.
+	export SANDBOX_PROFILE=platform
+	config_with '.switches.horizon = true | .switches["fake-compute"] = true'
+	run "$BATS_TEST_TMPDIR/scripts/up.sh"
+	[ "$status" -eq 1 ]
+	[ "$output" = "error: switches.horizon needs the module controlplane on sandbox-management, the profile platform does not list it" ]
 }
 
 @test "up.sh stops at a failed fetch of upstream before it calls kind or Docker" {
@@ -460,6 +488,21 @@ scaffold_attached() {
 		'["crds","controllers","loadbalancer","pki","messaging-tls","messaging-tls/patches"]' ]
 }
 
+@test "root_manifest lists a module without a stage as its patches Component alone" {
+	module_without_stage management extra
+	profile_with $'clusters: [management]\nmodules:\n  management: [extra, test]'
+	profile_load
+	run root_manifest management
+	[ "$status" -eq 0 ]
+	[ "$(yq -o=json -I=0 '.spec.components' - <<<"$output")" = '["test","extra/patches"]' ]
+
+	profile_with $'clusters: [management]\nmodules:\n  management: [extra]'
+	profile_load
+	run root_manifest management
+	[ "$status" -eq 0 ]
+	[ "$(yq -o=json -I=0 '.spec.components' - <<<"$output")" = '["extra/patches"]' ]
+}
+
 @test "root_manifest fails for a word that is not a role" {
 	profile_load
 	run root_manifest network
@@ -519,6 +562,58 @@ scaffold_attached() {
 	stages_answer "$(kustomization cluster-management True ok latest@sha256:new)" "$(kustomization management-test True ok latest@sha256:new)"
 	run wait_stages
 	[ "$status" -eq 0 ]
+}
+
+# controlplane_attached: loads controlplane with its switches, the management
+# cluster attached and the timeout of the stages at 2 s.
+controlplane_attached() {
+	export SANDBOX_PROFILE=controlplane
+	profile_load
+	config_load
+	attached_roles() { echo management; }
+	export SANDBOX_REVISION=latest@sha256:new SANDBOX_STAGE_TIMEOUT=2
+}
+
+# controlplane_ready [<name>...]: prints a Ready Kustomization at the revision
+# for the root of management and each of the 12 stages of controlplane whose
+# name is not given.
+controlplane_ready() {
+	local name
+	for name in cluster-management management-{crds,controllers,loadbalancer,pki,gateway,openbao,objectstore,platform,sizing,controlplane,cinder-nfs,fake-compute}; do
+		if [[ " $* " != *" $name "* ]]; then
+			kustomization "$name" True "Applied revision: latest@sha256:new" latest@sha256:new
+		fi
+	done
+}
+
+@test "wait_stages and hub_sync leave out a module without a stage" {
+	module_without_stage management extra
+	profile_with $'clusters: [management]\nmodules:\n  management: [extra, test]'
+	profile_load
+	attached_roles() { echo management; }
+	export SANDBOX_REVISION=latest@sha256:new SANDBOX_STAGE_TIMEOUT=2
+	stages_answer "$(kustomization cluster-management True ok latest@sha256:new)" "$(kustomization management-test True ok latest@sha256:new)"
+	run wait_stages
+	[ "$status" -eq 0 ]
+	[ "${#lines[@]}" -eq 1 ]
+	[[ ${lines[0]} == *": waiting for 2 roots and stages to be Ready at latest@sha256:new" ]]
+
+	stages_answer "$(kustomization cluster-management True ok latest@sha256:new)"
+	run wait_stages
+	[ "$status" -eq 1 ]
+	[ "${#lines[@]}" -eq 3 ]
+	[ "${lines[1]}" = "error: stage management-test: not found" ]
+	[ "${lines[2]}" = "error: 1 of 2 stages are not Ready at latest@sha256:new after 2 s; make status shows them" ]
+
+	ensure_flux() { :; }
+	ensure_cluster_vars() { :; }
+	ensure_source() { :; }
+	ensure_root() { :; }
+	wait_stages() { :; }
+	run hub_sync
+	[ "$status" -eq 0 ]
+	[ "${#lines[@]}" -eq 1 ]
+	[[ ${lines[0]} == *": 1 stages Ready on 1 clusters at latest@sha256:new" ]]
 }
 
 @test "ensure_kubeconfig_secret fails when kind cannot read the internal kubeconfig" {

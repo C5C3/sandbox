@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
-# profile_load, profile_modules and config_merged: the profiles of the sandbox
-# and their switches.
+# profile_load, profile_modules, cluster_modules, cluster_stages and
+# config_merged: the profiles of the sandbox, their modules and their switches.
 
 setup() {
 	load helpers
@@ -142,9 +142,50 @@ profile_fails_with() {
 	profile_fails_with "profile case: 'Bad_Name' is not a module name"
 }
 
-@test "a module without a stage fails with the path it expects" {
+@test "a module that does not exist fails with the two paths it expects" {
 	profile_with $'clusters: [management]\nmodules:\n  management: [nothere]'
-	profile_fails_with "profile case: module management/nothere does not exist, expected clusters/management/nothere/stage.yaml"
+	profile_fails_with "profile case: module management/nothere does not exist, expected clusters/management/nothere/stage.yaml or clusters/management/nothere/patches/kustomization.yaml"
+}
+
+@test "a directory with neither stage.yaml nor patches/kustomization.yaml is no module" {
+	module_without_stage management extra
+	rm -- "$SANDBOX_ROOT/clusters/management/extra/patches/kustomization.yaml"
+	printf 'apiVersion: kustomize.config.k8s.io/v1alpha1\nkind: Component\nresources: []\n' \
+		>"$SANDBOX_ROOT/clusters/management/extra/kustomization.yaml"
+	profile_with $'clusters: [management]\nmodules:\n  management: [test, extra]'
+	profile_fails_with "profile case: module management/extra does not exist, expected clusters/management/extra/stage.yaml or clusters/management/extra/patches/kustomization.yaml"
+}
+
+@test "a profile with a module without a stage loads, and cluster_stages leaves the module out" {
+	module_without_stage management extra
+	profile_with $'clusters: [management, storage]\nmodules:\n  management: [extra, test]\n  storage: [test]'
+	profile_load
+	[ "$(profile_modules management)" = $'extra\ntest' ]
+	run cluster_stages management
+	[ "$status" -eq 0 ]
+	[ "$output" = test ]
+	run cluster_stages storage
+	[ "$status" -eq 0 ]
+	[ "$output" = test ]
+
+	profile_with $'clusters: [management]\nmodules:\n  management: [extra]'
+	profile_load
+	run cluster_stages management
+	[ "$status" -eq 0 ]
+	[ "$output" = "" ]
+}
+
+@test "a module without a stage listed twice fails" {
+	module_without_stage management extra
+	profile_with $'clusters: [management]\nmodules:\n  management: [extra, test, extra]'
+	profile_fails_with "profile case: modules.management lists 'extra' twice"
+}
+
+@test "a stage that depends on a module without a stage fails" {
+	module_without_stage management extra
+	yq -i '.spec.dependsOn = [{"name": "management-extra"}]' "$SANDBOX_ROOT/clusters/management/test/stage.yaml"
+	profile_with $'clusters: [management]\nmodules:\n  management: [extra, test]'
+	profile_fails_with "profile case: management/test depends on the stage management-extra, which the profile does not list"
 }
 
 @test "the checks run over the whole file, so a bad name fails before a missing stage" {
@@ -211,7 +252,7 @@ profile_fails_with() {
 	profile_load
 	run config_merged
 	[ "$status" -eq 0 ]
-	[ "$(yq -o=json -I=0 '.switches' - <<<"$output")" = '{"hypervisor-nodes":2,"resolver-fallback":false,"osd-count":3}' ]
+	[ "$(yq -o=json -I=0 '.switches' - <<<"$output")" = '{"hypervisor-nodes":2,"resolver-fallback":false,"glance":false,"barbican":false,"horizon":false,"fake-compute":false,"osd-count":3}' ]
 	[ "$(yq '.network.subnet' - <<<"$output")" = 172.30.0.0/16 ]
 
 	config_load
@@ -231,11 +272,15 @@ profile_fails_with() {
 
 @test "a switch of a profile adds switches to a configuration without them" {
 	config_with 'del(.switches)'
-	profile_with $'clusters: [management]\nswitches:\n  hypervisor-nodes: 3\n  resolver-fallback: true'
+	profile_with $'clusters: [management]\nswitches:\n  hypervisor-nodes: 3\n  resolver-fallback: true\n  glance: true\n  barbican: false\n  horizon: true\n  fake-compute: false'
 	profile_load
 	config_load
 	[ "$SANDBOX_HYPERVISOR_NODES" = 3 ]
 	[ "$SANDBOX_RESOLVER_FALLBACK" = true ]
+	[ "$SANDBOX_SWITCH_GLANCE" = true ]
+	[ "$SANDBOX_SWITCH_BARBICAN" = false ]
+	[ "$SANDBOX_SWITCH_HORIZON" = true ]
+	[ "$SANDBOX_SWITCH_FAKE_COMPUTE" = false ]
 }
 
 @test "an invalid switch of a profile fails with the message of config_load" {
@@ -290,4 +335,90 @@ modules_file() {
 	out=$(cluster_modules management 2>/dev/null) || rc=$?
 	[ "$rc" -ne 0 ]
 	[ "$out" = "" ]
+}
+
+# switches_on: turns on the switches of the four service modules.
+switches_on() {
+	export SANDBOX_SWITCH_GLANCE=true SANDBOX_SWITCH_BARBICAN=true SANDBOX_SWITCH_HORIZON=true SANDBOX_SWITCH_FAKE_COMPUTE=true
+}
+
+@test "with the four switches on cluster_modules adds their modules to management after the profile's and before resolver" {
+	switches_on
+	modules_file $'clusters: [management, storage, compute]\nmodules:\n  management: [b, a]\n  storage: [c]'
+	run cluster_modules management
+	[ "$status" -eq 0 ]
+	[ "$output" = $'b\na\nglance\nbarbican\nhorizon\nfake-compute' ]
+
+	export SANDBOX_RESOLVER_FALLBACK=true
+	run cluster_modules management
+	[ "$status" -eq 0 ]
+	[ "$output" = $'b\na\nglance\nbarbican\nhorizon\nfake-compute\nresolver' ]
+}
+
+@test "the four switches add nothing to storage and compute" {
+	switches_on
+	modules_file $'clusters: [management, storage, compute]\nmodules:\n  management: [b]\n  storage: [c]'
+	run cluster_modules storage
+	[ "$status" -eq 0 ]
+	[ "$output" = c ]
+	run cluster_modules compute
+	[ "$status" -eq 0 ]
+	[ "$output" = "" ]
+}
+
+@test "cluster_modules adds the module of a switch that is true and none of one that is false or unset" {
+	local key variable
+	modules_file $'clusters: [management]\nmodules:\n  management: [b, a]'
+	for value in unset false; do
+		for key in GLANCE BARBICAN HORIZON FAKE_COMPUTE; do
+			if [ "$value" = unset ]; then unset "SANDBOX_SWITCH_$key"; else export "SANDBOX_SWITCH_$key=$value"; fi
+		done
+		[ "$(cluster_modules management)" = $'b\na' ]
+	done
+
+	for key in glance barbican horizon fake-compute; do
+		variable=SANDBOX_SWITCH_${key^^}
+		export "${variable//-/_}=true"
+		[ "$(cluster_modules management)" = $'b\na\n'"$key" ]
+		unset "${variable//-/_}"
+	done
+}
+
+@test "cluster_modules adds no module of a switch twice when the profile lists it" {
+	switches_on
+	modules_file $'clusters: [management]\nmodules:\n  management: [horizon, a, glance]'
+	run cluster_modules management
+	[ "$status" -eq 0 ]
+	[ "$output" = $'horizon\na\nglance\nbarbican\nfake-compute' ]
+}
+
+@test "cluster_stages prints nothing for a role without modules" {
+	modules_file $'clusters: [management, storage]\nmodules:\n  management: [test]'
+	run cluster_stages storage
+	[ "$status" -eq 0 ]
+	[ "$output" = "" ]
+}
+
+@test "cluster_stages prints nothing and returns the status of cluster_modules when it fails" {
+	local out rc=0
+	cluster_modules() {
+		echo test
+		return 3
+	}
+	out=$(cluster_stages management) || rc=$?
+	[ "$rc" -eq 3 ]
+	[ "$out" = "" ]
+}
+
+@test "cluster_stages keeps the order of cluster_modules and leaves out the modules without a stage it adds" {
+	# horizon stays without a stage, fake-compute gets one.
+	module_without_stage management horizon
+	module_without_stage management fake-compute
+	cp -- "$SANDBOX_ROOT/clusters/management/test/stage.yaml" "$SANDBOX_ROOT/clusters/management/fake-compute/stage.yaml"
+	export SANDBOX_SWITCH_HORIZON=true SANDBOX_SWITCH_FAKE_COMPUTE=true SANDBOX_RESOLVER_FALLBACK=true
+	module_without_stage management extra
+	modules_file $'clusters: [management]\nmodules:\n  management: [test, extra, crds]'
+	run cluster_stages management
+	[ "$status" -eq 0 ]
+	[ "$output" = $'test\ncrds\nfake-compute\nresolver' ]
 }

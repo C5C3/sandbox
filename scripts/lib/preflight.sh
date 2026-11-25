@@ -70,9 +70,10 @@ _preflight_report() {
 }
 
 # preflight_run [<role>...]: runs every check that applies to the roles, or
-# only the checks of every role when none is given. It never stops at a
-# failure, prints one line per check and a summary, and returns 1 when a
-# check failed.
+# only the checks of every role when none is given. When SANDBOX_PROFILE_FILE
+# names a profile whose management cluster lists the module cinder-nfs, it
+# also checks the kernel modules nfs and nfsv4. It never stops at a failure,
+# prints one line per check and a summary, and returns 1 when a check failed.
 preflight_run() {
 	local failed=0 warned=0 storage=false compute=false
 	local yq_ok=false openstack_ok=false config_ok=false
@@ -175,6 +176,16 @@ preflight_run() {
 	fi
 	if $compute; then
 		modules+=(openvswitch geneve vhost_net)
+	fi
+	# Cinder mounts the NFS export of the module cinder-nfs with the NFS
+	# client of the host's kernel, which the kind nodes share. Only
+	# profile_load sets SANDBOX_PROFILE_FILE. scripts/preflight.sh loads no
+	# profile and does not source profile.sh, which defines
+	# profile_modules, so it does not check these modules, even when
+	# SANDBOX_PROFILE_FILE is set in its environment.
+	if [ -n "${SANDBOX_PROFILE_FILE:-}" ] && declare -F profile_modules >/dev/null &&
+		grep -qxF cinder-nfs <<<"$(profile_modules management)"; then
+		modules+=(nfs nfsv4)
 	fi
 	for name in "${modules[@]}"; do
 		if probe_module "$name"; then

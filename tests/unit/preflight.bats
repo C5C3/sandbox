@@ -169,6 +169,85 @@ COMMON_CHECKS="os,cgroup,docker,inotify,tool docker,tool kind,tool kubectl,tool 
 	done
 }
 
+# nfs_profile <modules of management>: points SANDBOX_PROFILE_FILE, as
+# profile_load would, at a profile whose management cluster lists the
+# modules, given as a YAML list.
+nfs_profile() {
+	export SANDBOX_PROFILE_FILE=$BATS_TEST_TMPDIR/nfs.yaml
+	printf 'clusters: [management, storage]\nmodules:\n  management: %s\n  storage: [cinder-nfs]\n' "$1" >"$SANDBOX_PROFILE_FILE"
+}
+
+@test "a profile with cinder-nfs on management checks the modules nfs and nfsv4 after those of the roles" {
+	nfs_profile '[crds, cinder-nfs]'
+	run preflight_run management
+	[ "$status" -eq 0 ]
+	[[ $output == *$'\n'"ok module nfs: available"$'\n'"ok module nfsv4: available"$'\n'* ]]
+	[ "$(check_ids)" = "${COMMON_CHECKS%,resolver},module nfs,module nfsv4,resolver" ]
+
+	run preflight_run management storage compute
+	[ "$status" -eq 0 ]
+	[ "$(check_ids)" = "${COMMON_CHECKS%,resolver},module loop,module openvswitch,module geneve,module vhost_net,module nfs,module nfsv4,kvm,resolver" ]
+}
+
+@test "a missing module nfs or nfsv4 fails a profile with cinder-nfs" {
+	nfs_profile '[cinder-nfs]'
+	for missing in nfs nfsv4; do
+		probe_module() { [ "$1" != "$missing" ]; }
+		run preflight_run management
+		[ "$status" -eq 1 ]
+		[[ $output == *$'\n'"FAIL module $missing: neither loaded nor in the module tree of this kernel"$'\n'* ]]
+		[ "${lines[-1]}" = "preflight: 1 failed, 0 warnings" ]
+	done
+}
+
+@test "the modules nfs and nfsv4 are not checked without cinder-nfs on management or without a loaded profile" {
+	probe_module() { [ "$1" != nfs ] && [ "$1" != nfsv4 ]; }
+	nfs_profile '[crds, controllers]'
+	run preflight_run management storage
+	[ "$status" -eq 0 ]
+	[[ $output != *"module nfs"* ]]
+
+	export SANDBOX_PROFILE=identity
+	profile_load
+	run preflight_run management
+	[ "$status" -eq 0 ]
+	[[ $output != *"module nfs"* ]]
+
+	for value in unset empty; do
+		if [ "$value" = unset ]; then unset SANDBOX_PROFILE_FILE; else export SANDBOX_PROFILE_FILE=; fi
+		run preflight_run management
+		[ "$status" -eq 0 ]
+		[[ $output != *"module nfs"* ]]
+	done
+}
+
+# preflight_copy: copies scripts/ into the test's directory, with the probes
+# of healthy_host in place of those of its scripts/lib/preflight.sh.
+preflight_copy() {
+	cp -R -- "$SANDBOX_ROOT/scripts" "$BATS_TEST_TMPDIR/"
+	declare -f tool_version probe_os probe_cgroup_fstype probe_docker_security probe_inotify_instances probe_tool \
+		probe_openstack_plugin probe_module probe_kvm probe_resolve >>"$BATS_TEST_TMPDIR/scripts/lib/preflight.sh"
+}
+
+@test "scripts/preflight.sh loads no profile and does not check the modules nfs and nfsv4" {
+	preflight_copy
+	profile_with $'clusters: [management]\nmodules:\n  management: [cinder-nfs]'
+	run "$BATS_TEST_TMPDIR/scripts/preflight.sh" management
+	[ "$status" -eq 0 ]
+	[ "${lines[-1]}" = "preflight: 0 failed, 0 warnings" ]
+	[[ $output != *"module nfs"* ]]
+}
+
+@test "scripts/preflight.sh fails a configuration without a switch of a service module" {
+	preflight_copy
+	for key in glance barbican horizon fake-compute; do
+		config_with "del(.switches[\"$key\"])"
+		run "$BATS_TEST_TMPDIR/scripts/preflight.sh" management
+		[ "$status" -eq 1 ]
+		[[ $output == *$'\n'"FAIL config: config: switches.$key is not set"$'\n'* ]]
+	done
+}
+
 @test "a missing /dev/kvm only warns for compute and is not checked for management" {
 	probe_kvm() { return 1; }
 	run preflight_run compute
