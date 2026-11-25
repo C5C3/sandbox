@@ -366,10 +366,12 @@ that deploys them.
   `-modified` when it has local changes, in the annotation
   `sandbox.c5c3.io/upstream` of the `OCIRepository` `sandbox`, and
   `make status` prints it. Holding the pin is one line.
-- **Bootstrap steps as Jobs.** OpenBao initialisation and unseal, the auth
-  mounts and policies, and the database tenant onboarding
-  (`setup-database-tenant.sh`) run as Jobs that mount the upstream scripts,
-  the way the playground runs them. No step is typed by hand after `make up`.
+- **Bootstrap steps as Jobs.** One Job `openbao-bootstrap` in the stage
+  `management-openbao` mounts the upstream scripts and runs `init-unseal.sh`
+  and the four setup scripts, which enable the secret engines and auth
+  mounts, write the policies and seed the bootstrap secrets. The database
+  tenant onboarding (`setup-database-tenant.sh`) is a Job of the module
+  `controlplane`. No step is typed by hand after `make up`.
 - **A thin command layer.** A Makefile and a few scripts do what Flux cannot:
   create the Docker network, the registry and the kind clusters, prepare the
   nodes (loop devices, labels), install Flux, exchange what crosses a cluster
@@ -405,6 +407,44 @@ Holding the pin is leaving the line `upstream.cobaltcore` of `config.yaml` as
 it is, or setting that line back, while the proposal stays an open pull
 request. `gh workflow disable upstream-pin.yaml` stops the proposals.
 
+### The shared OpenBao
+
+The module `openbao` runs the shared OpenBao of the management cluster on one
+replica. The Job `openbao-bootstrap` initialises it once with 5 Shamir shares
+and threshold 3, unseals it and configures it with the upstream scripts
+([ADR-0020](docs/adr/0020-unseal-the-shared-openbao-once-with-upstream-scripts.md)).
+The shares and the root token stay in the Secret
+`shared-services/openbao-init-keys`, under `init-output`. Nothing unseals
+OpenBao after that, and three states of the module need to be known:
+
+- **The Job failed.** Five pods of the Job failed, or 1800 s passed. The stage
+  `management-openbao` is not Ready, and the log of the Job ends with the
+  error line of `infrastructure/openbao/bootstrap.sh`. Once the cause is
+  fixed, deleting the Job runs it again: Flux creates it at the next retry of
+  the stage, within its `retryInterval` of one minute.
+
+  ```bash
+  kubectl --kubeconfig .sandbox/kubeconfig/management.yaml -n shared-services logs job/openbao-bootstrap
+  kubectl --kubeconfig .sandbox/kubeconfig/management.yaml -n shared-services delete job openbao-bootstrap
+  ```
+
+- **The pod `openbao-0` restarted.** OpenBao is sealed. The
+  `ClusterSecretStore` `openbao-cluster-store` loses its Ready condition at
+  its next validation, External Secrets refreshes nothing, and `make status`
+  shows `management-openbao` as not Ready after its next reconcile. Deleting
+  the Job and reconciling the stage runs the bootstrap again:
+  `init-unseal.sh` skips the initialisation and unseals from the Secret.
+
+  ```bash
+  kubectl --kubeconfig .sandbox/kubeconfig/management.yaml -n shared-services delete job openbao-bootstrap
+  flux --kubeconfig .sandbox/kubeconfig/management.yaml -n flux-system reconcile kustomization management-openbao
+  ```
+
+- **A move of the pin or a change of `infrastructure/openbao/bootstrap.sh`.**
+  A change of `bootstrap.sh`, or a move that changes upstream's bootstrap
+  scripts or policies, renames a ConfigMap the Job mounts. Flux creates the
+  Job again and the bootstrap runs once more; nothing is to be done by hand.
+
 ## Modules
 
 A module of a cluster is the directory `clusters/<role>/<module>/` with two
@@ -430,9 +470,9 @@ builds it.
 | `pki` | Sandbox CA, ClusterIssuers, the upstream `tls` base | `controllers` | 1 |
 | `gateway` | GatewayClass, Gateway `openstack-gw`, wildcard certificate | `loadbalancer`, `pki` | 1 |
 | `resolver` | The CoreDNS block that answers nip.io names, and CoreDNS on `addresses.dns` for the host. Added by the switch `resolver-fallback` | `loadbalancer` | 1 |
-| `openbao` | Shared OpenBao with one replica, bootstrap Job, ESO store | `pki` | 1 |
-| `objectstore` | Garage and the bucket `glance-images` | `controllers` | 1 |
-| `platform` | The c5c3-operator (upstream base `controlplane-operator`) | `controllers`, `openbao` | 1 |
+| `openbao` | Shared OpenBao on one replica, the Job `openbao-bootstrap` that initialises, unseals and configures it with the upstream scripts, the `ClusterSecretStore` `openbao-cluster-store`. See [The shared OpenBao](#the-shared-openbao) | `pki` | 1 |
+| `objectstore` | Garage on one storage node with the buckets `glance-images` and `glance-images-2` and the key `glance-s3`, the ExternalSecrets of its admin token and its S3 credentials | `controllers`, `openbao` | 1 |
+| `platform` | The c5c3-operator (upstream base `controlplane-operator`) on one replica, without its dependency on the suspended keystone-operator ([ADR-0021](docs/adr/0021-install-the-c5c3-operator-without-the-keystone-operator.md)) | `controllers`, `openbao` | 1 |
 | `messaging-tls` | The sandbox's `RabbitmqCluster` with a TLS listener, its certificate, the transport URL Secrets | `pki`, `loadbalancer` | 1 |
 | `sizing` | The `SizingProfile` `sandbox` on base `Minimal`, which carries the reductions the measurements allow | `platform` | 1 |
 | `controlplane` | `OVNCentral`, `ControlPlane`, database tenant onboarding Job. Composed from one component per service, see [Profiles](#profiles) | `platform`, `gateway`, `sizing` | 1 |
@@ -486,11 +526,14 @@ all three clusters. The module lists reach Flux through the roots on the
 management cluster, not through the artifact, so a changed profile is applied
 by `make up`, not by `make push`. `gateway` runs the modules of the Gateway on
 the management cluster and none on the other two, which take part so that a
-pod of each can call the Gateway.
+pod of each can call the Gateway. `platform` adds the shared services
+`openbao`, `objectstore`, `platform` and `sizing` to those five modules and
+runs on the management cluster alone.
 
 | Profile | Clusters | What runs | Evaluates |
 | --- | --- | --- | --- |
 | `gateway` | management, storage, compute | `crds`, `controllers`, `loadbalancer`, `pki` and `gateway` on management, the service operators suspended | The Gateway on port 443 with the sandbox CA, from the host and from every cluster |
+| `platform` | management | The modules of `gateway` and `openbao`, `objectstore`, `platform` and `sizing`, the service operators suspended | OpenBao, External Secrets, Garage and the c5c3-operator before any service |
 | `identity` | management | Keystone | The operator model, OpenBao and ESO, K-ORC, credential rotation, orders |
 | `controlplane` | management | All eight services, fake compute, managed message bus | Parity with the Quick Start (ControlPlane); all seven order kinds |
 | `storage` | management, storage | Keystone, Cinder with the volume backend on Ceph | RBD backend, key hand-off and rotation, without hypervisors |
@@ -643,7 +686,7 @@ make vendor                 # check out the paths of upstream at the pin into ve
 make validate               # render every root and stage against vendor/cobaltcore, check schemas and patches
 make test                   # the unit tests of the command layer
 make test-validate          # the tests of make validate on a fixture tree, with flux and kubeconform
-make test-host              # the lifecycle and the profile gateway against a real Docker, each creating and removing a sandbox
+make test-host              # the lifecycle and the profiles gateway and platform against a real Docker, each creating and removing a sandbox
 make down                   # delete clusters, registry, network, loop devices
 ```
 
