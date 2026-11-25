@@ -1,6 +1,6 @@
 # ADR-0020: Unseal the shared OpenBao once with upstream's scripts
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-25
 - Source: [#8](https://github.com/C5C3/sandbox/issues/8), decided by the repository owner on 2026-11-25
 

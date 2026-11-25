@@ -23,8 +23,8 @@ Each file in this directory records one decision with its context, the alternati
 | [ADR-0017](0017-open-the-pin-pull-request-with-the-built-in-token.md) | Open the pin pull request with the built-in token | Accepted |
 | [ADR-0018](0018-print-the-host-resolver-settings-of-the-nip-io-fallback.md) | Print the host's resolver settings of the nip.io fallback | Accepted |
 | [ADR-0019](0019-read-third-party-manifests-as-pinned-remote-resources.md) | Read third-party manifests as pinned remote resources | Proposed |
-| [ADR-0020](0020-unseal-the-shared-openbao-once-with-upstream-scripts.md) | Unseal the shared OpenBao once with upstream's scripts | Proposed |
-| [ADR-0021](0021-install-the-c5c3-operator-without-the-keystone-operator.md) | Install the c5c3-operator without the keystone-operator | Proposed |
+| [ADR-0020](0020-unseal-the-shared-openbao-once-with-upstream-scripts.md) | Unseal the shared OpenBao once with upstream's scripts | Accepted |
+| [ADR-0021](0021-install-the-c5c3-operator-without-the-keystone-operator.md) | Install the c5c3-operator without the keystone-operator | Accepted |
 
 ## Points to prove first
 
