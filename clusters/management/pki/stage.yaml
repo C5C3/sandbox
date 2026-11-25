@@ -1,0 +1,25 @@
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: management-pki
+  namespace: flux-system
+spec:
+  dependsOn:
+    - name: management-controllers
+  interval: 10m
+  retryInterval: 1m
+  timeout: 5m
+  path: ./infrastructure/pki
+  prune: true
+  wait: true
+  sourceRef:
+    kind: OCIRepository
+    name: sandbox
+  # kstatus counts a Certificate and a ClusterIssuer as ready once they exist.
+  healthCheckExprs:
+    - apiVersion: cert-manager.io/v1
+      kind: Certificate
+      current: status.conditions.exists(c, c.type == 'Ready' && c.status == 'True' && c.observedGeneration == metadata.generation)
+    - apiVersion: cert-manager.io/v1
+      kind: ClusterIssuer
+      current: status.conditions.exists(c, c.type == 'Ready' && c.status == 'True' && c.observedGeneration == metadata.generation)

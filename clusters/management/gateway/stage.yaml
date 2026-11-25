@@ -1,0 +1,31 @@
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: management-gateway
+  namespace: flux-system
+spec:
+  dependsOn:
+    - name: management-loadbalancer
+    - name: management-pki
+  interval: 10m
+  retryInterval: 1m
+  timeout: 5m
+  path: ./infrastructure/gateway
+  prune: true
+  wait: true
+  sourceRef:
+    kind: OCIRepository
+    name: sandbox
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: cluster-vars
+  # kstatus counts a Certificate and a Gateway as ready once they exist. The
+  # GatewayClass has no expression: its EnvoyProxy is applied after it.
+  healthCheckExprs:
+    - apiVersion: cert-manager.io/v1
+      kind: Certificate
+      current: status.conditions.exists(c, c.type == 'Ready' && c.status == 'True' && c.observedGeneration == metadata.generation)
+    - apiVersion: gateway.networking.k8s.io/v1
+      kind: Gateway
+      current: status.conditions.exists(c, c.type == 'Programmed' && c.status == 'True' && c.observedGeneration == metadata.generation)

@@ -1,0 +1,36 @@
+# The sandbox CA, after the lab CA of
+# vendor/cobaltcore/deploy/overlays/metal-stack/infrastructure/lab-ca.yaml: a
+# self-signed root in the Secret cert-manager/sandbox-ca, name-constrained to
+# nip.io, and the ClusterIssuer sandbox-ca-issuer that signs with it. A
+# ClusterIssuer of kind ca reads its Secret from cert-manager's namespace.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: sandbox-ca
+  namespace: cert-manager
+spec:
+  isCA: true
+  commonName: CobaltCore sandbox CA
+  secretName: sandbox-ca
+  duration: 8760h
+  renewBefore: 720h
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  issuerRef:
+    name: selfsigned-cluster-issuer
+    kind: ClusterIssuer
+    group: cert-manager.io
+  nameConstraints:
+    critical: true
+    permitted:
+      dnsDomains:
+        - nip.io
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: sandbox-ca-issuer
+spec:
+  ca:
+    secretName: sandbox-ca

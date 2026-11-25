@@ -135,3 +135,7 @@ EOF
 	[ "$status" -eq 0 ]
 	[ "$output" = clusters/storage/a.yaml ]
 }
+
+@test "the address pool hands out no address unasked" {
+	[ "$(yq 'select(.kind == "IPAddressPool") | .spec.autoAssign' "$SANDBOX_ROOT/infrastructure/loadbalancer/pool.yaml")" = false ]
+}

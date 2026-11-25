@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
 # scripts/crd-sources.yaml: the schemas of Flux name the versions the hub
-# runs.
+# runs, and the CRD streams the remote resources the stages read.
 
 setup() {
 	load helpers
@@ -12,10 +12,29 @@ source_url() {
 	NAME=$1 yq '.sources[] | select(.name == strenv(NAME)) | .schemas' "$SOURCES"
 }
 
-@test "every entry has a name and exactly one of schemas and path, and every URL is https" {
+# crds_url <name>: prints the URL of the CRD stream of the entry.
+crds_url() {
+	NAME=$1 yq '.sources[] | select(.name == strenv(NAME)) | .crds' "$SOURCES"
+}
+
+@test "every entry has a name and exactly one of schemas, path and crds, and every URL is https" {
 	[ "$(yq '.sources | length' "$SOURCES")" -gt 0 ]
-	[ "$(yq '[.sources[] | select((.name // "") == "" or ((has("schemas")) == (has("path"))))] | length' "$SOURCES")" = 0 ]
-	[ "$(yq '[.sources[] | select(has("schemas") and (.schemas | test("^https://") | not))] | length' "$SOURCES")" = 0 ]
+	[ "$(yq '[.sources[] | select((.name // "") == "" or ([has("schemas"), has("path"), has("crds")] | map(select(.)) | length) != 1)] | length' "$SOURCES")" = 0 ]
+	[ "$(yq '[.sources[] | (.schemas, .crds) | select(. != null and (test("^https://") | not))] | length' "$SOURCES")" = 0 ]
+}
+
+@test "the CRD streams of the Gateway API, Envoy Gateway and MetalLB are the resources the stages read" {
+	[ "$(yq -o=json -I=0 '.resources' "$SANDBOX_ROOT/infrastructure/crds/kustomization.yaml")" = \
+		"[\"$(crds_url gateway-api)\",\"$(crds_url envoy-gateway)\"]" ]
+	[ "$(yq '.resources[0]' "$SANDBOX_ROOT/infrastructure/loadbalancer/kustomization.yaml")" = "$(crds_url metallb)" ]
+}
+
+@test "the chart version of Envoy Gateway is the version of its CRD stream" {
+	local version
+	version=$(yq '.patches[] | select(.target.name == "envoy-gateway") | .patch' "$SANDBOX_ROOT/infrastructure/controllers/kustomization.yaml" |
+		yq '.[] | select(.path == "/spec/chart/spec/version") | .value')
+	[[ $(crds_url envoy-gateway) =~ ^https://github\.com/envoyproxy/gateway/releases/download/v([0-9.]+)/envoy-gateway-crds\.yaml$ ]]
+	[ "$version" = "${BASH_REMATCH[1]}" ]
 }
 
 @test "the schemas of flux are a release of the version of the FluxInstance" {

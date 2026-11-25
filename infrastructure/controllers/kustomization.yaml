@@ -1,0 +1,49 @@
+# The upstream base operators and the Envoy Gateway release of upstream's
+# development base. Flux builds with the whole artifact as root, so a path
+# into vendor/ loads.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../vendor/cobaltcore/deploy/bases/operators
+  - ../../vendor/cobaltcore/deploy/bases/devstack/base/envoy-gateway.yaml
+patches:
+  # No service is enabled before #9, so the release of every service
+  # operator stays suspended. No other release depends on one.
+  - target:
+      group: helm.toolkit.fluxcd.io
+      kind: HelmRelease
+      name: (keystone|horizon|glance|placement|barbican|ovn|neutron|cinder|nova)-operator
+    patch: |
+      - op: add
+        path: /spec/suspend
+        value: true
+  # Upstream's range would install a controller newer than the CRDs of
+  # infrastructure/crds; the version follows the envoy-gateway URL there.
+  - target:
+      group: helm.toolkit.fluxcd.io
+      kind: HelmRelease
+      name: envoy-gateway
+      namespace: envoy-gateway-system
+    patch: |
+      - op: replace
+        path: /spec/chart/spec/version
+        value: "1.9.3"
+  # As vendor/cobaltcore/deploy/bases/devstack/base/kustomization.yaml does on
+  # kind: without the webhook, as upstream found, the container of the
+  # memcached-operator is killed after about 2.5 minutes.
+  - target:
+      group: helm.toolkit.fluxcd.io
+      version: v2
+      kind: HelmRelease
+      name: memcached-operator
+      namespace: memcached-system
+    patch: |
+      apiVersion: helm.toolkit.fluxcd.io/v2
+      kind: HelmRelease
+      metadata:
+        name: memcached-operator
+        namespace: memcached-system
+      spec:
+        values:
+          webhook:
+            enabled: false

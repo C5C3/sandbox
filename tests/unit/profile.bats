@@ -23,6 +23,28 @@ profile_fails_with() {
 	[ "$output" = test ]
 }
 
+@test "profile_load loads gateway with the five modules on management and none elsewhere" {
+	export SANDBOX_PROFILE=gateway
+	profile_load
+	[ "$SANDBOX_PROFILE_CLUSTERS" = "management storage compute" ]
+	[ "$(profile_modules management)" = $'crds\ncontrollers\nloadbalancer\npki\ngateway' ]
+	[ "$(profile_modules storage)" = "" ]
+	[ "$(profile_modules compute)" = "" ]
+}
+
+@test "cluster_modules gives storage the module resolver of gateway only with the switch on" {
+	export SANDBOX_PROFILE=gateway
+	profile_load
+	run cluster_modules storage
+	[ "$status" -eq 0 ]
+	[ "$output" = "" ]
+
+	export SANDBOX_RESOLVER_FALLBACK=true
+	run cluster_modules storage
+	[ "$status" -eq 0 ]
+	[ "$output" = resolver ]
+}
+
 @test "an empty SANDBOX_PROFILE loads scaffold" {
 	export SANDBOX_PROFILE=
 	profile_load
