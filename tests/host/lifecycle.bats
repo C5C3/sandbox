@@ -279,17 +279,20 @@ export KUBECONFIG=$KUBECONFIG_DIR/compute.yaml  # sandbox-compute" ]
 	[ "$(upstream_record)" = "$(pin)" ]
 }
 
-@test "the FluxInstance runs three controllers on 2.10 with strict substitution" {
+@test "the FluxInstance runs four controllers on 2.10 with strict substitution and external artifacts" {
 	run mgmt_kubectl -n flux-system get fluxinstance flux \
 		-o jsonpath='{.status.conditions[?(@.type=="Ready")].status} {.status.lastAppliedRevision}'
 	[ "$status" -eq 0 ]
 	[[ $output == "True v2.10."* ]]
 	run mgmt_kubectl -n flux-system get deployments -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}'
 	[ "$status" -eq 0 ]
-	[ "$(sort <<<"$output" | paste -sd ' ')" = "flux-operator helm-controller kustomize-controller source-controller" ]
+	[ "$(sort <<<"$output" | paste -sd ' ')" = "flux-operator helm-controller kustomize-controller source-controller source-watcher" ]
 	run mgmt_kubectl -n flux-system get deployment kustomize-controller -o jsonpath='{.spec.template.spec.containers[0].args}'
 	[ "$status" -eq 0 ]
 	[[ $output == *'"--feature-gates=StrictPostBuildSubstitutions=true"'* ]]
+	run mgmt_kubectl -n flux-system get deployment helm-controller -o jsonpath='{.spec.template.spec.containers[0].args}'
+	[ "$status" -eq 0 ]
+	[[ $output == *'"--feature-gates=ExternalArtifact=true"'* ]]
 }
 
 @test "the storage and compute clusters run no Flux" {

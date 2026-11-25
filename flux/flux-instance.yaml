@@ -11,6 +11,11 @@ spec:
     - source-controller
     - kustomize-controller
     - helm-controller
+    # Copies a chart out of the OCIRepository sandbox into an
+    # ExternalArtifact, which a HelmRelease reads with spec.chartRef. With it
+    # listed, the flux-operator turns on the feature gate ExternalArtifact of
+    # helm-controller and kustomize-controller, off by default in Flux 2.10.
+    - source-watcher
   cluster:
     type: kubernetes
     size: small
