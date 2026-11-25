@@ -1,0 +1,8 @@
+# The CRDs of the Gateway API and of Envoy Gateway, at the versions upstream's
+# hack/deploy-infra.sh installs. The kustomize-controller reads them at every
+# reconcile; scripts/crd-sources.yaml names the same URLs for make validate.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.6.3/standard-install.yaml
+  - https://github.com/envoyproxy/gateway/releases/download/v1.9.3/envoy-gateway-crds.yaml

@@ -1,0 +1,23 @@
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: management-controllers
+  namespace: flux-system
+spec:
+  dependsOn:
+    - name: management-crds
+  interval: 10m
+  retryInterval: 1m
+  timeout: 15m
+  path: ./infrastructure/controllers
+  prune: true
+  wait: true
+  sourceRef:
+    kind: OCIRepository
+    name: sandbox
+  # The helm-controller writes no status for a suspended release, so a
+  # suspended release counts as ready.
+  healthCheckExprs:
+    - apiVersion: helm.toolkit.fluxcd.io/v2
+      kind: HelmRelease
+      current: (has(spec.suspend) && spec.suspend) || status.conditions.exists(c, c.type == 'Ready' && c.status == 'True' && c.observedGeneration == metadata.generation)

@@ -14,3 +14,15 @@ sources:
     schemas: https://github.com/controlplaneio-fluxcd/flux-operator/releases/download/v0.63.1/crd-schemas.tar.gz
   - name: cobaltcore
     path: vendor/cobaltcore/operators/*/config/crd/bases/*.yaml
+  # The newest release of cert-manager in the chart range of
+  # vendor/cobaltcore/deploy/bases/operators/releases/cert-manager.yaml.
+  - name: cert-manager
+    crds: https://github.com/cert-manager/cert-manager/releases/download/v1.21.3/cert-manager.crds.yaml
+  # The resources of infrastructure/crds/kustomization.yaml.
+  - name: gateway-api
+    crds: https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.6.3/standard-install.yaml
+  - name: envoy-gateway
+    crds: https://github.com/envoyproxy/gateway/releases/download/v1.9.3/envoy-gateway-crds.yaml
+  # The manifest of infrastructure/loadbalancer/kustomization.yaml.
+  - name: metallb
+    crds: https://raw.githubusercontent.com/metallb/metallb/v0.16.2/config/manifests/metallb-native.yaml

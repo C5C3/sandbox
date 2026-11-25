@@ -1,0 +1,7 @@
+# The upstream base tls (the ClusterIssuer selfsigned-cluster-issuer and the
+# CAs and certificates of OpenBao, the databases and OVN) and the sandbox CA.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../vendor/cobaltcore/deploy/bases/tls
+  - sandbox-ca.yaml

@@ -1,0 +1,23 @@
+# The certificate the listener of openstack-gw terminates TLS with, after the
+# template vendor/cobaltcore/deploy/overlays/metal-stack/infrastructure/gateway-certificate.yaml.
+# Flux replaces every dot of the Gateway address with a hyphen, so the name
+# is *.<a-b-c-d>.nip.io, which nip.io resolves to that address.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: openstack-gw-tls
+  namespace: openstack
+spec:
+  secretName: openstack-gw-tls
+  duration: 2160h
+  renewBefore: 360h
+  issuerRef:
+    name: sandbox-ca-issuer
+    kind: ClusterIssuer
+  commonName: "*.${ADDRESSES_GATEWAY//./-}.nip.io"
+  dnsNames:
+    - "*.${ADDRESSES_GATEWAY//./-}.nip.io"
+  usages:
+    - server auth
+    - digital signature
+    - key encipherment

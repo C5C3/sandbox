@@ -1,0 +1,21 @@
+# autoAssign: false makes every Service ask for its address with the
+# annotation metallb.io/loadBalancerIPs, so every published address is one of
+# the configuration.
+apiVersion: metallb.io/v1beta1
+kind: IPAddressPool
+metadata:
+  name: sandbox
+  namespace: metallb-system
+spec:
+  addresses:
+    - ${ADDRESSES_POOL}
+  autoAssign: false
+---
+apiVersion: metallb.io/v1beta1
+kind: L2Advertisement
+metadata:
+  name: sandbox
+  namespace: metallb-system
+spec:
+  ipAddressPools:
+    - sandbox

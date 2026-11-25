@@ -1,0 +1,19 @@
+# The Gateway openstack-gw and the class envoy of the upstream lab, its proxy
+# as a Service of type LoadBalancer on addresses.gateway, and the certificate
+# of the listener.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../vendor/cobaltcore/deploy/overlays/metal-stack/base/openstack-gateway.yaml
+  - ../../vendor/cobaltcore/deploy/overlays/metal-stack/infrastructure/envoy-public.yaml
+  - certificate.yaml
+patches:
+  - target:
+      group: gateway.envoyproxy.io
+      kind: EnvoyProxy
+      name: envoy-public
+    patch: |
+      - op: add
+        path: /spec/provider/kubernetes/envoyService/annotations
+        value:
+          metallb.io/loadBalancerIPs: ${ADDRESSES_GATEWAY}

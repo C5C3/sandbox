@@ -1,0 +1,10 @@
+# MetalLB in layer-2 mode and its address pool. The manifest and not the
+# chart: the kustomize-controller applies the CRDs of a stage first, so the
+# pool lands in the same stage as the controller. The first reconcile can
+# fail at MetalLB's validating webhook while the controller starts; the stage
+# retries after its retryInterval.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - https://raw.githubusercontent.com/metallb/metallb/v0.16.2/config/manifests/metallb-native.yaml
+  - pool.yaml
