@@ -7,6 +7,7 @@ addresses:
   gateway: 172.30.255.10
   pool: 172.30.255.0/24
   dns: 172.30.255.53
+  rabbitmq: 172.30.255.11
 registry:
   image: registry:3
 switches:

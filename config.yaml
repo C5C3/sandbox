@@ -10,6 +10,8 @@ addresses:
   pool: 172.30.255.0/24
   # Read by the module resolver on sandbox-management: the address of the resolver fallback, inside addresses.pool.
   dns: 172.30.255.53
+  # Read by the module messaging-tls: the address of the AMQPS listener of the message bus, inside addresses.pool.
+  rabbitmq: 172.30.255.11
 registry:
   # Read by scripts/up.sh: the image of the container sandbox-registry.
   image: registry:3
