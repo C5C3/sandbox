@@ -35,6 +35,20 @@ node_roles() {
 	[ "$(node_roles)" = control-plane,worker,worker,worker ]
 }
 
+@test "kind_config mounts the drop-in that limits the open files of containerd into every node" {
+	local role mount
+	mount=$(jq -cn --arg path "$SANDBOX_ROOT/kind/containerd-nofile.conf" \
+		'{hostPath: $path, containerPath: "/etc/systemd/system/containerd.service.d/sandbox-nofile.conf", readOnly: true}')
+	export SANDBOX_HYPERVISOR_NODES=2
+	for role in management storage compute; do
+		run kind_config "$role"
+		[ "$status" -eq 0 ]
+		[ "$(yq -o=json -I=0 '[.nodes[].extraMounts] | unique' - <<<"$output")" = "[[$mount]]" ]
+	done
+	[ "$(node_roles)" = control-plane,worker,worker ]
+	[ "$(grep -A 1 -x '\[Service\]' "$SANDBOX_ROOT/kind/containerd-nofile.conf")" = $'[Service]\nLimitNOFILE=1048576' ]
+}
+
 @test "kind_config compute fails when SANDBOX_HYPERVISOR_NODES is unset or empty" {
 	run kind_config compute
 	[ "$status" -eq 1 ]

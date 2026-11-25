@@ -57,22 +57,25 @@ kubeconfig_path() {
 
 # kind_config <role>: prints the kind configuration of the role. For compute
 # it adds SANDBOX_HYPERVISOR_NODES worker nodes to the control-plane node.
+# Every node mounts kind/containerd-nofile.conf as a drop-in of its containerd
+# unit, which limits the open files of every pod to 1048576.
 kind_config() {
 	local role=$1 file workers='' i
 	require_roles "$role"
 	file=$SANDBOX_ROOT/kind/$role.yaml
-	if [ "$role" != compute ]; then
-		cat -- "$file"
-		return
+	if [ "$role" = compute ]; then
+		[ -n "${SANDBOX_HYPERVISOR_NODES:-}" ] ||
+			die "kind_config: SANDBOX_HYPERVISOR_NODES is not set"
+		[[ $SANDBOX_HYPERVISOR_NODES =~ ^[1-9][0-9]*$ ]] ||
+			die "kind_config: SANDBOX_HYPERVISOR_NODES must be an integer of 1 or more, got '$SANDBOX_HYPERVISOR_NODES'"
+		for ((i = 0; i < SANDBOX_HYPERVISOR_NODES; i++)); do
+			workers+=${workers:+, }'{"role": "worker"}'
+		done
 	fi
-	[ -n "${SANDBOX_HYPERVISOR_NODES:-}" ] ||
-		die "kind_config: SANDBOX_HYPERVISOR_NODES is not set"
-	[[ $SANDBOX_HYPERVISOR_NODES =~ ^[1-9][0-9]*$ ]] ||
-		die "kind_config: SANDBOX_HYPERVISOR_NODES must be an integer of 1 or more, got '$SANDBOX_HYPERVISOR_NODES'"
-	for ((i = 0; i < SANDBOX_HYPERVISOR_NODES; i++)); do
-		workers+=${workers:+, }'{"role": "worker"}'
-	done
-	yq ".nodes += [$workers]" "$file"
+	DROPIN=$SANDBOX_ROOT/kind/containerd-nofile.conf yq ".nodes += [$workers] | .nodes[].extraMounts += [{
+		\"hostPath\": strenv(DROPIN),
+		\"containerPath\": \"/etc/systemd/system/containerd.service.d/sandbox-nofile.conf\",
+		\"readOnly\": true}]" "$file"
 }
 
 # config_merged: prints the configuration file that SANDBOX_CONFIG names, by
