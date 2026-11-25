@@ -1,0 +1,22 @@
+# The namespace assignments of the module orders, whose patches Component
+# adds this Component to the stage management-controlplane. Each owner under
+# orders/ has one entry: its namespace on the management cluster, the role
+# member and catalog entries. The list is atomic, so this Component alone
+# sets it, and a further owner is a further entry here. Upstream admits a
+# change of the list on a live ControlPlane.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+patches:
+  - target:
+      group: c5c3.io
+      version: v1alpha1
+      kind: ControlPlane
+      name: controlplane
+      namespace: openstack
+    patch: |
+      - op: add
+        path: /spec/namespaceAssignments
+        value:
+          - namespace: workflow
+            allowedRoles: [member]
+            allowCatalogEntries: true

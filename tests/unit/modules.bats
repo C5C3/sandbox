@@ -420,3 +420,69 @@ EOF
 	[ "$(yq -o=json -I=0 '[.apiVersion, .kind, .metadata.name, .spec.base]' "$SANDBOX_ROOT/platform/sizing/sizingprofile.yaml")" = \
 		'["c5c3.io/v1alpha1","SizingProfile","sandbox","Minimal"]' ]
 }
+
+@test "the stage of orders applies ./orders after controlplane, substitutes nothing and settles a RabbitMQVhost that reports MessagingNotManaged or MessagingNotDeclared" {
+	local file=$SANDBOX_ROOT/clusters/management/orders/stage.yaml ready expected
+	[ "$(yq -o=json -I=0 '[.spec.dependsOn, .spec.path, .spec.interval, .spec.retryInterval, .spec.timeout, (.spec | has("postBuild")), (.spec | has("kubeConfig"))]' "$file")" = \
+		'[[{"name":"management-controlplane"}],"./orders","10m","1m","15m",false,false]' ]
+	ready="status.conditions.exists(c, c.type == 'Ready' && c.status == 'True')"
+	expected=$(jq -n -c --arg ready "$ready" \
+		--arg vhost "$ready || status.conditions.exists(c, c.type == 'VhostReady' && (c.reason == 'MessagingNotManaged' || c.reason == 'MessagingNotDeclared'))" '
+		[("KeystoneUser", "KeystoneProject", "KeystoneRoleAssignment", "KeystoneCatalogEntry", "KeystoneApplicationCredential", "MariaDBDatabase")
+		 | {apiVersion: "c5c3.io/v1alpha1", kind: ., current: $ready}]
+		+ [{apiVersion: "c5c3.io/v1alpha1", kind: "RabbitMQVhost", current: $vhost}]')
+	[ "$(yq -o=json -I=0 '.spec.healthCheckExprs' "$file")" = "$expected" ]
+}
+
+@test "the patches Component of orders appends components/orders to the stage of controlplane and nothing else" {
+	local file=$SANDBOX_ROOT/clusters/management/orders/patches/kustomization.yaml
+	[ "$(yq -o=json -I=0 '[.patches[].target]' "$file")" = \
+		'[{"group":"kustomize.toolkit.fluxcd.io","kind":"Kustomization","name":"management-controlplane"}]' ]
+	[ "$(yq '.patches[0].patch' "$file" | yq -o=json -I=0 '.')" = \
+		'[{"op":"add","path":"/spec/components/-","value":"components/orders"}]' ]
+	[ -f "$SANDBOX_ROOT/controlplane/components/orders/kustomization.yaml" ]
+}
+
+@test "the component orders assigns exactly the namespaces of orders/, each with the role member and catalog entries" {
+	local file=$SANDBOX_ROOT/controlplane/components/orders/kustomization.yaml ops owners
+	[ "$(yq -o=json -I=0 '[.apiVersion, .kind, (.patches | length), has("resources")]' "$file")" = \
+		'["kustomize.config.k8s.io/v1alpha1","Component",1,false]' ]
+	[ "$(yq -o=json -I=0 '.patches[0].target' "$file")" = \
+		'{"group":"c5c3.io","version":"v1alpha1","kind":"ControlPlane","name":"controlplane","namespace":"openstack"}' ]
+	ops=$(component_patch orders 0)
+	[ "$(jq -c '[.[] | [.op, .path]]' <<<"$ops")" = '[["add","/spec/namespaceAssignments"]]' ]
+	owners=$(yq -o=json -I=0 '.resources' "$SANDBOX_ROOT/orders/kustomization.yaml")
+	[ "$owners" != '[]' ]
+	[ "$(jq -c '[.[0].value[].namespace]' <<<"$ops")" = "$owners" ]
+	# No targetClusterRef: every namespace is on the management cluster.
+	[ "$(jq -c '[.[0].value[] | del(.namespace)] | unique' <<<"$ops")" = '[{"allowedRoles":["member"],"allowCatalogEntries":true}]' ]
+}
+
+@test "each owner of orders/ holds its Namespace and one order of each of the seven kinds on the ControlPlane controlplane, each order with ssa Merge" {
+	local owner dir count=0
+	[ "$(yq -o=json -I=0 '[.apiVersion, .kind]' "$SANDBOX_ROOT/orders/kustomization.yaml")" = \
+		'["kustomize.config.k8s.io/v1beta1","Kustomization"]' ]
+	for owner in $(yq '.resources[]' "$SANDBOX_ROOT/orders/kustomization.yaml"); do
+		dir=$SANDBOX_ROOT/orders/$owner
+		echo "$owner"
+		[ "$(yq -o=json -I=0 '.resources' "$dir/kustomization.yaml")" = '["namespace.yaml","orders.yaml"]' ]
+		[ "$(yq -o=json -I=0 '[.apiVersion, .kind, .metadata.name]' "$dir/namespace.yaml")" = "[\"v1\",\"Namespace\",\"$owner\"]" ]
+		[ "$(yq ea -o=json -I=0 '[.kind] | sort' "$dir/orders.yaml")" = \
+			'["KeystoneApplicationCredential","KeystoneCatalogEntry","KeystoneProject","KeystoneRoleAssignment","KeystoneUser","MariaDBDatabase","RabbitMQVhost"]' ]
+		[ "$(yq ea -o=json -I=0 '[[.apiVersion, .metadata.namespace, .metadata.annotations["kustomize.toolkit.fluxcd.io/ssa"], .spec.controlPlaneRef]] | unique' "$dir/orders.yaml")" = \
+			"[[\"c5c3.io/v1alpha1\",\"$owner\",\"Merge\",{\"name\":\"controlplane\",\"namespace\":\"openstack\"}]]" ]
+		count=$((count + 1))
+	done
+	[ "$count" -ge 1 ]
+
+	# The orders of workflow are those of Steps 3 to 9 of upstream's Quick
+	# Start (Orders).
+	[ "$(yq ea -o=json -I=0 '[[.kind, .metadata.name, (.spec | del(.controlPlaneRef))]]' "$SANDBOX_ROOT/orders/workflow/orders.yaml")" = \
+		'[["KeystoneUser","workflow",{}],["KeystoneProject","workflow-project",{}],["KeystoneRoleAssignment","workflow-member",{"userRef":{"name":"workflow"},"projectRef":{"name":"workflow-project"},"role":"member"}],["KeystoneCatalogEntry","workflow-dns",{"serviceType":"dns","serviceName":"designate","endpoints":[{"interface":"public","url":"https://dns.example.test/v2"}]}],["KeystoneApplicationCredential","workflow-appcred",{"userRef":{"name":"workflow"},"projectRef":{"name":"workflow-project"}}],["MariaDBDatabase","workflow-db",{}],["RabbitMQVhost","workflow-bus",{}]]' ]
+}
+
+@test "the example application credential carries no rotation, and the database and the vhost no deletionPolicy" {
+	local file=$SANDBOX_ROOT/orders/workflow/orders.yaml
+	[ "$(yq ea -o=json -I=0 '[select(.kind == "KeystoneApplicationCredential") | .spec | has("rotation")]' "$file")" = '[false]' ]
+	[ "$(yq ea -o=json -I=0 '[select(.kind == "MariaDBDatabase" or .kind == "RabbitMQVhost") | .spec | has("deletionPolicy")]' "$file")" = '[false,false]' ]
+}

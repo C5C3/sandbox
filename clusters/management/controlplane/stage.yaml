@@ -15,8 +15,9 @@ spec:
   # One Component per service. The patches Components of other modules
   # append theirs: components/glance, placement, barbican, neutron, cinder,
   # nova and horizon from the service modules of the same names, glance
-  # with the dependency on objectstore, and components/cinder-nfs and
-  # messaging-tls with the dependency on the stage of their module.
+  # with the dependency on objectstore, components/cinder-nfs and
+  # messaging-tls with the dependency on the stage of their module, and
+  # components/orders, the namespace assignments, without one.
   components:
     - components/keystone
   prune: true

@@ -476,13 +476,13 @@ scaffold_attached() {
 	[ "$(yq -o=json -I=0 '.spec.components' - <<<"$output")" = '["resolver"]' ]
 }
 
-@test "root_manifest lists the patches Components of identity after its ten modules, and none for platform" {
+@test "root_manifest lists the patches Components of identity after its eleven modules, and none for platform" {
 	export SANDBOX_PROFILE=identity
 	profile_load
 	run root_manifest management
 	[ "$status" -eq 0 ]
 	[ "$(yq -o=json -I=0 '.spec.components' - <<<"$output")" = \
-		'["crds","controllers","loadbalancer","pki","gateway","openbao","platform","sizing","messaging-tls","controlplane","messaging-tls/patches","controlplane/patches"]' ]
+		'["crds","controllers","loadbalancer","pki","gateway","openbao","platform","sizing","messaging-tls","controlplane","orders","messaging-tls/patches","controlplane/patches","orders/patches"]' ]
 
 	export SANDBOX_PROFILE=platform
 	profile_load
@@ -521,14 +521,14 @@ scaffold_attached() {
 	[ "$(yq -o=json -I=0 '.spec.components' - <<<"$output")" = '["extra/patches"]' ]
 }
 
-@test "root_manifest lists the 12 stages of controlplane with its switches, then its nine patches Components" {
+@test "root_manifest lists the 13 stages of controlplane with its switches, then its ten patches Components" {
 	export SANDBOX_PROFILE=controlplane
 	profile_load
 	config_load
 	run root_manifest management
 	[ "$status" -eq 0 ]
 	[ "$(yq -o=json -I=0 '.spec.components' - <<<"$output")" = \
-		'["crds","controllers","loadbalancer","pki","gateway","openbao","objectstore","platform","sizing","controlplane","cinder-nfs","fake-compute","controlplane/patches","placement/patches","neutron/patches","cinder/patches","cinder-nfs/patches","nova/patches","glance/patches","barbican/patches","horizon/patches"]' ]
+		'["crds","controllers","loadbalancer","pki","gateway","openbao","objectstore","platform","sizing","controlplane","cinder-nfs","orders","fake-compute","controlplane/patches","placement/patches","neutron/patches","cinder/patches","cinder-nfs/patches","nova/patches","orders/patches","glance/patches","barbican/patches","horizon/patches"]' ]
 }
 
 @test "root_manifest fails for a word that is not a role" {
@@ -603,29 +603,29 @@ controlplane_attached() {
 }
 
 # controlplane_ready [<name>...]: prints a Ready Kustomization at the revision
-# for the root of management and each of the 12 stages of controlplane whose
+# for the root of management and each of the 13 stages of controlplane whose
 # name is not given.
 controlplane_ready() {
 	local name
-	for name in cluster-management management-{crds,controllers,loadbalancer,pki,gateway,openbao,objectstore,platform,sizing,controlplane,cinder-nfs,fake-compute}; do
+	for name in cluster-management management-{crds,controllers,loadbalancer,pki,gateway,openbao,objectstore,platform,sizing,controlplane,cinder-nfs,orders,fake-compute}; do
 		if [[ " $* " != *" $name "* ]]; then
 			kustomization "$name" True "Applied revision: latest@sha256:new" latest@sha256:new
 		fi
 	done
 }
 
-@test "wait_stages waits for the root and the 12 stages of controlplane, not for its modules without a stage" {
+@test "wait_stages waits for the root and the 13 stages of controlplane, not for its modules without a stage" {
 	controlplane_attached
 	stages_answer "$(controlplane_ready)"
 	run wait_stages
 	[ "$status" -eq 0 ]
-	[[ ${lines[0]} == *": waiting for 13 roots and stages to be Ready at latest@sha256:new" ]]
+	[[ ${lines[0]} == *": waiting for 14 roots and stages to be Ready at latest@sha256:new" ]]
 
 	stages_answer "$(controlplane_ready management-fake-compute)"
 	run wait_stages
 	[ "$status" -eq 1 ]
 	[ "${lines[-2]}" = "error: stage management-fake-compute: not found" ]
-	[ "${lines[-1]}" = "error: 1 of 13 stages are not Ready at latest@sha256:new after 2 s; make status shows them" ]
+	[ "${lines[-1]}" = "error: 1 of 14 stages are not Ready at latest@sha256:new after 2 s; make status shows them" ]
 }
 
 @test "wait_stages and hub_sync leave out a module without a stage" {
@@ -777,7 +777,7 @@ wait_stages" ]
 	[[ ${lines[-1]} == *": 2 stages Ready on 2 clusters at latest@sha256:new" ]]
 }
 
-@test "hub_sync counts the 12 stages of controlplane, not its modules without a stage" {
+@test "hub_sync counts the 13 stages of controlplane, not its modules without a stage" {
 	controlplane_attached
 	ensure_flux() { :; }
 	ensure_cluster_vars() { :; }
@@ -788,7 +788,7 @@ wait_stages" ]
 	run hub_sync
 	[ "$status" -eq 0 ]
 	[ "${#lines[@]}" -eq 1 ]
-	[[ ${lines[0]} == *": 12 stages Ready on 1 clusters at latest@sha256:new" ]]
+	[[ ${lines[0]} == *": 13 stages Ready on 1 clusters at latest@sha256:new" ]]
 }
 
 @test "hub_sync stops before Flux when a stage depends on a stage of a cluster that is not attached" {
