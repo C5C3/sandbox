@@ -260,8 +260,8 @@ address on it directly, which is why a Linux host is required.
 | Gateway | The Envoy proxy of `openstack-gw` as a `LoadBalancer` Service on port 443, as in the upstream lab. With the address `172.30.255.10` the suffix is `172-30-255-10.nip.io` and the endpoints are `https://keystone.<suffix>/v3`, `https://horizon.<suffix>`, `https://nova-console.<suffix>`, `https://nova-metadata.<suffix>` and one per remaining service |
 | Names | [nip.io](https://nip.io) resolves `<name>.<a-b-c-d>.nip.io` to the address, for the workstation and for the pods of every cluster alike. No CoreDNS rewrite and no `/etc/hosts` entry is needed |
 | Resolver fallback | For a host whose resolver drops private answers, `switches.resolver-fallback` makes the CoreDNS of every cluster answer the nip.io names itself, and publishes the CoreDNS of the management cluster on `addresses.dns` (default `172.30.255.53`) for the host. See [Host requirements](#host-requirements) |
-| Certificates | One sandbox CA from cert-manager, name-constrained to `nip.io` like the upstream lab CA. It signs the Gateway certificate `*.<suffix>` and the certificate of the broker's TLS listener. `sandbox-ca.pem` is what the workstation passes as `OS_CACERT` |
-| Message bus | AMQPS on a load-balancer address of its own, `rabbitmq.<a-b-c-d>.nip.io:5671` |
+| Certificates | One sandbox CA from cert-manager, name-constrained to `nip.io` like the upstream lab CA. It signs the Gateway certificate `*.<suffix>` and the certificate of the broker's TLS listener, which names `rabbitmq.<a-b-c-d>.nip.io` only. `sandbox-ca.pem` is what the workstation passes as `OS_CACERT` |
+| Message bus | AMQPS on a load-balancer address of its own, `addresses.rabbitmq` (default `172.30.255.11`), as `rabbitmq.<a-b-c-d>.nip.io:5671`. The broker's certificate names nothing else, so every client, the pods of the management cluster included, reaches the broker under that name |
 | OpenBao | Port 8200 with mutual TLS on a load-balancer address, for the External Secrets Operators of the storage and compute clusters |
 | OVN | `externallyReachable: true` on both databases of the `OVNCentral`. The ovn-operator publishes them on node ports of the management node |
 | Ceph | Rook with host networking on the storage cluster, so monitors (3300) and OSDs (6800 to 7300) answer on the node's address on the Docker network. Clients name the monitor by the node's container name, which Docker's DNS resolves. The `networks` field of the RBD backends carries the Docker subnet |
@@ -445,6 +445,41 @@ OpenBao after that, and three states of the module need to be known:
   scripts or policies, renames a ConfigMap the Job mounts. Flux creates the
   Job again and the bootstrap runs once more; nothing is to be done by hand.
 
+### The database tenant onboarding
+
+The module `controlplane` applies the Job `controlplane-database-tenant` in
+`openstack` in the same pass as the `ControlPlane` `controlplane`. The Job
+waits for the MariaDB `openstack-db`, which the c5c3-operator creates, reads
+the root token of the shared OpenBao and runs upstream's
+`setup-database-tenant.sh` for the `ControlPlane`. The script writes the
+database-engine connection and role of Keystone, without which the
+`ControlPlane` stays at `DBCredentialsReady=False`. A second run is safe:
+the script overwrites what exists. Two states of the module need to be
+known:
+
+- **The Job failed.** Five pods of the Job failed, or 1800 s passed: the
+  MariaDB was not Ready within 1500 s, the Secret
+  `shared-services/openbao-init-keys` held no root token, or the script
+  failed, a sealed OpenBao among its causes ([The shared OpenBao](#the-shared-openbao)
+  says how to unseal it). The stage `management-controlplane` is not Ready,
+  and the log of the Job ends with the error line of
+  `controlplane/tenant.sh`. Once the cause is fixed, deleting the Job runs it
+  again at the next retry of the stage:
+
+  ```bash
+  kubectl --kubeconfig .sandbox/kubeconfig/management.yaml -n openstack logs job/controlplane-database-tenant
+  kubectl --kubeconfig .sandbox/kubeconfig/management.yaml -n openstack delete job controlplane-database-tenant
+  ```
+
+- **The messaging block was removed.** The module `messaging-tls` adds the
+  brownfield messaging block to the `ControlPlane`. Upstream admits the block
+  on a live `ControlPlane`, so adding `messaging-tls` to a profile whose
+  control plane runs without it works, but refuses its removal and a change
+  of its mode. A profile that drops `messaging-tls` under a running
+  `ControlPlane` leaves the stage `management-controlplane` with
+  `spec.infrastructure.messaging cannot be removed once declared`, and
+  `make down` is the way out.
+
 ## Modules
 
 A module of a cluster is the directory `clusters/<role>/<module>/` with two
@@ -457,8 +492,18 @@ which puts the module into `spec.components` of the root `cluster-<role>`.
 The stages of the storage and compute clusters run on the management cluster
 and reach their cluster through the Secret `kubeconfig-<role>`. The module
 `test` writes the ConfigMap `sandbox-test/hub` on each cluster and is the
-check of the hub. The table is the planned set; M marks the milestone that
-builds it.
+check of the hub.
+
+A module that changes the stage of another module of its cluster adds a
+third file, `clusters/<role>/<module>/patches/kustomization.yaml`: a kustomize
+Component with `patches` and no `resources`, each patch targeting a Flux
+`Kustomization` `<role>-<other module>`. The root lists `<module>/patches`
+after all modules, so every stage exists before the first patch runs, and a
+patch whose stage the profile does not list changes nothing
+([ADR-0022](docs/adr/0022-let-a-module-patch-the-stages-of-other-modules.md)).
+`messaging-tls` puts the `ControlPlane` on its bus this way, and
+`controlplane` resumes the keystone-operator in the stage of `controllers`.
+The table is the planned set; M marks the milestone that builds it.
 
 ### On sandbox-management
 
@@ -528,7 +573,9 @@ by `make up`, not by `make push`. `gateway` runs the modules of the Gateway on
 the management cluster and none on the other two, which take part so that a
 pod of each can call the Gateway. `platform` adds the shared services
 `openbao`, `objectstore`, `platform` and `sizing` to those five modules and
-runs on the management cluster alone.
+runs on the management cluster alone. `identity` replaces `objectstore` with
+`messaging-tls`, the TLS bus, and `controlplane`, the `ControlPlane` with
+Keystone alone on that bus, and also runs on the management cluster alone.
 
 | Profile | Clusters | What runs | Evaluates |
 | --- | --- | --- | --- |
@@ -680,13 +727,13 @@ make up-compute
 make push                   # publish the working tree and ask Flux to fetch it; does not wait
 make status                 # the FluxInstance, the source, the roots and the stages, per cluster
 make footprint              # memory requests and working set, per cluster and in total
-make env                    # print OS_* variables, write sandbox-ca.pem
-make verify                 # the checks of the milestones the profile covers
+make env                    # print the OS_* variables of the admin as export lines, write sandbox-ca.pem
+make verify                 # the checks of the services the ControlPlane runs; exit 1 when one fails
 make vendor                 # check out the paths of upstream at the pin into vendor/cobaltcore, discarding local changes
 make validate               # render every root and stage against vendor/cobaltcore, check schemas and patches
 make test                   # the unit tests of the command layer
 make test-validate          # the tests of make validate on a fixture tree, with flux and kubeconform
-make test-host              # the lifecycle and the profiles gateway and platform against a real Docker, each creating and removing a sandbox
+make test-host              # the lifecycle and the profiles gateway, platform and identity against a real Docker, each creating and removing a sandbox
 make down                   # delete clusters, registry, network, loop devices
 ```
 
@@ -697,7 +744,31 @@ to 600 s for the stages, and `SANDBOX_STAGE_TIMEOUT=<seconds>` changes that;
 `SANDBOX_SOURCE_TIMEOUT=<seconds>` does the same for the source, by default
 120 s. The first `make up PROFILE=gateway` pulls the images of every
 controller, which on a slow link can take longer than 600 s; a second
-`make up PROFILE=gateway` continues where the first stopped.
+`make up PROFILE=gateway` continues where the first stopped. The first
+`make up PROFILE=identity` also pulls the images of Keystone, MariaDB,
+Memcached and RabbitMQ and can take longer than 600 s as well; a second run
+continues too.
+
+`make env` prints the seven variables `OS_AUTH_URL`, `OS_USERNAME`,
+`OS_PASSWORD`, `OS_PROJECT_NAME`, `OS_USER_DOMAIN_NAME`,
+`OS_PROJECT_DOMAIN_NAME` and `OS_CACERT` of the admin of the `ControlPlane`
+`controlplane` as `export` lines, and writes the sandbox CA to
+`.sandbox/sandbox-ca.pem`, which `OS_CACERT` names. The admin password
+appears on stdout only. One line loads them into the shell:
+
+```bash
+eval "$(make --no-print-directory env)" && openstack token issue
+```
+
+`make verify` runs the checks of the services the live `ControlPlane`
+declares, prints one line `ok <check>: ...` or `FAIL <check>: ...` each and
+`verify: <passed> of <total> checks passed`, and exits 1 when a check
+failed. For Keystone, `keystone-token` issues a token and `keystone-catalog`
+finds the public identity endpoint `OS_AUTH_URL` in the catalog. No check
+passes `--insecure`. Without a `ControlPlane`, `make verify` reports 0 of 0
+checks and exits 0. Both targets read the hub only, so they work with any
+`PROFILE` and `CONFIG`. `make verify`, like the `openstack` calls after
+`make env`, needs the resolver of the host to answer the nip.io names.
 
 With `switches.resolver-fallback` on, `make up` prints the resolver settings
 for the host before the `export KUBECONFIG=` lines, and runs none of them.
@@ -732,7 +803,7 @@ lists the checks it adds.
 | CPU | To be measured. *Upstream* budgets 4 vCPU for the control plane with all eight services. Working estimate for `full`: 8 cores |
 | Disk | To be measured. Every kind node keeps its own image store, so an image is stored once per node that runs it. Working estimate: 60 GB free for `full`, 100 GB for `parity`, including the sparse OSD files |
 | DNS | The resolver must answer `*.nip.io` names with private addresses. Resolvers with DNS rebinding protection drop such answers. For such a host, `switches.resolver-fallback` adds the module `resolver`: the CoreDNS of every cluster answers the names itself, and the CoreDNS of the management cluster answers them on `addresses.dns`, to which the host routes `nip.io` with the settings `make up` prints ([ADR-0018](docs/adr/0018-print-the-host-resolver-settings-of-the-nip-io-fallback.md)) |
-| Tools | `docker`, `kind`, `kubectl`, `helm`, `flux`, `git`, `yq` v4.40.1 or newer, `jq`, `make`, `bats` (bats-core 1.5.0 or newer, for `make test`, `make test-validate` and `make test-host`), `kubeconform`, `curl` and `tar` for `make validate`, `curl` for `make test-host`, and the OpenStack CLI with `osc-placement` and `python-barbicanclient` |
+| Tools | `docker`, `kind`, `kubectl`, `helm`, `flux`, `git`, `yq` v4.40.1 or newer, `jq`, `make`, `bats` (bats-core 1.5.0 or newer, for `make test`, `make test-validate` and `make test-host`), `kubeconform`, `curl` and `tar` for `make validate`, `curl` and `openssl` for `make test-host`, and the OpenStack CLI with `osc-placement` and `python-barbicanclient` |
 | Network | Egress to `github.com` (upstream, the tools and schemas of `make validate`, the CRDs of the module `crds`), `raw.githubusercontent.com` (the Kubernetes schemas of `make validate`, the MetalLB manifest of the module `loadbalancer`), `ghcr.io`, `quay.io`, `docker.io`, the Helm repositories and the cirros download. The management cluster reads `github.com` and `raw.githubusercontent.com` at every reconcile of `crds` and `loadbalancer` ([ADR-0019](docs/adr/0019-read-third-party-manifests-as-pinned-remote-resources.md)) |
 
 `make up`, `make up-<cluster>` and `scripts/preflight.sh [<role>...]` check
@@ -746,8 +817,15 @@ configuration file. `sandbox-storage` also needs the module `loop`, and
 `/dev/kvm`, the resolver's answer for a nip.io name and the OpenStack CLI with
 its plugins are reported as warnings. The warning for the resolver names
 `switches.resolver-fallback`, or says that the fallback is on. A configuration
-file without `addresses.pool`, `addresses.dns` or
+file without `addresses.pool`, `addresses.dns`, `addresses.rabbitmq` or
 `switches.resolver-fallback` fails the check of the configuration.
+
+Every kind node mounts `kind/containerd-nofile.conf`, which limits the open
+files of every pod to 1048576. kind runs containerd with
+`LimitNOFILE=infinity`, which is more than a billion on a host where systemd
+raises `fs.nr_open`, and uWSGI in Keystone sizes a table by that limit and is
+OOMKilled at start
+([C5C3/cobaltcore#1878](https://github.com/C5C3/cobaltcore/issues/1878)).
 
 ## Footprint
 
