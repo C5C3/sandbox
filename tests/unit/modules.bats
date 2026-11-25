@@ -147,3 +147,19 @@ EOF
 	[ "$(grep -cxF '    # sandbox: end' <<<"$corefile")" = 1 ]
 	[ "$(yq '.metadata.annotations["kustomize.toolkit.fluxcd.io/prune"]' "$file")" = disabled ]
 }
+
+@test "the Job openbao-bootstrap is forced, pins its image by digest and mounts the runner, the scripts and the policies" {
+	local file=$SANDBOX_ROOT/infrastructure/openbao/bootstrap.yaml job='select(.kind == "Job")'
+	[ "$(yq "$job | .metadata.name + \" \" + .metadata.annotations[\"kustomize.toolkit.fluxcd.io/force\"]" "$file")" = \
+		"openbao-bootstrap enabled" ]
+	[[ $(yq "$job | .spec.template.spec.containers[0].image" "$file") =~ @sha256:[0-9a-f]{64}$ ]]
+	[ "$(yq ea -o=json -I=0 "[$job | .spec.template.spec.volumes[] | select(has(\"configMap\")) | .configMap.name]" "$file")" = \
+		'["openbao-bootstrap-runner","cobaltcore-openbao-scripts","cobaltcore-openbao-policies"]' ]
+}
+
+@test "every rule of the bootstrap Role and ClusterRole names its objects, but the one that creates Secrets" {
+	local file=$SANDBOX_ROOT/infrastructure/openbao/bootstrap.yaml roles='select(.kind == "Role" or .kind == "ClusterRole")'
+	[ "$(yq ea "[$roles] | length" "$file")" = 2 ]
+	[ "$(yq ea -o=json -I=0 "[$roles | .rules[] | select((.resourceNames // []) | length == 0)]" "$file")" = \
+		'[{"apiGroups":[""],"resources":["secrets"],"verbs":["create"]}]' ]
+}

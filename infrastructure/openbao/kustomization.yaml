@@ -1,0 +1,67 @@
+# The shared OpenBao on one replica, its bootstrap Job and the
+# ClusterSecretStore openbao-cluster-store of External Secrets. The
+# certificates openbao-tls, openbao-client-tls and eso-openbao-client-tls come
+# from the module pki, the HelmRepository openbao and the namespace
+# shared-services from controllers.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../vendor/cobaltcore/deploy/bases/shared-openbao
+  - ../../vendor/cobaltcore/deploy/bases/shared-openbao/bootstrap
+  - ../../vendor/cobaltcore/deploy/bases/shared-openbao/policies
+  - ../../vendor/cobaltcore/deploy/bases/eso-store
+  - bootstrap.yaml
+configMapGenerator:
+  - name: openbao-bootstrap-runner
+    namespace: shared-services
+    files:
+      - bootstrap.sh
+patches:
+  # The one-replica settings of
+  # vendor/cobaltcore/deploy/bases/devstack/base/kustomization.yaml:27-82,
+  # restated because that kustomization also installs every operator and
+  # kustomize cannot import a patch; compare the two at each move of the pin.
+  # The config is upstream's text, without service_registration for the
+  # reason given there. The base has removed dataStorage.storageClass
+  # already.
+  - target:
+      group: helm.toolkit.fluxcd.io
+      version: v2
+      kind: HelmRelease
+      name: openbao
+      namespace: shared-services
+    patch: |
+      apiVersion: helm.toolkit.fluxcd.io/v2
+      kind: HelmRelease
+      metadata:
+        name: openbao
+        namespace: shared-services
+      spec:
+        values:
+          server:
+            ha:
+              enabled: false
+              replicas: 1
+            standalone:
+              enabled: true
+              config: |
+                # kind-only — production keeps ui = false
+                ui = true
+
+                listener "tcp" {
+                  tls_disable     = 0
+                  address         = "[::]:8200"
+                  cluster_address = "[::]:8201"
+                  tls_cert_file   = "/openbao/tls/tls.crt"
+                  tls_key_file    = "/openbao/tls/tls.key"
+                  # kind matches production mTLS posture
+                  tls_client_ca_file               = "/openbao/tls/ca.crt"
+                  tls_require_and_verify_client_cert = true
+                }
+
+                storage "raft" {
+                  path = "/openbao/data"
+                }
+            resources:
+              requests:
+                cpu: 100m

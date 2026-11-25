@@ -1,0 +1,150 @@
+# The Job openbao-bootstrap runs bootstrap.sh beside this file with the
+# scripts of the upstream base shared-openbao/bootstrap: it initialises and
+# unseals the shared OpenBao once and configures it. kstatus waits for the
+# Job to complete, so the stage management-openbao is Ready only after the
+# bootstrap has run.
+#
+# kustomize.toolkit.fluxcd.io/force: enabled makes Flux create the Job again
+# when its spec changes: a change of bootstrap.sh, or a move of the pin that
+# changes upstream's scripts or policies, renames a mounted ConfigMap. The
+# Job has no ttlSecondsAfterFinished, because Flux would create a deleted Job
+# again at every reconcile. README.md, section "The shared OpenBao", says how
+# to run it again by hand.
+#
+# The Role lets the Job read the pod openbao-0 and exec into it, where the
+# upstream scripts run every bao command, read and delete the Secret
+# openbao-init-keys, which init-unseal.sh deletes before it writes the init
+# output, and create Secrets. The ClusterRole lets it annotate the
+# ClusterSecretStore openbao-cluster-store.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: openbao-bootstrap
+  namespace: shared-services
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: openbao-bootstrap
+  namespace: shared-services
+rules:
+  - apiGroups: [""]
+    resources: [pods]
+    resourceNames: [openbao-0]
+    verbs: [get]
+  - apiGroups: [""]
+    resources: [pods/exec]
+    resourceNames: [openbao-0]
+    verbs: [create]
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames: [openbao-init-keys]
+    verbs: [get, delete]
+  # A create rule cannot name its object.
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [create]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: openbao-bootstrap
+  namespace: shared-services
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: openbao-bootstrap
+subjects:
+  - kind: ServiceAccount
+    name: openbao-bootstrap
+    namespace: shared-services
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: openbao-bootstrap
+rules:
+  - apiGroups: [external-secrets.io]
+    resources: [clustersecretstores]
+    resourceNames: [openbao-cluster-store]
+    verbs: [get, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: openbao-bootstrap
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: openbao-bootstrap
+subjects:
+  - kind: ServiceAccount
+    name: openbao-bootstrap
+    namespace: shared-services
+---
+# alpine/k8s holds bash, jq and kubectl, and its tag follows the Kubernetes
+# version of the clusters (scripts/validate.sh). The container reads the root
+# token, so the digest pins the image and a re-pushed tag never reaches it.
+# The image has no user of its own, so the container runs as nobody, with
+# HOME on /tmp for kubectl's cache. /tmp is the only writable path.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: openbao-bootstrap
+  namespace: shared-services
+  annotations:
+    kustomize.toolkit.fluxcd.io/force: enabled
+spec:
+  backoffLimit: 4
+  activeDeadlineSeconds: 1800
+  template:
+    spec:
+      serviceAccountName: openbao-bootstrap
+      restartPolicy: Never
+      containers:
+        - name: bootstrap
+          image: alpine/k8s:1.37.2@sha256:7a82aeefea3d554a43a8676b137f2b88bae6c1fe11c13862b191b3a086cc28c0
+          command: [bash, /runner/bootstrap.sh]
+          env:
+            - name: HOME
+              value: /tmp
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            runAsGroup: 65534
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+            seccompProfile:
+              type: RuntimeDefault
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: runner
+              mountPath: /runner
+              readOnly: true
+            - name: scripts
+              mountPath: /scripts
+              readOnly: true
+            - name: policies
+              mountPath: /policies
+              readOnly: true
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: runner
+          configMap:
+            name: openbao-bootstrap-runner
+        - name: scripts
+          configMap:
+            name: cobaltcore-openbao-scripts
+        - name: policies
+          configMap:
+            name: cobaltcore-openbao-policies
