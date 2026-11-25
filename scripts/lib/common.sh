@@ -96,27 +96,65 @@ config_merged() {
 	printf '%s\n' "$out"
 }
 
+# _cidr_range <address or cidr>: prints the first and the last address of the
+# range as integers; an address is a range of one. It fails for anything but
+# four decimal octets of 0 to 255 with an optional prefix length of 0 to 32,
+# written without a leading zero: MetalLB and Docker refuse 172.30.255.010,
+# and one address must have one spelling for the comparisons of config_load.
+_cidr_range() {
+	local n='(0|[1-9][0-9]{0,2})' octet first=0 prefix=32 size
+	[[ $1 =~ ^$n\.$n\.$n\.$n(/(0|[1-9][0-9]?))?$ ]] || return 1
+	if [ -n "${BASH_REMATCH[6]}" ]; then
+		prefix=${BASH_REMATCH[6]}
+	fi
+	((prefix <= 32)) || return 1
+	for octet in "${BASH_REMATCH[@]:1:4}"; do
+		((octet <= 255)) || return 1
+		first=$((first * 256 + octet))
+	done
+	size=$((1 << (32 - prefix)))
+	first=$((first / size * size))
+	printf '%s %s\n' "$first" "$((first + size - 1))"
+}
+
+# _cidr_contains <cidr> <address or cidr>: succeeds when every address of the
+# second argument lies inside the first, compared as integers.
+_cidr_contains() {
+	local outer inner
+	outer=$(_cidr_range "$1") && inner=$(_cidr_range "$2") || return 1
+	((${inner% *} >= ${outer% *} && ${inner#* } <= ${outer#* }))
+}
+
 # config_load: reads the output of config_merged and exports SANDBOX_SUBNET,
-# SANDBOX_GATEWAY_ADDRESS, SANDBOX_REGISTRY_IMAGE, SANDBOX_HYPERVISOR_NODES,
+# SANDBOX_GATEWAY_ADDRESS, SANDBOX_ADDRESS_POOL, SANDBOX_DNS_ADDRESS,
+# SANDBOX_REGISTRY_IMAGE, SANDBOX_HYPERVISOR_NODES, SANDBOX_RESOLVER_FALLBACK,
 # SANDBOX_FLUX_OPERATOR_VERSION and SANDBOX_UPSTREAM_COMMIT. A missing key is
-# an error; no script carries a default for these six.
+# an error; no script carries a default for these nine. The pool lies inside
+# the subnet, and the Gateway and DNS addresses, two different ones, inside
+# the pool: MetalLB gives a Service no address outside its pool.
 config_load() {
-	local merged key value subnet gateway nodes operator upstream
+	local merged key value subnet gateway pool dns nodes fallback operator upstream
 	local -A values=()
 
 	merged=$(config_merged) || exit 1
-	for key in network.subnet addresses.gateway registry.image switches.hypervisor-nodes flux.operator upstream.cobaltcore; do
+	for key in network.subnet addresses.gateway registry.image switches.hypervisor-nodes flux.operator upstream.cobaltcore \
+		addresses.pool addresses.dns; do
 		# The bracket form reads a key with a hyphen, such as hypervisor-nodes.
 		value=$(yq ".${key%%.*}[\"${key#*.}\"] // \"\"" - <<<"$merged")
 		[ -n "$value" ] || die "config: $key is not set"
 		values[$key]=$value
 	done
+	# Read outside the loop: its // "" would turn the value false into the
+	# empty string.
+	fallback=$(yq '.switches["resolver-fallback"] | select(. != null)' - <<<"$merged")
+	[ -n "$fallback" ] || die "config: switches.resolver-fallback is not set"
 	subnet=${values[network.subnet]} gateway=${values[addresses.gateway]} nodes=${values[switches.hypervisor-nodes]}
 	operator=${values[flux.operator]} upstream=${values[upstream.cobaltcore]}
+	pool=${values[addresses.pool]} dns=${values[addresses.dns]}
 
-	[[ $subnet =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}$ ]] ||
+	[[ $subnet == */* ]] && _cidr_range "$subnet" >/dev/null ||
 		die "config: network.subnet '$subnet' is not an IPv4 CIDR"
-	[[ $gateway =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] ||
+	[[ $gateway != */* ]] && _cidr_range "$gateway" >/dev/null ||
 		die "config: addresses.gateway '$gateway' is not an IPv4 address"
 	[[ $nodes =~ ^[1-9][0-9]*$ ]] ||
 		die "config: switches.hypervisor-nodes must be an integer of 1 or more, got '$nodes'"
@@ -124,11 +162,28 @@ config_load() {
 		die "config: flux.operator '$operator' is not a version"
 	[[ $upstream =~ $SANDBOX_SHA_RE ]] ||
 		die "config: upstream.cobaltcore '$upstream' is not a commit SHA of 40 hex characters"
+	[[ $pool == */* ]] && _cidr_range "$pool" >/dev/null ||
+		die "config: addresses.pool '$pool' is not an IPv4 CIDR"
+	[[ $dns != */* ]] && _cidr_range "$dns" >/dev/null ||
+		die "config: addresses.dns '$dns' is not an IPv4 address"
+	[[ $fallback == true || $fallback == false ]] ||
+		die "config: switches.resolver-fallback must be true or false, got '$fallback'"
+	_cidr_contains "$subnet" "$pool" ||
+		die "config: addresses.pool $pool is not inside network.subnet $subnet"
+	_cidr_contains "$pool" "$gateway" ||
+		die "config: addresses.gateway $gateway is not inside addresses.pool $pool"
+	_cidr_contains "$pool" "$dns" ||
+		die "config: addresses.dns $dns is not inside addresses.pool $pool"
+	[ "$dns" != "$gateway" ] ||
+		die "config: addresses.dns and addresses.gateway are both $dns"
 
 	export SANDBOX_SUBNET=$subnet
 	export SANDBOX_GATEWAY_ADDRESS=$gateway
+	export SANDBOX_ADDRESS_POOL=$pool
+	export SANDBOX_DNS_ADDRESS=$dns
 	export SANDBOX_REGISTRY_IMAGE=${values[registry.image]}
 	export SANDBOX_HYPERVISOR_NODES=$nodes
+	export SANDBOX_RESOLVER_FALLBACK=$fallback
 	export SANDBOX_FLUX_OPERATOR_VERSION=$operator
 	export SANDBOX_UPSTREAM_COMMIT=$upstream
 }

@@ -4,14 +4,20 @@ network:
   # Read by scripts/up.sh: the subnet of the Docker network cobaltcore-sandbox.
   subnet: 172.30.0.0/16
 addresses:
-  # Read by the resolver check of scripts/lib/preflight.sh, and by the Gateway of #7.
+  # Read by the resolver check of scripts/lib/preflight.sh, and by the module gateway: the address of the Gateway openstack-gw.
   gateway: 172.30.255.10
+  # Read by the module loadbalancer: the address pool of MetalLB, inside network.subnet.
+  pool: 172.30.255.0/24
+  # Read by the module resolver on sandbox-management: the address of the resolver fallback, inside addresses.pool.
+  dns: 172.30.255.53
 registry:
   # Read by scripts/up.sh: the image of the container sandbox-registry.
   image: registry:3
 switches:
   # Read by kind_config in scripts/lib/common.sh: the worker nodes of sandbox-compute.
   hypervisor-nodes: 1
+  # Read by cluster_modules in scripts/lib/profile.sh: true adds the module resolver to every cluster.
+  resolver-fallback: false
 upstream:
   # Read by config_load in scripts/lib/common.sh: the commit of C5C3/cobaltcore that make vendor checks out. scripts/pin.sh moves it.
   cobaltcore: 15a0323e243c7f53b91200f193a58b5b41d41f6a
