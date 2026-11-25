@@ -1,0 +1,83 @@
+# A ControlPlane full in the namespace default with the service set of the
+# profile full: Keystone, Glance, Placement, Neutron, Nova and Cinder, without
+# Barbican and Horizon, on the brownfield bus of the module messaging-tls. It
+# is controlplane-remote-compute.yaml beside this file without remoteCompute,
+# with the cinder block of controlplane-storage.yaml.
+# tests/host/controlplane.bats applies it with --dry-run=server only, as it is
+# and without services.glance, which the webhook refuses beside services.nova.
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: full
+  namespace: default
+spec:
+  openStackRelease: "2026.1"
+  infrastructure:
+    messaging:
+      secretRef:
+        name: rabbitmq-transport-url
+      tls:
+        caBundleSecretRef:
+          name: shared-rabbitmq-tls
+  services:
+    keystone:
+      gateway:
+        parentRef:
+          name: openstack-gw
+        hostname: keystone.127-0-0-1.nip.io
+        path: /
+    glance:
+      gateway:
+        parentRef:
+          name: openstack-gw
+        hostname: glance.127-0-0-1.nip.io
+      backends:
+        - name: default
+          type: S3
+          isDefault: true
+          s3:
+            endpoint: http://garage.shared-services.svc.cluster.local:3900
+            bucket: glance-images
+            region: garage
+            credentialsSecretRef:
+              name: garage-s3-credentials
+    placement:
+      gateway:
+        parentRef:
+          name: openstack-gw
+        hostname: placement.127-0-0-1.nip.io
+    neutron:
+      gateway:
+        parentRef:
+          name: openstack-gw
+        hostname: neutron.127-0-0-1.nip.io
+      ovn:
+        centralRef:
+          name: controlplane-ovn
+    nova:
+      gateway:
+        parentRef:
+          name: openstack-gw
+        hostname: nova.127-0-0-1.nip.io
+    cinder:
+      gateway:
+        parentRef:
+          name: openstack-gw
+        hostname: cinder.127-0-0-1.nip.io
+      backends:
+        - name: ceph1
+          type: RBD
+          rbd:
+            pool: volumes
+            user: cinder
+            monitors:
+              - rook-ceph-mon-a.rook-ceph.svc.cluster.local
+            networks:
+              - 10.240.0.0/13
+              - 10.248.0.0/18
+            keySecretRef:
+              name: ceph-client-cinder
+            secretUUID: 090e4a3c-6c20-4e74-82dc-1a70382babe8
+  sizing:
+    profileRef:
+      name: sandbox

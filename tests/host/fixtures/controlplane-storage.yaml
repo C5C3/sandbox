@@ -1,0 +1,52 @@
+# A ControlPlane storage in the namespace default with the service set of
+# the profile storage: Keystone and Cinder, without Nova, on the brownfield
+# bus of the module messaging-tls. The messaging block, the keystone block and
+# the sizing are those of controlplane-remote-compute.yaml beside this file;
+# the backend ceph1 is that of
+# vendor/cobaltcore/deploy/overlays/metal-stack/controlplane/controlplane-lab.yaml:149-162.
+# tests/host/controlplane.bats applies it with --dry-run=server only, as it is
+# and without spec.infrastructure.messaging, which the webhook refuses beside
+# services.cinder.
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: storage
+  namespace: default
+spec:
+  openStackRelease: "2026.1"
+  infrastructure:
+    messaging:
+      secretRef:
+        name: rabbitmq-transport-url
+      tls:
+        caBundleSecretRef:
+          name: shared-rabbitmq-tls
+  services:
+    keystone:
+      gateway:
+        parentRef:
+          name: openstack-gw
+        hostname: keystone.127-0-0-1.nip.io
+        path: /
+    cinder:
+      gateway:
+        parentRef:
+          name: openstack-gw
+        hostname: cinder.127-0-0-1.nip.io
+      backends:
+        - name: ceph1
+          type: RBD
+          rbd:
+            pool: volumes
+            user: cinder
+            monitors:
+              - rook-ceph-mon-a.rook-ceph.svc.cluster.local
+            networks:
+              - 10.240.0.0/13
+              - 10.248.0.0/18
+            keySecretRef:
+              name: ceph-client-cinder
+            secretUUID: 090e4a3c-6c20-4e74-82dc-1a70382babe8
+  sizing:
+    profileRef:
+      name: sandbox
