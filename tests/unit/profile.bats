@@ -32,6 +32,15 @@ profile_fails_with() {
 	[ "$(profile_modules compute)" = "" ]
 }
 
+@test "profile_load loads platform with the management cluster alone and its nine modules" {
+	export SANDBOX_PROFILE=platform
+	profile_load
+	[ "$SANDBOX_PROFILE_CLUSTERS" = management ]
+	run cluster_modules management
+	[ "$status" -eq 0 ]
+	[ "$output" = $'crds\ncontrollers\nloadbalancer\npki\ngateway\nopenbao\nobjectstore\nplatform\nsizing' ]
+}
+
 @test "cluster_modules gives storage the module resolver of gateway only with the switch on" {
 	export SANDBOX_PROFILE=gateway
 	profile_load
