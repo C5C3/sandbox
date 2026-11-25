@@ -1,0 +1,110 @@
+# The transport URL Secrets of the bus. The RabbitMQ Cluster Operator writes
+# username and password of the default user, which owns the root vhost, into
+# shared-rabbitmq-default-user. External Secrets reads both through a
+# SecretStore of the provider kubernetes, whose ServiceAccount may get that
+# one Secret and nothing else, and writes the complete URL under
+# transport_url. Flux substitutes ${...} and leaves {{ }} to External Secrets.
+#
+# rabbitmq-transport-url is what the messaging block of the ControlPlane
+# names. controlplane-nova-remote-transport, the name of step 1 of upstream's
+# guide Connect a Compute Cluster, is what remoteCompute names once a compute
+# cluster is attached. Until the broker has written its default user, both
+# ExternalSecrets report SecretSyncedError, and External Secrets retries.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: rabbitmq-transport
+  namespace: openstack
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: rabbitmq-transport
+  namespace: openstack
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames: [shared-rabbitmq-default-user]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: rabbitmq-transport
+  namespace: openstack
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: rabbitmq-transport
+subjects:
+  - kind: ServiceAccount
+    name: rabbitmq-transport
+    namespace: openstack
+---
+apiVersion: external-secrets.io/v1
+kind: SecretStore
+metadata:
+  name: rabbitmq-transport
+  namespace: openstack
+spec:
+  provider:
+    kubernetes:
+      remoteNamespace: openstack
+      server:
+        caProvider:
+          type: ConfigMap
+          name: kube-root-ca.crt
+          key: ca.crt
+      auth:
+        serviceAccount:
+          name: rabbitmq-transport
+---
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: rabbitmq-transport-url
+  namespace: openstack
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    kind: SecretStore
+    name: rabbitmq-transport
+  target:
+    name: rabbitmq-transport-url
+    template:
+      data:
+        transport_url: "rabbit://{{ .username | urlquery }}:{{ .password | urlquery }}@rabbitmq.${ADDRESSES_RABBITMQ//./-}.nip.io:5671/"
+  data:
+    - secretKey: username
+      remoteRef:
+        key: shared-rabbitmq-default-user
+        property: username
+    - secretKey: password
+      remoteRef:
+        key: shared-rabbitmq-default-user
+        property: password
+---
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: controlplane-nova-remote-transport
+  namespace: openstack
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    kind: SecretStore
+    name: rabbitmq-transport
+  target:
+    name: controlplane-nova-remote-transport
+    template:
+      data:
+        transport_url: "rabbit://{{ .username | urlquery }}:{{ .password | urlquery }}@rabbitmq.${ADDRESSES_RABBITMQ//./-}.nip.io:5671/"
+  data:
+    - secretKey: username
+      remoteRef:
+        key: shared-rabbitmq-default-user
+        property: username
+    - secretKey: password
+      remoteRef:
+        key: shared-rabbitmq-default-user
+        property: password

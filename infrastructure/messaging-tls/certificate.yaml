@@ -1,0 +1,24 @@
+# The certificate of the TLS listener of shared-rabbitmq, after
+# infrastructure/gateway/certificate.yaml. Flux replaces every dot of the
+# RabbitMQ address with a hyphen, so the one name is rabbitmq.<a-b-c-d>.nip.io,
+# which nip.io resolves to that address. The key ca.crt of its Secret is the
+# sandbox CA, the bundle the messaging block of the ControlPlane names.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: shared-rabbitmq-tls
+  namespace: openstack
+spec:
+  secretName: shared-rabbitmq-tls
+  duration: 2160h
+  renewBefore: 360h
+  issuerRef:
+    name: sandbox-ca-issuer
+    kind: ClusterIssuer
+  commonName: "rabbitmq.${ADDRESSES_RABBITMQ//./-}.nip.io"
+  dnsNames:
+    - "rabbitmq.${ADDRESSES_RABBITMQ//./-}.nip.io"
+  usages:
+    - server auth
+    - digital signature
+    - key encipherment

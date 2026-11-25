@@ -34,3 +34,7 @@ sources:
   # The manifest of infrastructure/loadbalancer/kustomization.yaml.
   - name: metallb
     crds: https://raw.githubusercontent.com/metallb/metallb/v0.16.2/config/manifests/metallb-native.yaml
+  # The tag of
+  # vendor/cobaltcore/deploy/bases/operators/sources/rabbitmq-cluster-operator.yaml.
+  - name: rabbitmq-cluster-operator
+    crds: https://github.com/rabbitmq/cluster-operator/releases/download/v2.23.3/cluster-operator.yml
