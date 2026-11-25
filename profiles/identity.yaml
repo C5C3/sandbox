@@ -1,0 +1,3 @@
+clusters: [management]
+modules:
+  management: [crds, controllers, loadbalancer, pki, gateway, openbao, platform, sizing, messaging-tls, controlplane]

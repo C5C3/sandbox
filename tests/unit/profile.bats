@@ -41,6 +41,15 @@ profile_fails_with() {
 	[ "$output" = $'crds\ncontrollers\nloadbalancer\npki\ngateway\nopenbao\nobjectstore\nplatform\nsizing' ]
 }
 
+@test "profile_load loads identity with the management cluster alone and its ten modules" {
+	export SANDBOX_PROFILE=identity
+	profile_load
+	[ "$SANDBOX_PROFILE_CLUSTERS" = management ]
+	run cluster_modules management
+	[ "$status" -eq 0 ]
+	[ "$output" = $'crds\ncontrollers\nloadbalancer\npki\ngateway\nopenbao\nplatform\nsizing\nmessaging-tls\ncontrolplane' ]
+}
+
 @test "cluster_modules gives storage the module resolver of gateway only with the switch on" {
 	export SANDBOX_PROFILE=gateway
 	profile_load
