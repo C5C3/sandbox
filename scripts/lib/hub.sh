@@ -243,14 +243,14 @@ ensure_kubeconfig_secret() {
 }
 
 # root_manifest <role>: prints the root Kustomization cluster-<role>. It
-# applies clusters/<role>/ with the modules the profile lists for the role as
-# components, which puts their stages on sandbox-management, and labels the
-# stages with the role. With prune, a module taken off the list loses its
-# stage, and the stage removes what it applied on its cluster.
+# applies clusters/<role>/ with the modules cluster_modules prints for the
+# role as components, which puts their stages on sandbox-management, and
+# labels the stages with the role. With prune, a module taken off the list
+# loses its stage, and the stage removes what it applied on its cluster.
 root_manifest() {
 	local role=$1 modules module
 	require_roles "$role"
-	modules=$(profile_modules "$role") || exit 1
+	modules=$(cluster_modules "$role") || exit 1
 	cat <<EOT
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
@@ -291,7 +291,7 @@ ensure_root() {
 }
 
 # wait_stages: polls the Kustomizations of sandbox-management every 2 s until
-# the root and every stage of the profile's modules of each attached role is
+# the root and every stage of the cluster_modules of each attached role is
 # Ready with SANDBOX_REVISION as its last applied revision, for at most
 # SANDBOX_STAGE_TIMEOUT seconds, by default 600. A stage that is Ready at an
 # older revision is not ready.
@@ -302,7 +302,7 @@ wait_stages() {
 	attached=$(attached_roles) || exit 1
 	for role in $attached; do
 		names+=("cluster-$role")
-		modules=$(profile_modules "$role") || exit 1
+		modules=$(cluster_modules "$role") || exit 1
 		for module in $modules; do
 			names+=("$role-$module")
 		done
@@ -340,7 +340,7 @@ wait_stages() {
 }
 
 # hub_sync: installs Flux on sandbox-management and makes it apply the
-# profile's modules to every attached cluster, then waits for their stages.
+# cluster_modules of every attached cluster, then waits for their stages.
 # It stops before the first step when a stage depends on a stage of a
 # cluster that is not attached, because no root would create that stage.
 # Every step is safe to repeat; a failed step stops the run and leaves what
@@ -349,7 +349,7 @@ hub_sync() {
 	local attached role modules module dep stages=0
 	attached=$(attached_roles) || exit 1
 	for role in $attached; do
-		modules=$(profile_modules "$role") || exit 1
+		modules=$(cluster_modules "$role") || exit 1
 		for module in $modules; do
 			# profile_load has read every stage.yaml of the profile.
 			for dep in $(yq '.spec.dependsOn // [] | .[].name' "$SANDBOX_ROOT/clusters/$role/$module/stage.yaml"); do
@@ -371,7 +371,7 @@ hub_sync() {
 	done
 	wait_stages
 	for role in $attached; do
-		modules=$(profile_modules "$role") || exit 1
+		modules=$(cluster_modules "$role") || exit 1
 		stages=$((stages + $(wc -w <<<"$modules")))
 	done
 	log "$stages stages Ready on $(wc -w <<<"$attached") clusters at $SANDBOX_REVISION"

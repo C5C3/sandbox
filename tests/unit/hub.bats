@@ -362,6 +362,17 @@ scaffold_attached() {
 	[ "$output" = 'error: config: switches.hypervisor-nodes and switches.hypervisor_nodes become the same Flux variable SWITCHES_HYPERVISOR_NODES' ]
 }
 
+@test "up.sh stops before it calls kind or Docker when the resolver switch is on and the profile lists no loadbalancer" {
+	cp -R -- "$SANDBOX_ROOT/scripts" "$SANDBOX_ROOT/profiles" "$SANDBOX_ROOT/clusters" "$BATS_TEST_TMPDIR/"
+	# The host check passes.
+	echo 'preflight_run() { :; }' >"$BATS_TEST_TMPDIR/scripts/lib/preflight.sh"
+	config_with '.switches["resolver-fallback"] = true'
+	export -f docker kind
+	run "$BATS_TEST_TMPDIR/scripts/up.sh"
+	[ "$status" -eq 1 ]
+	[ "$output" = 'error: switches.resolver-fallback needs the module loadbalancer on sandbox-management, the profile scaffold does not list it' ]
+}
+
 @test "up.sh stops at a failed fetch of upstream before it calls kind or Docker" {
 	cp -R -- "$SANDBOX_ROOT/scripts" "$BATS_TEST_TMPDIR/"
 	# The host check passes.
