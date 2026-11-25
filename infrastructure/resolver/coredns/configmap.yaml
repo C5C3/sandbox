@@ -1,0 +1,51 @@
+# The ConfigMap of CoreDNS as kubeadm creates it on a kind cluster of the
+# sandbox, with one block between "# sandbox: begin" and "# sandbox: end":
+# CoreDNS answers <name>.<a-b-c-d>.nip.io with a.b.c.d itself, for a host
+# whose resolver drops private answers. tests/host/gateway.bats compares the
+# rest with the Corefile of a fresh cluster. The reload plugin picks the
+# change up. Pruning would delete the configuration of CoreDNS, so the block
+# stays until make down.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: coredns
+  namespace: kube-system
+  annotations:
+    kustomize.toolkit.fluxcd.io/prune: disabled
+data:
+  Corefile: |
+    .:53 {
+        errors
+        health {
+           lameduck 5s
+        }
+        ready
+        kubernetes cluster.local in-addr.arpa ip6.arpa {
+           pods insecure
+           fallthrough in-addr.arpa ip6.arpa
+           ttl 30
+        }
+        prometheus :9153
+        # sandbox: begin
+        template IN A nip.io {
+            match "(^|[.])(?P<a>[0-9]{1,3})-(?P<b>[0-9]{1,3})-(?P<c>[0-9]{1,3})-(?P<d>[0-9]{1,3})[.]nip[.]io[.]$"
+            answer "{{ .Name }} 60 IN A {{ .Group.a }}.{{ .Group.b }}.{{ .Group.c }}.{{ .Group.d }}"
+            fallthrough
+        }
+        template IN AAAA nip.io {
+            match "(^|[.])[0-9]{1,3}-[0-9]{1,3}-[0-9]{1,3}-[0-9]{1,3}[.]nip[.]io[.]$"
+            rcode NOERROR
+            fallthrough
+        }
+        # sandbox: end
+        forward . /etc/resolv.conf {
+           max_concurrent 1000
+        }
+        cache 30 {
+           disable success cluster.local
+           disable denial cluster.local
+        }
+        loop
+        reload
+        loadbalance
+    }

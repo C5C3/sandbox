@@ -1,0 +1,20 @@
+# The CoreDNS of sandbox-management on addresses.dns, where the host and a
+# container on the Docker network ask for nip.io names.
+apiVersion: v1
+kind: Service
+metadata:
+  name: nip-io
+  namespace: kube-system
+  annotations:
+    metallb.io/loadBalancerIPs: ${ADDRESSES_DNS}
+spec:
+  type: LoadBalancer
+  selector:
+    k8s-app: kube-dns
+  ports:
+    - name: dns
+      port: 53
+      protocol: UDP
+    - name: dns-tcp
+      port: 53
+      protocol: TCP

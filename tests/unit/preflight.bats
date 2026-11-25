@@ -192,6 +192,18 @@ COMMON_CHECKS="os,cgroup,docker,inotify,tool docker,tool kind,tool kubectl,tool 
 	[[ $output == *"warn resolver: preflight.172-30-255-10.nip.io resolved to '10.0.0.1', expected 172.30.255.10;"* ]]
 }
 
+@test "the resolver warning names the switch, or that the fallback is on" {
+	probe_resolve() { :; }
+	run preflight_run management
+	[ "$status" -eq 0 ]
+	[[ $output == *$'\n'"warn resolver: preflight.172-30-255-10.nip.io resolved to '', expected 172.30.255.10; a resolver with DNS rebinding protection drops private answers; set switches.resolver-fallback to true"$'\n'* ]]
+
+	config_with '.switches["resolver-fallback"] = true'
+	run preflight_run management
+	[ "$status" -eq 0 ]
+	[[ $output == *$'\n'"warn resolver: preflight.172-30-255-10.nip.io resolved to '', expected 172.30.255.10; a resolver with DNS rebinding protection drops private answers; the resolver fallback is on, make up prints the resolver settings"$'\n'* ]]
+}
+
 @test "every failed check prints its line and the summary counts them" {
 	probe_os() { echo "Darwin arm64"; }
 	probe_cgroup_fstype() { echo tmpfs; }

@@ -339,6 +339,30 @@ wait_stages() {
 	die "$(grep -c '' <<<"$pending") of ${#names[@]} stages are not Ready at $SANDBOX_REVISION after $timeout s; make status shows them"
 }
 
+# resolver_hint: with SANDBOX_RESOLVER_FALLBACK true, prints how to send the
+# host's lookups of nip.io names to SANDBOX_DNS_ADDRESS, where the CoreDNS of
+# sandbox-management answers them, over the bridge of SANDBOX_NETWORK. It runs
+# none of the printed commands. With the switch off it prints nothing.
+resolver_hint() {
+	local out bridge
+	[ "${SANDBOX_RESOLVER_FALLBACK:-false}" = true ] || return 0
+	# with prints nothing for a missing option, where index alone can print
+	# "<no value>".
+	out=$(docker network inspect -f '{{with index .Options "com.docker.network.bridge.name"}}{{.}}{{end}} {{.Id}}' "$SANDBOX_NETWORK" 2>/dev/null) ||
+		die "cannot read the bridge of Docker network $SANDBOX_NETWORK"
+	bridge=${out%% *}
+	if [ -z "$bridge" ]; then
+		# Docker names the bridge of a network without the option br- and
+		# the first 12 characters of the network's ID.
+		bridge=${out#* }
+		bridge=br-${bridge:0:12}
+	fi
+	log "the resolver fallback answers nip.io names on $SANDBOX_DNS_ADDRESS; route the host's lookups to it:"
+	printf "  sudo resolvectl dns %s %s && sudo resolvectl domain %s '~nip.io'   # systemd-resolved\n" \
+		"$bridge" "$SANDBOX_DNS_ADDRESS" "$bridge"
+	printf '  server=/nip.io/%s   # dnsmasq\n' "$SANDBOX_DNS_ADDRESS"
+}
+
 # hub_sync: installs Flux on sandbox-management and makes it apply the
 # cluster_modules of every attached cluster, then waits for their stages.
 # It stops before the first step when a stage depends on a stage of a

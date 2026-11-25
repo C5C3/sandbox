@@ -200,7 +200,12 @@ preflight_run() {
 		if [ "$out" = "$SANDBOX_GATEWAY_ADDRESS" ]; then
 			_preflight_report ok resolver "$name resolves to $out"
 		else
-			_preflight_report warn resolver "$name resolved to '$out', expected $SANDBOX_GATEWAY_ADDRESS; a resolver with DNS rebinding protection drops private answers"
+			out="$name resolved to '$out', expected $SANDBOX_GATEWAY_ADDRESS; a resolver with DNS rebinding protection drops private answers"
+			if [ "$SANDBOX_RESOLVER_FALLBACK" = true ]; then
+				_preflight_report warn resolver "$out; the resolver fallback is on, make up prints the resolver settings"
+			else
+				_preflight_report warn resolver "$out; set switches.resolver-fallback to true"
+			fi
 		fi
 	fi
 
