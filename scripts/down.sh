@@ -21,9 +21,35 @@ record() {
 	printf 'error: %s\n' "$*" >&2
 }
 
+# nodes_stopped <cluster>: waits until no node container of the kind cluster
+# runs, polling every 2 s for at most 120 s, and fails when one still runs
+# then.
+nodes_stopped() {
+	local i node nodes running
+	log "waiting up to 120 s for the nodes of $1 to stop"
+	for ((i = 0; ; i++)); do
+		running=''
+		nodes=$(kind get nodes --name "$1" 2>/dev/null) || nodes=''
+		for node in $nodes; do
+			if [ "$(docker container inspect -f '{{.State.Running}}' "$node" 2>/dev/null)" = true ]; then
+				running=$node
+			fi
+		done
+		[ -n "$running" ] || return 0
+		[ "$i" -lt 60 ] || return 1
+		sleep 2
+	done
+}
+
 out=$(docker info 2>&1 >/dev/null) || die "cannot reach the Docker daemon: ${out%%$'\n'*}"
 
 # 1. The kind clusters. --kubeconfig keeps kind from editing ~/.kube/config.
+# Docker gives a node 12 s to exit after it kills it. A node can take longer:
+# one that mounts an NFS export served from a pod of its own cluster, as with
+# the module cinder-nfs, waits for the kernel's NFS client, whose server
+# stopped with the node, and on a busy host any node may. kind then fails and
+# leaves the node, which Docker goes on stopping, so the cluster is deleted
+# once more after its nodes stopped.
 for role in compute storage management; do
 	if cluster_exists "$role"; then
 		name=$(cluster_name "$role")
@@ -38,8 +64,15 @@ for role in compute storage management; do
 		fi
 		prepare_kubeconfig_dir
 		log "deleting kind cluster $name"
-		kind delete cluster --name "$name" --kubeconfig "$(kubeconfig_path "$role")" ||
-			record "kind could not delete $name"
+		if ! kind delete cluster --name "$name" --kubeconfig "$(kubeconfig_path "$role")"; then
+			if nodes_stopped "$name"; then
+				log "deleting kind cluster $name again"
+				kind delete cluster --name "$name" --kubeconfig "$(kubeconfig_path "$role")" ||
+					record "kind could not delete $name"
+			else
+				record "kind could not delete $name, a node still runs after 120 s"
+			fi
+		fi
 	fi
 done
 
