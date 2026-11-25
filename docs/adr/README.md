@@ -21,6 +21,8 @@ Each file in this directory records one decision with its context, the alternati
 | [ADR-0015](0015-select-modules-through-one-root-kustomization-per-cluster.md) | Select modules through one root Kustomization per cluster | Accepted |
 | [ADR-0016](0016-vendor-only-the-upstream-paths-that-are-read.md) | Vendor only the upstream paths that are read | Accepted |
 | [ADR-0017](0017-open-the-pin-pull-request-with-the-built-in-token.md) | Open the pin pull request with the built-in token | Accepted |
+| [ADR-0018](0018-print-the-host-resolver-settings-of-the-nip-io-fallback.md) | Print the host's resolver settings of the nip.io fallback | Accepted |
+| [ADR-0019](0019-read-third-party-manifests-as-pinned-remote-resources.md) | Read third-party manifests as pinned remote resources | Proposed |
 
 ## Points to prove first
 
