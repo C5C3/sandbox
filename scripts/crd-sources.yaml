@@ -18,6 +18,14 @@ sources:
   # vendor/cobaltcore/deploy/bases/operators/releases/cert-manager.yaml.
   - name: cert-manager
     crds: https://github.com/cert-manager/cert-manager/releases/download/v1.21.3/cert-manager.crds.yaml
+  # The newest release of External Secrets in the chart range of
+  # vendor/cobaltcore/deploy/bases/operators/releases/external-secrets.yaml.
+  - name: external-secrets
+    crds: https://raw.githubusercontent.com/external-secrets/external-secrets/v2.15.0/deploy/crds/bundle.yaml
+  # The newest release of the garage-operator in the chart range of
+  # vendor/cobaltcore/deploy/bases/operators/releases/garage-operator.yaml.
+  - name: garage-operator
+    crds: https://github.com/rajsinghtech/garage-operator/releases/download/v0.9.2/install.yaml
   # The resources of infrastructure/crds/kustomization.yaml.
   - name: gateway-api
     crds: https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.6.3/standard-install.yaml
