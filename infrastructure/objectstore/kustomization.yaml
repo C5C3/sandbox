@@ -1,0 +1,38 @@
+# Garage as upstream ships it, on one storage node: the GarageCluster garage,
+# the buckets glance-images and glance-images-2 and the key glance-s3, and the
+# ExternalSecrets of its admin token and of the S3 credentials in
+# shared-services and openstack, which read the paths write-bootstrap-secrets.sh
+# of the module openbao seeds. The garage-operator is a release of
+# controllers. The GarageCluster is applied in the same pass as the
+# ExternalSecret of its admin token; the operator asks again 30 s after an
+# error, so it follows the Secret once it exists.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../vendor/cobaltcore/deploy/bases/infrastructure/garage.yaml
+  - ../../vendor/cobaltcore/deploy/bases/devstack/infrastructure/garage-admin-token-externalsecret.yaml
+  - ../../vendor/cobaltcore/deploy/bases/devstack/infrastructure/garage-s3-credentials-externalsecret.yaml
+patches:
+  # The single-node sizes of
+  # vendor/cobaltcore/deploy/bases/devstack/infrastructure/kustomization.yaml:143-165,
+  # without its storageClassName: null, which names a field the base does not
+  # set.
+  - target:
+      group: garage.rajsingh.info
+      version: v1beta2
+      kind: GarageCluster
+      name: garage
+      namespace: shared-services
+    patch: |
+      apiVersion: garage.rajsingh.info/v1beta2
+      kind: GarageCluster
+      metadata:
+        name: garage
+        namespace: shared-services
+      spec:
+        storage:
+          replicas: 1
+          metadata:
+            size: 512Mi
+          data:
+            size: 2Gi
