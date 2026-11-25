@@ -164,15 +164,81 @@ EOF
 		'[{"apiGroups":[""],"resources":["secrets"],"verbs":["create"]}]' ]
 }
 
-@test "every rule of the Role rabbitmq-transport names its objects" {
-	local file=$SANDBOX_ROOT/infrastructure/messaging-tls/transport.yaml roles='select(.kind == "Role")'
-	[ "$(yq ea "[$roles] | length" "$file")" = 1 ]
-	[ "$(yq ea -o=json -I=0 "[$roles | .rules[] | select((.resourceNames // []) | length == 0)]" "$file")" = '[]' ]
+@test "every rule of the two tenant Roles and of the Role rabbitmq-transport names its objects" {
+	local file count roles='select(.kind == "Role")'
+	while read -r file count; do
+		[ "$(yq ea "[$roles] | length" "$SANDBOX_ROOT/$file")" = "$count" ]
+		[ "$(yq ea -o=json -I=0 "[$roles | .rules[] | select((.resourceNames // []) | length == 0)]" "$SANDBOX_ROOT/$file")" = '[]' ]
+	done <<'EOF'
+controlplane/tenant.yaml 2
+infrastructure/messaging-tls/transport.yaml 1
+EOF
 }
 
-@test "the stage of messaging-tls substitutes from cluster-vars" {
+@test "every patches Component targets only the stages of other modules of its cluster" {
+	local file module role name count=0
+	for file in "$SANDBOX_ROOT"/clusters/*/*/patches/kustomization.yaml; do
+		module=${file%/patches/kustomization.yaml}
+		module=${module##*/}
+		role=${file#"$SANDBOX_ROOT"/clusters/}
+		role=${role%%/*}
+		echo "$file"
+		[ "$(yq -o=json -I=0 '[.apiVersion, .kind, has("resources")]' "$file")" = \
+			'["kustomize.config.k8s.io/v1alpha1","Component",false]' ]
+		[ "$(yq '.patches | length' "$file")" -gt 0 ]
+		[ "$(yq '[.patches[].target | select(.group != "kustomize.toolkit.fluxcd.io" or .kind != "Kustomization")] | length' "$file")" = 0 ]
+		for name in $(yq '.patches[].target.name' "$file"); do
+			[[ $name == "$role-"* ]]
+			[ "${name#"$role"-}" != "$module" ]
+			[ -f "$SANDBOX_ROOT/clusters/$role/${name#"$role"-}/stage.yaml" ]
+		done
+		count=$((count + 1))
+	done
+	[ "$count" -ge 2 ]
+}
+
+@test "the patches Component of controlplane resumes the keystone-operator on one replica in the stage of controllers" {
+	local file=$SANDBOX_ROOT/clusters/management/controlplane/patches/kustomization.yaml ops flux
+	[ "$(yq -o=json -I=0 '[.patches[].target.name]' "$file")" = '["management-controllers"]' ]
+	ops=$(yq '.patches[0].patch' "$file")
+	[ "$(yq -o=json -I=0 '[.[] | [.op, .path]]' - <<<"$ops")" = '[["add","/spec/patches/-"]]' ]
+	flux=$(yq '.[0].value' - <<<"$ops")
+	[ "$(yq -o=json -I=0 '.target' - <<<"$flux")" = \
+		'{"group":"helm.toolkit.fluxcd.io","kind":"HelmRelease","name":"keystone-operator","namespace":"keystone-system"}' ]
+	[ "$(yq '.patch' - <<<"$flux" | yq -o=json -I=0 '.')" = \
+		'[{"op":"replace","path":"/spec/suspend","value":false},{"op":"replace","path":"/spec/values/replicas","value":1}]' ]
+	# The stage declares the list the patch appends to.
+	[ "$(yq -o=json -I=0 '.spec.patches' "$SANDBOX_ROOT/clusters/management/controllers/stage.yaml")" = '[]' ]
+}
+
+@test "the patches Component of messaging-tls puts the ControlPlane on the bus and the stage after it" {
+	local file=$SANDBOX_ROOT/clusters/management/messaging-tls/patches/kustomization.yaml
+	[ "$(yq -o=json -I=0 '[.patches[].target.name]' "$file")" = '["management-controlplane"]' ]
+	[ "$(yq '.patches[0].patch' "$file" | yq -o=json -I=0 '.')" = \
+		'[{"op":"add","path":"/spec/components/-","value":"components/messaging-tls"},{"op":"add","path":"/spec/dependsOn/-","value":{"name":"management-messaging-tls"}}]' ]
+	[ -f "$SANDBOX_ROOT/controlplane/components/messaging-tls/kustomization.yaml" ]
+	[ "$(yq -o=json -I=0 '[.spec.components, (.spec.dependsOn | length)]' "$SANDBOX_ROOT/clusters/management/controlplane/stage.yaml")" = \
+		'[["components/keystone"],3]' ]
+}
+
+@test "the Job controlplane-database-tenant is forced, pins its image by digest and mounts the generated scripts, which Flux does not substitute" {
+	local file=$SANDBOX_ROOT/controlplane/tenant.yaml job='select(.kind == "Job")' generator
+	[ "$(yq "$job | .metadata.name + \" \" + .metadata.annotations[\"kustomize.toolkit.fluxcd.io/force\"]" "$file")" = \
+		"controlplane-database-tenant enabled" ]
+	[[ $(yq "$job | .spec.template.spec.containers[0].image" "$file") =~ @sha256:[0-9a-f]{64}$ ]]
+	[ "$(yq -o=json -I=0 "$job | .spec.template.spec.containers[0].command" "$file")" = '["bash","/scripts/tenant.sh"]' ]
+	[ "$(yq ea -o=json -I=0 "[$job | .spec.template.spec.volumes[] | select(has(\"configMap\")) | .configMap.name]" "$file")" = \
+		'["controlplane-database-tenant"]' ]
+	generator=$(yq -o=json -I=0 '.configMapGenerator[] | select(.name == "controlplane-database-tenant")' \
+		"$SANDBOX_ROOT/controlplane/kustomization.yaml")
+	[ "$(jq -c '[.namespace, .options.annotations["kustomize.toolkit.fluxcd.io/substitute"]]' <<<"$generator")" = \
+		'["openstack","disabled"]' ]
+	[ "$(jq -r '.files | map(split("/")[-1]) | join(" ")' <<<"$generator")" = "tenant.sh common.sh setup-database-tenant.sh" ]
+}
+
+@test "the stages of messaging-tls and controlplane substitute from cluster-vars" {
 	local module
-	for module in messaging-tls; do
+	for module in messaging-tls controlplane; do
 		[ "$(yq -o=json -I=0 '.spec.postBuild' "$SANDBOX_ROOT/clusters/management/$module/stage.yaml")" = \
 			'{"substituteFrom":[{"kind":"ConfigMap","name":"cluster-vars"}]}' ]
 	done

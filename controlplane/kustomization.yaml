@@ -1,0 +1,21 @@
+# The module controlplane: the ControlPlane controlplane and the Job that
+# onboards its database tenant. The stage management-controlplane adds one
+# Component of components/ per service the profile runs.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - controlplane.yaml
+  - tenant.yaml
+configMapGenerator:
+  # The runner and the two upstream scripts it runs. The upstream scripts
+  # hold bash expansions such as ${BASH_SOURCE[0]}, which the substitution of
+  # the stage cannot parse, and ${...} it would read as variables.
+  - name: controlplane-database-tenant
+    namespace: openstack
+    files:
+      - tenant.sh
+      - ../vendor/cobaltcore/deploy/bases/shared-openbao/bootstrap/common.sh
+      - ../vendor/cobaltcore/deploy/bases/shared-openbao/bootstrap/setup-database-tenant.sh
+    options:
+      annotations:
+        kustomize.toolkit.fluxcd.io/substitute: disabled

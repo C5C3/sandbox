@@ -1,0 +1,145 @@
+# The Job controlplane-database-tenant runs tenant.sh beside this file, which
+# waits for the MariaDB openstack-db of the ControlPlane, reads the root token
+# of the shared OpenBao and runs upstream's setup-database-tenant.sh for the
+# ControlPlane openstack/controlplane. The script writes the database-engine
+# connection and role of Keystone, without which the ControlPlane stays at
+# DBCredentialsReady=False. Flux applies the ControlPlane and the Job in one
+# pass and waits for both: the c5c3-operator creates the MariaDB, the Job
+# onboards the tenant, and the ControlPlane turns Ready.
+#
+# kustomize.toolkit.fluxcd.io/force: enabled makes Flux create the Job again
+# when its spec changes, which a change of tenant.sh or of upstream's scripts
+# does through the name of the generated ConfigMap. README.md, section "The
+# database tenant onboarding", says how to run it again by hand.
+#
+# The Role in openstack lets the upstream script read the ControlPlane, the
+# MariaDB and its root Secret. openstack-db-root is the name the
+# mariadb-operator's webhook gives that Secret, because the c5c3-operator sets
+# none. The Role in shared-services lets the runner read the root token and
+# the script exec into openbao-0, where it runs every bao command.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: controlplane-database-tenant
+  namespace: openstack
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: controlplane-database-tenant
+  namespace: openstack
+rules:
+  - apiGroups: [c5c3.io]
+    resources: [controlplanes]
+    resourceNames: [controlplane]
+    verbs: [get]
+  - apiGroups: [k8s.mariadb.com]
+    resources: [mariadbs]
+    resourceNames: [openstack-db]
+    verbs: [get]
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames: [openstack-db-root]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: controlplane-database-tenant
+  namespace: openstack
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: controlplane-database-tenant
+subjects:
+  - kind: ServiceAccount
+    name: controlplane-database-tenant
+    namespace: openstack
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: controlplane-database-tenant
+  namespace: shared-services
+rules:
+  - apiGroups: [""]
+    resources: [pods]
+    resourceNames: [openbao-0]
+    verbs: [get]
+  - apiGroups: [""]
+    resources: [pods/exec]
+    resourceNames: [openbao-0]
+    verbs: [create]
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames: [openbao-init-keys]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: controlplane-database-tenant
+  namespace: shared-services
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: controlplane-database-tenant
+subjects:
+  - kind: ServiceAccount
+    name: controlplane-database-tenant
+    namespace: openstack
+---
+# The image, the security context and the resources are those of the Job
+# openbao-bootstrap in infrastructure/openbao/bootstrap.yaml: alpine/k8s holds
+# bash, jq and kubectl, the digest pins it because the container reads the
+# root token, and the container runs as nobody with HOME on /tmp, the only
+# writable path.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: controlplane-database-tenant
+  namespace: openstack
+  annotations:
+    kustomize.toolkit.fluxcd.io/force: enabled
+spec:
+  backoffLimit: 4
+  activeDeadlineSeconds: 1800
+  template:
+    spec:
+      serviceAccountName: controlplane-database-tenant
+      restartPolicy: Never
+      containers:
+        - name: tenant
+          image: alpine/k8s:1.37.2@sha256:7a82aeefea3d554a43a8676b137f2b88bae6c1fe11c13862b191b3a086cc28c0
+          command: [bash, /scripts/tenant.sh]
+          env:
+            - name: HOME
+              value: /tmp
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            runAsGroup: 65534
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+            seccompProfile:
+              type: RuntimeDefault
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: scripts
+              mountPath: /scripts
+              readOnly: true
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: scripts
+          configMap:
+            name: controlplane-database-tenant

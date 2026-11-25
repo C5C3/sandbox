@@ -1,0 +1,45 @@
+# The ControlPlane controlplane in openstack, the base of the module
+# controlplane. One Component per service adds its block to spec.services
+# (components/keystone), and the module messaging-tls adds the brownfield
+# messaging block (components/messaging-tls). The SizingProfile sandbox sizes
+# it; admission stores database.replicas and database.storageSize from it,
+# and both are immutable afterwards, so the base leaves them unset.
+#
+# infrastructure.database, infrastructure.cache and korc are the defaults of
+# upstream's defaulting webhook. They are spelled out because the CRD schema
+# requires them and kubeconform -strict refuses the manifest without them
+# (C5C3/cobaltcore#1877); once upstream relaxes the schema, the three blocks
+# are deleted.
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: controlplane
+  namespace: openstack
+spec:
+  openStackRelease: "2026.1"
+  infrastructure:
+    database:
+      clusterRef:
+        name: openstack-db
+      database: keystone
+      secretRef:
+        name: keystone-db
+    cache:
+      clusterRef:
+        name: openstack-memcached
+      backend: dogpile.cache.pymemcache
+  services: {}
+  sizing:
+    profileRef:
+      name: sandbox
+  korc:
+    adminCredential:
+      cloudCredentialsRef:
+        cloudName: admin
+        secretName: k-orc-clouds-yaml
+      passwordSecretRef:
+        name: keystone-admin
+        key: password
+      applicationCredential:
+        rotation:
+          mode: PasswordDriven

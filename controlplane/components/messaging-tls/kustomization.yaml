@@ -1,0 +1,23 @@
+# The brownfield bus of the module messaging-tls, whose patches Component adds
+# this Component to the stage management-controlplane. The webhook fills the
+# keys transport_url and ca.crt, and ca.crt of the certificate's Secret is
+# the sandbox CA. Upstream admits the block on a live ControlPlane and refuses
+# its removal and a change of its mode.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+patches:
+  - target:
+      group: c5c3.io
+      version: v1alpha1
+      kind: ControlPlane
+      name: controlplane
+      namespace: openstack
+    patch: |
+      - op: add
+        path: /spec/infrastructure/messaging
+        value:
+          secretRef:
+            name: rabbitmq-transport-url
+          tls:
+            caBundleSecretRef:
+              name: shared-rabbitmq-tls

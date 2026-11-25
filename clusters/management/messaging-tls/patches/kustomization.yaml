@@ -1,0 +1,19 @@
+# The module messaging-tls puts the ControlPlane on its bus: it appends the
+# Component components/messaging-tls and the dependency on its own stage to
+# the stage of the module controlplane. A profile without controlplane has
+# no such stage, and the patch changes nothing.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+patches:
+  - target:
+      group: kustomize.toolkit.fluxcd.io
+      kind: Kustomization
+      name: management-controlplane
+    patch: |
+      - op: add
+        path: /spec/components/-
+        value: components/messaging-tls
+      - op: add
+        path: /spec/dependsOn/-
+        value:
+          name: management-messaging-tls

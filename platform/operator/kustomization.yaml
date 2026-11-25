@@ -6,10 +6,11 @@ kind: Kustomization
 resources:
   - ../../vendor/cobaltcore/deploy/bases/controlplane-operator
 patches:
-  # The keystone-operator stays suspended until #9, and the helm-controller
-  # writes no status for a suspended release, so that dependency would never
-  # be ready. The operator watches the Keystone kinds only once the cluster
-  # serves them. The other three dependencies stay, in upstream's order. Once
+  # The keystone-operator stays suspended unless the module controlplane
+  # resumes it, and the helm-controller writes no status for a suspended
+  # release, so that dependency would never be ready in gateway or platform.
+  # The operator watches the Keystone kinds only once the cluster serves
+  # them. The other three dependencies stay, in upstream's order. Once
   # upstream drops the dependency (C5C3/cobaltcore#1876), make validate
   # reports this patch as dead, and it is deleted.
   - target:
