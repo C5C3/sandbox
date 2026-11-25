@@ -5,10 +5,13 @@ network:
   subnet: 172.30.0.0/16
 addresses:
   gateway: 172.30.255.10
+  pool: 172.30.255.0/24
+  dns: 172.30.255.53
 registry:
   image: registry:3
 switches:
   hypervisor-nodes: 1
+  resolver-fallback: false
 upstream:
   cobaltcore: 15a0323e243c7f53b91200f193a58b5b41d41f6a
 flux:

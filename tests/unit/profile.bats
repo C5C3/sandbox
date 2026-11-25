@@ -171,7 +171,7 @@ profile_fails_with() {
 	profile_load
 	run config_merged
 	[ "$status" -eq 0 ]
-	[ "$(yq -o=json -I=0 '.switches' - <<<"$output")" = '{"hypervisor-nodes":2,"osd-count":3}' ]
+	[ "$(yq -o=json -I=0 '.switches' - <<<"$output")" = '{"hypervisor-nodes":2,"resolver-fallback":false,"osd-count":3}' ]
 	[ "$(yq '.network.subnet' - <<<"$output")" = 172.30.0.0/16 ]
 
 	config_load
@@ -191,10 +191,11 @@ profile_fails_with() {
 
 @test "a switch of a profile adds switches to a configuration without them" {
 	config_with 'del(.switches)'
-	profile_with $'clusters: [management]\nswitches:\n  hypervisor-nodes: 3'
+	profile_with $'clusters: [management]\nswitches:\n  hypervisor-nodes: 3\n  resolver-fallback: true'
 	profile_load
 	config_load
 	[ "$SANDBOX_HYPERVISOR_NODES" = 3 ]
+	[ "$SANDBOX_RESOLVER_FALLBACK" = true ]
 }
 
 @test "an invalid switch of a profile fails with the message of config_load" {

@@ -323,7 +323,7 @@ scaffold_attached() {
 	[ "$status" -eq 0 ]
 	[ "$(yq '[.apiVersion, .kind, .metadata.name, .metadata.namespace] | join(" ")' - <<<"$output")" = "v1 ConfigMap cluster-vars flux-system" ]
 	[ "$(yq -o=json -I=0 '.metadata.labels' - <<<"$output")" = '{"reconcile.fluxcd.io/watch":"Enabled"}' ]
-	[ "$(yq -o=json -I=0 '.data' - <<<"$output")" = '{"NETWORK_SUBNET":"172.30.0.0/16","ADDRESSES_GATEWAY":"172.30.255.10","REGISTRY_IMAGE":"registry:3","SWITCHES_HYPERVISOR_NODES":"1","UPSTREAM_COBALTCORE":"'"$pin"'","FLUX_OPERATOR":"0.63.1"}' ]
+	[ "$(yq -o=json -I=0 '.data' - <<<"$output")" = '{"NETWORK_SUBNET":"172.30.0.0/16","ADDRESSES_GATEWAY":"172.30.255.10","ADDRESSES_POOL":"172.30.255.0/24","ADDRESSES_DNS":"172.30.255.53","REGISTRY_IMAGE":"registry:3","SWITCHES_HYPERVISOR_NODES":"1","SWITCHES_RESOLVER_FALLBACK":"false","UPSTREAM_COBALTCORE":"'"$pin"'","FLUX_OPERATOR":"0.63.1"}' ]
 	[ "$(yq '[.data[] | tag] | unique | join(" ")' - <<<"$output")" = '!!str' ]
 }
 
