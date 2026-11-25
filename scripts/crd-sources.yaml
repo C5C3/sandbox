@@ -1,9 +1,10 @@
 # The JSON schemas that make validate checks the kinds of the tree against,
 # beside the schemas of Kubernetes. An entry has a name and exactly one of
-# schemas, the https:// URL of a .tar.gz of JSON schemas, and path, a glob
-# of CRD files relative to the tree. A kind without a schema fails the
-# validation, so the package that adds the first object of a kind adds its
-# source here.
+# schemas, the https:// URL of a .tar.gz of JSON schemas, path, a glob of CRD
+# files relative to the tree, and crds, the https:// URL of a YAML stream
+# whose CustomResourceDefinitions are converted. A kind without a schema
+# fails the validation, so the package that adds the first object of a kind
+# adds its source here.
 sources:
   # The version of the FluxInstance in flux/flux-instance.yaml.
   - name: flux
