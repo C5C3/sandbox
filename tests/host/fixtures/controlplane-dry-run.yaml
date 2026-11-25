@@ -1,0 +1,27 @@
+# The ControlPlane controlplane of
+# vendor/cobaltcore/deploy/overlays/kind/controlplane/controlplane.yaml, with
+# Keystone and Horizon on the Gateway openstack-gw, that selects the
+# SizingProfile sandbox in place of the built-in profile Minimal.
+# tests/host/platform.bats applies it with --dry-run=server only.
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: controlplane
+  namespace: openstack
+spec:
+  openStackRelease: "2026.1"
+  services:
+    keystone:
+      gateway:
+        parentRef:
+          name: openstack-gw
+        hostname: keystone.127-0-0-1.nip.io
+        path: /
+    horizon:
+      gateway:
+        parentRef:
+          name: openstack-gw
+        hostname: horizon.127-0-0-1.nip.io
+  sizing:
+    profileRef:
+      name: sandbox
