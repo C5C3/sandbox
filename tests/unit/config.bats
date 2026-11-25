@@ -11,6 +11,7 @@ setup() {
 	[ "$SANDBOX_GATEWAY_ADDRESS" = 172.30.255.10 ]
 	[ "$SANDBOX_ADDRESS_POOL" = 172.30.255.0/24 ]
 	[ "$SANDBOX_DNS_ADDRESS" = 172.30.255.53 ]
+	[ "$SANDBOX_RABBITMQ_ADDRESS" = 172.30.255.11 ]
 	[ "$SANDBOX_REGISTRY_IMAGE" = registry:3 ]
 	[ "$SANDBOX_HYPERVISOR_NODES" = 1 ]
 	[ "$SANDBOX_RESOLVER_FALLBACK" = false ]
@@ -29,7 +30,7 @@ setup() {
 
 @test "config_load fails for each key that is absent" {
 	for key in network.subnet addresses.gateway registry.image switches.hypervisor-nodes flux.operator upstream.cobaltcore \
-		addresses.pool addresses.dns switches.resolver-fallback; do
+		addresses.pool addresses.dns addresses.rabbitmq switches.resolver-fallback; do
 		config_with "del(.${key%%.*}[\"${key#*.}\"])"
 		run config_load
 		[ "$status" -eq 1 ]
@@ -37,8 +38,8 @@ setup() {
 	done
 }
 
-@test "config_load treats a null pool, DNS address or resolver switch as not set" {
-	for key in addresses.pool addresses.dns switches.resolver-fallback; do
+@test "config_load treats a null pool, DNS address, RabbitMQ address or resolver switch as not set" {
+	for key in addresses.pool addresses.dns addresses.rabbitmq switches.resolver-fallback; do
 		config_with ".${key%%.*}[\"${key#*.}\"] = null"
 		run config_load
 		[ "$status" -eq 1 ]
@@ -143,6 +144,41 @@ setup() {
 	run config_load
 	[ "$status" -eq 1 ]
 	[ "$output" = "error: config: addresses.dns and addresses.gateway are both 172.30.255.10" ]
+}
+
+@test "config_load treats an empty RabbitMQ address as not set" {
+	config_with '.addresses.rabbitmq = ""'
+	run config_load
+	[ "$status" -eq 1 ]
+	[ "$output" = "error: config: addresses.rabbitmq is not set" ]
+}
+
+@test "config_load rejects a RabbitMQ address that is not an IPv4 address" {
+	for rabbitmq in 172.30.255 172.30.255.256 172.30.255.11/32 172.30.255.011; do
+		config_with ".addresses.rabbitmq = \"$rabbitmq\""
+		run config_load
+		[ "$status" -eq 1 ]
+		[ "$output" = "error: config: addresses.rabbitmq '$rabbitmq' is not an IPv4 address" ]
+	done
+}
+
+@test "config_load rejects a RabbitMQ address outside the pool" {
+	config_with '.addresses.rabbitmq = "172.30.254.11"'
+	run config_load
+	[ "$status" -eq 1 ]
+	[ "$output" = "error: config: addresses.rabbitmq 172.30.254.11 is not inside addresses.pool 172.30.255.0/24" ]
+}
+
+@test "config_load rejects a RabbitMQ address that is the Gateway or the DNS address" {
+	config_with '.addresses.rabbitmq = "172.30.255.10"'
+	run config_load
+	[ "$status" -eq 1 ]
+	[ "$output" = "error: config: addresses.rabbitmq and addresses.gateway are both 172.30.255.10" ]
+
+	config_with '.addresses.rabbitmq = "172.30.255.53"'
+	run config_load
+	[ "$status" -eq 1 ]
+	[ "$output" = "error: config: addresses.rabbitmq and addresses.dns are both 172.30.255.53" ]
 }
 
 @test "config_load accepts a pool that is the whole subnet" {
