@@ -206,12 +206,81 @@ failed() {
 
 	sources_with 'sources: [{name: both, schemas: "https://example.org/x.tar.gz", path: "x/*.yaml"}]'
 	validate
-	[[ $output == *"validate: error: schemas: both: needs exactly one of schemas and path"* ]]
+	[[ $output == *"validate: error: schemas: both: needs exactly one of schemas, path and crds"* ]]
+
+	sources_with 'sources: [{name: all, schemas: "https://example.org/x.tar.gz", path: "x/*.yaml", crds: "https://example.org/x.yaml"}, {name: none}]'
+	validate
+	[[ $output == *"validate: error: schemas: all: needs exactly one of schemas, path and crds"* ]]
+	[[ $output == *"validate: error: schemas: none: needs exactly one of schemas, path and crds"* ]]
 
 	sources_with 'sources: []'
 	validate
 	[[ ${lines[-1]} == "validate: failed: schemas"* ]]
 	[[ $output == *"validate: error: schemas: no source in $file"* ]]
+}
+
+@test "a broken stream of CRDs fails with its name and is not kept" {
+	# A cache of its own, with the tools of the one in use.
+	local tools=${SANDBOX_VALIDATE_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/sandbox-validate}/bin
+	export SANDBOX_VALIDATE_CACHE=$BATS_TEST_TMPDIR/cache
+	mkdir -p -- "$SANDBOX_VALIDATE_CACHE/sources"
+	ln -s -- "$tools" "$SANDBOX_VALIDATE_CACHE/bin"
+
+	sources_with 'sources: [{name: metallb, crds: "http://example.org/crds.yaml"}]'
+	validate
+	[[ ${lines[-1]} == "validate: failed: schemas"* ]]
+	[[ $output == *"validate: error: schemas: metallb: http://example.org/crds.yaml is not an https:// URL"* ]]
+
+	sources_with 'sources: [{name: metallb, crds: "https://invalid.invalid/crds.yaml"}]'
+	validate
+	[[ $output == *"validate: error: schemas: metallb: cannot download https://invalid.invalid/crds.yaml: "?* ]]
+
+	# A release asset of Envoy Gateway with a Gateway and no CRD.
+	sources_with 'sources: [{name: quickstart, crds: "https://github.com/envoyproxy/gateway/releases/download/v1.9.3/quickstart.yaml"}]'
+	validate
+	[[ $output == *"validate: error: schemas: quickstart: https://github.com/envoyproxy/gateway/releases/download/v1.9.3/quickstart.yaml holds no CustomResourceDefinition"* ]]
+	[ -z "$(find "$SANDBOX_VALIDATE_CACHE/sources" -type f)" ]
+
+	# A cached stream that yq cannot read fails with the message of yq.
+	printf 'kind: [\n' >"$SANDBOX_VALIDATE_CACHE/sources/$(printf '%s' https://example.org/broken.yaml | sha256sum | cut -d ' ' -f 1).yaml"
+	sources_with 'sources: [{name: broken, crds: "https://example.org/broken.yaml"}]'
+	validate
+	[[ $output == *"validate: error: schemas: broken: https://example.org/broken.yaml: "?* ]]
+	[ -z "$(find "$SANDBOX_VALIDATE_CACHE/sources" -type f)" ]
+}
+
+# pool_source: points SANDBOX_CRD_SOURCES at the sources of the fixture and
+# the CRD of the MetalLB IPAddressPool as a stream.
+pool_source() {
+	export SANDBOX_CRD_SOURCES=$BATS_TEST_TMPDIR/sources.yaml
+	yq '.sources += [{"name": "metallb", "crds": "https://raw.githubusercontent.com/metallb/metallb/v0.16.2/config/crd/bases/metallb.io_ipaddresspools.yaml"}]' \
+		"$BATS_TEST_DIRNAME/fixtures/crd-sources.yaml" >"$SANDBOX_CRD_SOURCES"
+}
+
+@test "an IPAddressPool needs the stream of its CRD and fails for an unknown field" {
+	printf 'apiVersion: metallb.io/v1beta1\nkind: IPAddressPool\nmetadata:\n  name: demo\n  namespace: demo\nspec:\n  addresses: [192.0.2.0/24]\n  autoAssign: false\n' >"$BASE/pool.yaml"
+	yq -i '.resources += ["pool.yaml"]' "$BASE/kustomization.yaml"
+	validate
+	failed kubeconform
+	[[ $output == *"could not find schema for IPAddressPool"* ]]
+
+	pool_source
+	validate
+	[ "$status" -eq 0 ]
+	[[ $output == *$'\n'"validate: schemas: "*" schemas from 3 sources"$'\n'* ]]
+
+	yq -i '.spec.colour = "red"' "$BASE/pool.yaml"
+	validate
+	failed kubeconform
+	[[ $output == *"IPAddressPool demo is invalid"*"additional properties 'colour' not allowed"* ]]
+}
+
+@test "a CustomResourceDefinition in a stage passes unchecked" {
+	cp -- "$TREE/vendor/cobaltcore/operators/demo/config/crd/bases/demo.c5c3.io_widgets.yaml" "$BASE/crd.yaml"
+	yq -i '.resources += ["crd.yaml"]' "$BASE/kustomization.yaml"
+	validate
+	[ "$status" -eq 0 ]
+	[[ $output == *"Skipped: 1"* ]]
 }
 
 @test "missing tools fail the run before any other check" {

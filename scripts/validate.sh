@@ -15,10 +15,12 @@
 #                flux build kustomization --dry-run --strict-substitute; a
 #                stage reads the variables of cluster-vars
 #   schemas      the JSON schemas of the sources in scripts/crd-sources.yaml
-#                are downloaded or converted from CRDs of the tree
+#                are downloaded, or converted from CRDs of the tree or of a
+#                downloaded YAML stream
 #   kubeconform  the renders, the roots and flux/ are valid for Kubernetes
 #                $KUBERNETES_VERSION and those schemas, with no unknown field
-#                and no unknown kind
+#                and no unknown kind. A CustomResourceDefinition is skipped:
+#                the schemas of Kubernetes hold none for its kind
 #   patches      each patch of a stage, and of a kustomization of the tree
 #                outside vendor/ that a stage reaches, changes the render of
 #                at least one stage
@@ -27,7 +29,9 @@
 # tools or vendor check ends the run. Each failure prints
 # "validate: error: <check>: <message>" on stderr. The last line says that
 # all checks passed (exit 0) or which failed (exit 1); a usage error exits 2.
-# Helm charts are not templated: a HelmRelease is checked as an object.
+# Helm charts are not templated: a HelmRelease is checked as an object. The
+# render reads the https:// resources of a kustomization, so it needs the
+# network as Flux does.
 #
 # Environment:
 #   SANDBOX_VALIDATE_CACHE  the tools of scripts/install-validate-tools.sh
@@ -249,8 +253,8 @@ check_render() {
 }
 
 check_schemas() {
-	local sources=${SANDBOX_CRD_SOURCES:-$script_root/scripts/crd-sources.yaml} count i name url path file
-	local archive line schema used=0 n
+	local sources=${SANDBOX_CRD_SOURCES:-$script_root/scripts/crd-sources.yaml} count i name url path crds file
+	local archive used=0 n
 	local -a files
 	mkdir -p -- "$tmp/schemas/archives" "$tmp/schemas/crds" "$cache/sources"
 	if ! count=$(yq '.sources // [] | length' "$sources" 2>"$tmp/err"); then
@@ -263,13 +267,37 @@ check_schemas() {
 	fi
 	for ((i = 0; i < count; i++)); do
 		name=$(I=$i yq '.sources[env(I)].name // ""' "$sources")
-		if [ "$(I=$i yq '.sources[env(I)] | has("schemas") != has("path")' "$sources")" != true ]; then
-			fail "$name: needs exactly one of schemas and path"
+		if [ "$(I=$i yq '.sources[env(I)] | [has("schemas"), has("path"), has("crds")] | map(select(.)) | length' "$sources")" != 1 ]; then
+			fail "$name: needs exactly one of schemas, path and crds"
 			continue
 		fi
 		url=$(I=$i yq '.sources[env(I)].schemas // ""' "$sources")
 		path=$(I=$i yq '.sources[env(I)].path // ""' "$sources")
-		if [ -n "$url" ]; then
+		crds=$(I=$i yq '.sources[env(I)].crds // ""' "$sources")
+		if [ -n "$crds" ]; then
+			if [[ $crds != https://* ]]; then
+				fail "$name: $crds is not an https:// URL"
+				continue
+			fi
+			file=$cache/sources/$(printf '%s' "$crds" | sha256sum | cut -d ' ' -f 1).yaml
+			if [ ! -f "$file" ]; then
+				if ! curl -fsSL --retry 3 -o "$tmp/download" "$crds" 2>"$tmp/err"; then
+					fail "$name: cannot download $crds: $(_last_line "$(<"$tmp/err")")"
+					continue
+				fi
+				mv -- "$tmp/download" "$file"
+			fi
+			# A file that converts to nothing is downloaded again next time.
+			if ! convert_crds "$name" "$crds" "$file"; then
+				rm -f -- "$file"
+				continue
+			fi
+			if [ ! -s "$tmp/crd.out" ]; then
+				rm -f -- "$file"
+				fail "$name: $crds holds no CustomResourceDefinition"
+				continue
+			fi
+		elif [ -n "$url" ]; then
 			if [[ $url != https://* ]]; then
 				fail "$name: $url is not an https:// URL"
 				continue
@@ -300,25 +328,35 @@ check_schemas() {
 				continue
 			fi
 			for file in "${files[@]}"; do
-				if ! yq -o=json -I=0 '.' "$file" >"$tmp/crd.json" 2>"$tmp/err" ||
-					! jq -c -f "$script_root/scripts/lib/crd-schema.jq" "$tmp/crd.json" >"$tmp/crd.out" 2>"$tmp/err"; then
-					fail "$name: ${file#"$tree"/}: $(_first_line "$(<"$tmp/err")")"
-					continue
-				fi
-				while IFS= read -r line; do
-					schema=$(jq -r '.file' <<<"$line")
-					if [[ $schema == */* ]]; then
-						fail "$name: ${file#"$tree"/}: $schema is not a file name"
-						continue
-					fi
-					jq '.schema' <<<"$line" >"$tmp/schemas/crds/$schema"
-				done <"$tmp/crd.out"
+				convert_crds "$name" "${file#"$tree"/}" "$file" || continue
 			done
 		fi
 		used=$((used + 1))
 	done
 	n=$(find "$tmp/schemas" -type f -name '*.json' | wc -l)
 	log "schemas: $n schemas from $used sources"
+}
+
+# convert_crds <name> <label> <file>: converts the CustomResourceDefinitions
+# of the YAML file into JSON schemas in $tmp/schemas/crds, and leaves the
+# output of scripts/lib/crd-schema.jq, one line per schema, in $tmp/crd.out.
+# A failure names the source and the label of the file, and returns 1 when
+# the file cannot be read.
+convert_crds() {
+	local line schema
+	if ! yq -o=json -I=0 '.' "$3" >"$tmp/crd.json" 2>"$tmp/err" ||
+		! jq -c -f "$script_root/scripts/lib/crd-schema.jq" "$tmp/crd.json" >"$tmp/crd.out" 2>"$tmp/err"; then
+		fail "$1: $2: $(_first_line "$(<"$tmp/err")")"
+		return 1
+	fi
+	while IFS= read -r line; do
+		schema=$(jq -r '.file' <<<"$line")
+		if [[ $schema == */* ]]; then
+			fail "$1: $2: $schema is not a file name"
+			continue
+		fi
+		jq '.schema' <<<"$line" >"$tmp/schemas/crds/$schema"
+	done <"$tmp/crd.out"
 }
 
 check_kubeconform() {
@@ -330,7 +368,7 @@ check_kubeconform() {
 	mkdir -p -- "$cache/kubeconform" "$tmp/render" "$tmp/roots"
 	# kubeconform tries the locations in order. The local ones come first, so
 	# the kinds of Flux and of the CRDs cost no request to GitHub.
-	kubeconform -strict -summary -kubernetes-version "$KUBERNETES_VERSION" -cache "$cache/kubeconform" \
+	kubeconform -strict -summary -skip CustomResourceDefinition -kubernetes-version "$KUBERNETES_VERSION" -cache "$cache/kubeconform" \
 		-schema-location "$tmp/schemas/archives/{{.ResourceKind}}{{.KindSuffix}}.json" \
 		-schema-location "$tmp/schemas/crds/{{.Group}}_{{.ResourceKind}}_{{.ResourceAPIVersion}}.json" \
 		-schema-location default \
