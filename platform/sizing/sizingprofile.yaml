@@ -1,0 +1,6 @@
+apiVersion: c5c3.io/v1alpha1
+kind: SizingProfile
+metadata:
+  name: sandbox
+spec:
+  base: Minimal

@@ -1,0 +1,35 @@
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: management-objectstore
+  namespace: flux-system
+spec:
+  dependsOn:
+    - name: management-controllers
+    - name: management-openbao
+  interval: 10m
+  retryInterval: 1m
+  timeout: 10m
+  path: ./infrastructure/objectstore
+  prune: true
+  wait: true
+  sourceRef:
+    kind: OCIRepository
+    name: sandbox
+  # kstatus reads neither a Ready condition nor a phase of these kinds. The
+  # conditions of an ExternalSecret carry no observedGeneration. The
+  # garage-operator sets no Ready condition, and a GarageCluster with a
+  # storage tier reaches the phase Running, never Ready.
+  healthCheckExprs:
+    - apiVersion: external-secrets.io/v1
+      kind: ExternalSecret
+      current: status.conditions.exists(c, c.type == 'Ready' && c.status == 'True')
+    - apiVersion: garage.rajsingh.info/v1beta2
+      kind: GarageCluster
+      current: has(status.phase) && status.phase == 'Running'
+    - apiVersion: garage.rajsingh.info/v1beta1
+      kind: GarageBucket
+      current: has(status.phase) && status.phase == 'Ready'
+    - apiVersion: garage.rajsingh.info/v1beta1
+      kind: GarageKey
+      current: has(status.phase) && status.phase == 'Ready'

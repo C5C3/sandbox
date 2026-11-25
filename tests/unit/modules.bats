@@ -163,3 +163,28 @@ EOF
 	[ "$(yq ea -o=json -I=0 "[$roles | .rules[] | select((.resourceNames // []) | length == 0)]" "$file")" = \
 		'[{"apiGroups":[""],"resources":["secrets"],"verbs":["create"]}]' ]
 }
+
+@test "the stages of openbao, objectstore, platform and sizing substitute no variables" {
+	local module
+	for module in openbao objectstore platform sizing; do
+		[ "$(yq '.spec | has("postBuild")' "$SANDBOX_ROOT/clusters/management/$module/stage.yaml")" = false ]
+	done
+}
+
+@test "the c5c3-operator depends on no release that controllers suspends" {
+	local pattern names name
+	pattern=$(yq '.patches[] | select(.patch | test("/spec/suspend")) | .target.name' \
+		"$SANDBOX_ROOT/infrastructure/controllers/kustomization.yaml")
+	names=$(yq '.patches[] | select(.patch | test("/spec/dependsOn")) | .patch' \
+		"$SANDBOX_ROOT/platform/operator/kustomization.yaml" | yq '.[0].value[].name')
+	[ -n "$pattern" ]
+	[ -n "$names" ]
+	for name in $names; do
+		[[ ! $name =~ ^($pattern)$ ]]
+	done
+}
+
+@test "the module sizing holds the SizingProfile sandbox on the base Minimal" {
+	[ "$(yq -o=json -I=0 '[.apiVersion, .kind, .metadata.name, .spec.base]' "$SANDBOX_ROOT/platform/sizing/sizingprofile.yaml")" = \
+		'["c5c3.io/v1alpha1","SizingProfile","sandbox","Minimal"]' ]
+}

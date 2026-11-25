@@ -1,0 +1,7 @@
+# The SizingProfile sandbox, which a ControlPlane selects with
+# spec.sizing.profileRef.name. The chart of the c5c3-operator installs its CRD
+# and the webhooks that admit it.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - sizingprofile.yaml
