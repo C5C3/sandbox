@@ -1,18 +1,23 @@
 # shellcheck shell=bash
 # The preparation of the worker nodes of sandbox-compute, which no manifest
-# can do: the system bus the kvm-node-agent dials, and the labels and the
+# can do: the system bus the kvm-node-agent dials, the labels and the
 # annotation of upstream's lab, which upstream sets by hand (Quick Start
-# (metal-stack), Part 2, Step 1). Source scripts/lib/common.sh,
-# scripts/lib/profile.sh and scripts/lib/hub.sh first.
+# (metal-stack), Part 2, Step 1), and the zone label the lab's nodes carry.
+# Source scripts/lib/common.sh, scripts/lib/profile.sh and
+# scripts/lib/hub.sh first.
 
 # The labels of the hypervisor nodes. The pool label is lab because
 # upstream's libvirt DaemonSet selects it, and the kvm-node-agent runs on
-# every node that carries nova.openstack.cloud.sap/virt-driver.
+# every node that carries nova.openstack.cloud.sap/virt-driver. The pool
+# puts every node into the aggregate of its zone, and hvo onboards no node
+# without one; the lab gets the zone label from Gardener, a kind node has
+# none.
 SANDBOX_NODE_LABELS=(
 	openstack.c5c3.io/chassis=true
 	openstack.c5c3.io/nova-compute-pool=lab
 	nova.openstack.cloud.sap/virt-driver=kvm
 	cobaltcore.cloud.sap/node-hypervisor-lifecycle=skip-tests
+	topology.kubernetes.io/zone=sandbox
 )
 # The annotation of the hypervisor nodes, set to the empty string.
 SANDBOX_NODE_ANNOTATION=nova.openstack.cloud.sap/aggregates

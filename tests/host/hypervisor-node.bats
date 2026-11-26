@@ -27,8 +27,8 @@ KUBECONFIG_DIR=$ROOT/.sandbox/kubeconfig
 FIXTURE=$BATS_TEST_DIRNAME/fixtures/hypervisor-node-scratch.yaml
 DOMAIN=$BATS_TEST_DIRNAME/fixtures/hypervisor-node-domain.xml
 NODE=sandbox-compute-worker
-# The four labels and the annotation of upstream's lab.
-MARKS='["openstack.c5c3.io/chassis","openstack.c5c3.io/nova-compute-pool","nova.openstack.cloud.sap/virt-driver","cobaltcore.cloud.sap/node-hypervisor-lifecycle","nova.openstack.cloud.sap/aggregates"]'
+# The five labels and the annotation of upstream's lab.
+MARKS='["openstack.c5c3.io/chassis","openstack.c5c3.io/nova-compute-pool","nova.openstack.cloud.sap/virt-driver","cobaltcore.cloud.sap/node-hypervisor-lifecycle","topology.kubernetes.io/zone","nova.openstack.cloud.sap/aggregates"]'
 # The files kvm-node-agent installs from the Secret of the scratch
 # Certificate.
 TLS_FILES=(/etc/pki/CA/cacert.pem /etc/pki/libvirt/servercert.pem /etc/pki/libvirt/private/serverkey.pem
@@ -81,7 +81,7 @@ ready() {
 	kc "$role" get "$@" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}'
 }
 
-# node_marks <node>: prints those of the four labels and the annotation that
+# node_marks <node>: prints those of the five labels and the annotation that
 # the node carries, as a JSON object with sorted keys.
 node_marks() {
 	kc compute get node "$1" -o json |
@@ -197,8 +197,8 @@ teardown_file() {
 	docker exec "$NODE" test -S /run/dbus/system_bus_socket
 }
 
-@test "the worker carries the four labels and the empty annotation of upstream's lab, and the control-plane node none of them" {
-	[ "$(node_marks "$NODE")" = '{"cobaltcore.cloud.sap/node-hypervisor-lifecycle":"skip-tests","nova.openstack.cloud.sap/aggregates":"","nova.openstack.cloud.sap/virt-driver":"kvm","openstack.c5c3.io/chassis":"true","openstack.c5c3.io/nova-compute-pool":"lab"}' ]
+@test "the worker carries the five labels and the empty annotation of upstream's lab, and the control-plane node none of them" {
+	[ "$(node_marks "$NODE")" = '{"cobaltcore.cloud.sap/node-hypervisor-lifecycle":"skip-tests","nova.openstack.cloud.sap/aggregates":"","nova.openstack.cloud.sap/virt-driver":"kvm","openstack.c5c3.io/chassis":"true","openstack.c5c3.io/nova-compute-pool":"lab","topology.kubernetes.io/zone":"sandbox"}' ]
 	[ "$(node_marks sandbox-compute-control-plane)" = '{}' ]
 }
 
