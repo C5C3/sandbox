@@ -792,10 +792,11 @@ controlplane_ready() {
 	[ "$output" = "error: cannot list the nodes of kind cluster sandbox-storage" ]
 }
 
-@test "hub_sync writes no Secret for management, registers after the roots, prepares the nodes and copies the CA before the wait, and counts the module stages of the attached clusters" {
+@test "hub_sync prepares the block devices between Flux and cluster-vars, writes no Secret for management, registers after the roots, prepares the nodes and copies the CA before the wait, and counts the module stages of the attached clusters" {
 	scaffold_attached
 	attached_roles() { echo "management storage"; }
 	ensure_flux() { echo ensure_flux >>"$BATS_TEST_TMPDIR/steps"; }
+	ensure_block_devices() { echo ensure_block_devices >>"$BATS_TEST_TMPDIR/steps"; }
 	ensure_cluster_vars() { echo ensure_cluster_vars >>"$BATS_TEST_TMPDIR/steps"; }
 	ensure_kubeconfig_secret() { echo "ensure_kubeconfig_secret $1" >>"$BATS_TEST_TMPDIR/steps"; }
 	ensure_source() { echo ensure_source >>"$BATS_TEST_TMPDIR/steps"; }
@@ -806,11 +807,13 @@ controlplane_ready() {
 	wait_stages() { echo wait_stages >>"$BATS_TEST_TMPDIR/steps"; }
 	run hub_sync
 	[ "$status" -eq 0 ]
-	# The registration follows the last root, whose stage of access fills the
-	# token it reads. The node preparation and the copy of the CA run while
-	# Flux applies the stages, and all three come before the wait for the
-	# stages.
+	# The block devices come before cluster-vars, so a count the node cannot
+	# follow never reaches the stages. The registration follows the last
+	# root, whose stage of access fills the token it reads. The node
+	# preparation and the copy of the CA run while Flux applies the stages,
+	# and all three come before the wait for the stages.
 	[ "$(<"$BATS_TEST_TMPDIR/steps")" = "ensure_flux
+ensure_block_devices
 ensure_cluster_vars
 ensure_kubeconfig_secret storage
 ensure_source

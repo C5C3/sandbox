@@ -5,8 +5,10 @@
 # out vendor/cobaltcore at the pin of the configuration, then creates the
 # Docker network, the registry and the kind clusters of the given roles, or
 # of the profile's clusters when none is given. When the management cluster
-# exists, it installs Flux there, pushes the working tree and has Flux apply
-# the profile's modules to every cluster of the sandbox, registers each
+# exists, it installs Flux there, gives the storage node its loop devices and
+# their PersistentVolumes when its modules list block-devices, pushes the
+# working tree and has Flux apply the profile's modules to every cluster of
+# the sandbox, registers each
 # cluster whose modules list access with the CobaltCore operators, or removes
 # the registration of one that no longer lists it, gives the worker nodes
 # of sandbox-compute a system bus and the labels of upstream's lab when its
@@ -28,6 +30,8 @@ set -euo pipefail
 . "$SANDBOX_ROOT/scripts/lib/profile.sh"
 # shellcheck source=lib/hub.sh
 . "$SANDBOX_ROOT/scripts/lib/hub.sh"
+# shellcheck source=lib/storage.sh
+. "$SANDBOX_ROOT/scripts/lib/storage.sh"
 # shellcheck source=lib/register.sh
 . "$SANDBOX_ROOT/scripts/lib/register.sh"
 # shellcheck source=lib/nodes.sh
