@@ -1,0 +1,13 @@
+# The module kvm-node-agent on sandbox-compute: upstream's chart of the
+# kvm-node-agent (kna), released from the hub. The OCIRepository of
+# source.yaml and the HelmRelease of release.yaml live in flux-system of
+# sandbox-management; the release installs the chart in hypervisor-system on
+# sandbox-compute through the Secret kubeconfig-compute. The chart renders
+# the DaemonSet kvm-node-agent-controller-manager on every node labelled
+# nova.openstack.cloud.sap/virt-driver. tests/unit/modules.bats compares the
+# source and the values with upstream's files.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - source.yaml
+  - release.yaml

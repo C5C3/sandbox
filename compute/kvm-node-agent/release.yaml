@@ -1,0 +1,63 @@
+# The HelmRelease kvm-node-agent of
+# vendor/cobaltcore/deploy/overlays/metal-stack/hypervisor/kna-release.yaml on
+# sandbox-compute: values and postRenderers are upstream's, unchanged. The
+# release history stays on sandbox-compute, in hypervisor-system, which the
+# module node-prep creates.
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: compute-kvm-node-agent
+  namespace: flux-system
+spec:
+  interval: 30m
+  releaseName: kvm-node-agent
+  targetNamespace: hypervisor-system
+  storageNamespace: hypervisor-system
+  chartRef:
+    kind: OCIRepository
+    name: kvm-node-agent
+  kubeConfig:
+    secretRef:
+      name: kubeconfig-compute
+  # The agent's pod is Ready only beside a Hypervisor of its node, which the
+  # hypervisor operator creates, so Helm does not wait for it.
+  install:
+    crds: CreateReplace
+    disableWait: true
+  upgrade:
+    crds: CreateReplace
+    disableWait: true
+  values:
+    controllerManager:
+      manager:
+        image:
+          repository: ghcr.io/c5c3/kvm-node-agent
+        env:
+          libvirtDefaultUri: qemu:///system
+          nodeLabelFieldPath: spec.nodeName
+        containerSecurityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: [ALL]
+            add: [DAC_OVERRIDE]
+  postRenderers:
+    - kustomize:
+        patches:
+          # The chart renders one DaemonSet; kustomize replaces the patch's
+          # name with its own.
+          - target:
+              kind: DaemonSet
+            patch: |
+              apiVersion: apps/v1
+              kind: DaemonSet
+              metadata:
+                name: controller-manager
+              spec:
+                template:
+                  spec:
+                    containers:
+                      - name: manager
+                        imagePullPolicy: Always
+                        env:
+                          - name: NAMESPACE
+                            value: hypervisor-system
