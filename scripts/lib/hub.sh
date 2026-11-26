@@ -3,8 +3,8 @@
 # clusters. Source scripts/lib/common.sh first, scripts/lib/profile.sh for
 # the functions that read the profile, scripts/lib/vendor.sh for
 # push_artifact, scripts/lib/register.sh for ensure_registrations,
-# scripts/lib/nodes.sh for ensure_node_prep, and scripts/lib/trust.sh for
-# ensure_trust.
+# scripts/lib/nodes.sh for ensure_node_prep, scripts/lib/trust.sh for
+# ensure_trust, and scripts/lib/storage.sh for ensure_block_devices.
 #
 # The command layer applies the FluxInstance, the source, cluster-vars, the
 # kubeconfig Secrets and one root Kustomization per cluster. Each apply is a
@@ -401,7 +401,10 @@ resolver_hint() {
 	printf '  server=/nip.io/%s   # dnsmasq\n' "$SANDBOX_DNS_ADDRESS"
 }
 
-# hub_sync: installs Flux on sandbox-management and makes it apply the
+# hub_sync: installs Flux on sandbox-management, gives the storage node its
+# loop devices and their volumes (ensure_block_devices), which comes before
+# cluster-vars, so a count the node cannot follow stops the run before the
+# ConfigMap carries it to the stages, makes Flux apply the
 # cluster_modules of every attached cluster, registers each attached cluster
 # whose modules list access with the CobaltCore operators and removes the
 # registration of one that no longer lists it (ensure_registrations),
@@ -436,6 +439,7 @@ hub_sync() {
 		done
 	done
 	ensure_flux
+	ensure_block_devices
 	ensure_cluster_vars
 	for role in $attached; do
 		if [ "$role" != management ]; then

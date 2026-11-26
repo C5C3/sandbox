@@ -16,6 +16,11 @@ SANDBOX_STATE_DIR=$SANDBOX_ROOT/.sandbox
 SANDBOX_ARTIFACT_IGNORE=".git/,.sandbox/"
 # The form of upstream.cobaltcore: a full commit SHA in lower case.
 SANDBOX_SHA_RE='^[0-9a-f]{40}$'
+# The directory of the sparse OSD files in the storage node, and the prefix
+# of the PersistentVolume of each, which scripts/lib/storage.sh creates and
+# scripts/down.sh detaches.
+SANDBOX_OSD_DIR=/var/lib/sandbox
+SANDBOX_OSD_VOLUME=sandbox-osd
 
 # log <message>: prints one step, prefixed with the name of the script.
 log() {
