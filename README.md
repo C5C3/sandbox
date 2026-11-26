@@ -384,7 +384,8 @@ that deploys them.
   `controlplane`. No step is typed by hand after `make up`.
 - **A thin command layer.** A Makefile and a few scripts do what Flux cannot:
   create the Docker network, the registry and the kind clusters, prepare the
-  nodes (loop devices, labels), install Flux, exchange what crosses a cluster
+  nodes (loop devices; the system bus, the labels and the annotation of the
+  hypervisor nodes), install Flux, exchange what crosses a cluster
   boundary before Flux can (kubeconfigs, the token-review configuration of
   OpenBao, CA bundles), and print access data.
 
@@ -566,6 +567,100 @@ names a cluster goes before its registration.
   `flux-system` say which step of the release failed. Once the cause is
   fixed, `make up` continues where it stopped.
 
+### The hypervisor node
+
+`make up` makes the worker nodes of `sandbox-compute` hypervisor nodes when
+the profile lists the module `node-prep` on the compute cluster. After the
+registration it logs `preparing the nodes of sandbox-compute: <nodes>` and
+gives each worker two things, while Flux applies the stages:
+
+- A system bus. The kvm-node-agent dials the system bus of its node and ends
+  without it, and the libvirt pod talks to the node's systemd over it. A kind
+  node image carries no D-Bus daemon, so `make up` logs
+  `installing dbus on <node>`, installs the package `dbus` from the Debian
+  archive the node image names, starts it, and waits up to
+  `SANDBOX_NODE_TIMEOUT` seconds, by default 30, until systemd answers on the
+  bus ([ADR-0029](docs/adr/0029-install-the-system-bus-of-the-hypervisor-nodes-from-the-debian-archive.md)).
+  A node whose systemd answers already is left alone.
+- The labels and the annotation of upstream's lab, which upstream sets by
+  hand (Quick Start (metal-stack), Part 2, Step 1) because no manifest can
+  change a Node: `openstack.c5c3.io/chassis=true`,
+  `openstack.c5c3.io/nova-compute-pool=lab`,
+  `nova.openstack.cloud.sap/virt-driver=kvm`,
+  `cobaltcore.cloud.sap/node-hypervisor-lifecycle=skip-tests` and
+  `nova.openstack.cloud.sap/aggregates` with an empty value. The libvirt
+  DaemonSet runs on the pool `lab`, the kvm-node-agent on every node with
+  `virt-driver`.
+
+A second `make up` finds the bus, applies the same labels and changes
+nothing. Four modules build the node, each a stage on the management
+cluster:
+
+- `controllers`: cert-manager and External Secrets with upstream's charts
+  and values, the `HelmRelease` objects `compute-cert-manager` and
+  `compute-external-secrets` in `flux-system`, installed through
+  `kubeconfig-compute`.
+- `node-prep`: upstream's reservation of QEMU's migration ports 49152 to
+  49215 on every worker, and the namespace `hypervisor-system`.
+- `libvirt`: the ClusterIssuer `selfsigned-cluster-issuer`, upstream's
+  libvirt migration CA and its Issuer `nova-hypervisor-agents-ca-issuer` in
+  `hypervisor-system`, and upstream's ConfigMap `libvirt-lab` and DaemonSet
+  `libvirt` in `openstack`. One script differs: on a node without `/dev/kvm`,
+  `host-prepare.sh` logs `host-prepare: /dev/kvm is missing on this node,
+  guests run under TCG` where upstream's fails the pod, and QEMU runs guests
+  under TCG.
+- `kvm-node-agent`: upstream's chart of the kvm-node-agent, the
+  `OCIRepository` `kvm-node-agent` and the `HelmRelease`
+  `compute-kvm-node-agent` in `flux-system`, installed in
+  `hypervisor-system`.
+
+Until a `Hypervisor` of the node and its certificate exist, which the
+hypervisor operator creates, the stages are Ready and the pods are not. The
+libvirt pod is `Running` and not Ready: its container `libvirtd` waits for
+the TLS files the agent installs under `/etc/pki` and logs `libvirtd:
+waiting for the TLS files kvm-node-agent installs under /etc/pki` every
+10 s. The pod of the agent restarts, because the agent ends without the
+CRD `hypervisors.kvm.cloud.sap` and without a `Hypervisor` named after its
+node. The stages `compute-libvirt` and `compute-kvm-node-agent` do not wait
+for their pods, so `make up` and `make status` report them Ready. Once the
+`Hypervisor` and its certificate exist, the agent writes the files,
+libvirtd starts in the systemd scope `cobaltcore-libvirtd.scope` of the
+node, and the pod turns Ready; `make test-host` shows it with scratch
+objects in place of the operator
+([ADR-0030](docs/adr/0030-prove-the-hypervisor-node-with-a-scratch-hypervisor.md)).
+The log of libvirtd, and the `Hypervisor` objects once their CRD exists:
+
+```bash
+kubectl --kubeconfig .sandbox/kubeconfig/compute.yaml -n openstack logs -l app.kubernetes.io/name=libvirt -c libvirtd
+kubectl --kubeconfig .sandbox/kubeconfig/compute.yaml get hypervisors
+```
+
+`make up` stops before it waits for the stages with one of three messages
+when a node gets no bus, and a second run continues once the cause is
+fixed:
+
+- `node-prep: cannot install dbus on <node>: <last line of apt>; the node must reach deb.debian.org`:
+  apt failed, most often because the node, which reaches the network
+  through the host, cannot reach the archive.
+- `node-prep: cannot start dbus on <node>: <last line of systemctl>`:
+  the package is installed and its service does not start.
+- `node-prep: systemd of <node> does not answer on the system bus after <n> s`:
+  the bus runs and systemd has not joined it; a larger
+  `SANDBOX_NODE_TIMEOUT` waits longer.
+
+A profile that takes the modules off removes the labels and the annotation
+from every node with `nova.openstack.cloud.sap/virt-driver`, and `make up`
+logs `removed the node labels of sandbox-compute` when there was one.
+Flux removes the stages and what they applied, and the libvirt pod stops
+libvirtd and its scope as it ends. Some of what the modules made stays: on
+the node the files under `/etc/pki`, `/var/lib/libvirt` and
+`/var/lib/nova`, the reserved ports and the package `dbus`; on the compute
+cluster the CRD `migrations.kvm.cloud.sap` of the agent's chart, which Helm
+keeps, and, once `controllers` goes too, the six CRDs of cert-manager, which
+its chart keeps, and the namespaces `cert-manager` and `external-secrets`;
+and on the host the kernel module `vhost_net`, which `host-prepare.sh`
+loads. All but `vhost_net` go with `make down`.
+
 ## Modules
 
 A module of a cluster is the directory `clusters/<role>/<module>/` with two
@@ -693,11 +788,11 @@ Three states of `remote-compute` and `hypervisor-fixtures` need to be known:
 | --- | --- | --- | --- |
 | `resolver` | The CoreDNS block that answers nip.io names. Added by the switch `resolver-fallback` | | 1 |
 | `access` | The `target-cluster-access` chart with `namespaces={openstack}`, `privilegedNamespaces={openstack}`, `createNamespaces=true`, released from the hub: the stage `compute-access` applies an `ArtifactGenerator` and the `HelmRelease` `compute-access` to `flux-system` of the management cluster, which installs the release `target-cluster-access` in `c5c3-access` through `kubeconfig-compute`. `make up` then registers the cluster, see [The registration of a compute cluster](#the-registration-of-a-compute-cluster) | | 4 |
-| `controllers` | cert-manager, External Secrets | | 4 |
-| `node-prep` | Node labels and the `aggregates` annotation, the migration port reservation, the namespace `hypervisor-system` | | 4 |
+| `controllers` | cert-manager and External Secrets with upstream's charts and values, released from the hub: the stage `compute-controllers` applies the `HelmRepository` and `HelmRelease` objects `compute-cert-manager` and `compute-external-secrets` to `flux-system` of the management cluster, which install them through `kubeconfig-compute` | | 4 |
+| `node-prep` | The migration port reservation of upstream and the namespace `hypervisor-system`; `make up` gives the workers the system bus, the node labels and the `aggregates` annotation, see [The hypervisor node](#the-hypervisor-node) | | 4 |
 | `trust` | The sandbox CA where the metadata agent, `nova-compute` and hvo read it | `access` | 4 |
-| `libvirt` | The libvirt CA and Issuer, the libvirt DaemonSet and its ConfigMap, adapted to kind | `controllers`, `node-prep` | 4 |
-| `kvm-node-agent` | The kna release | `libvirt` | 4 |
+| `libvirt` | The ClusterIssuer `selfsigned-cluster-issuer`, the libvirt CA and Issuer, the libvirt DaemonSet and its ConfigMap of upstream, with a `host-prepare.sh` that runs guests under TCG on a node without `/dev/kvm`. The DaemonSet runs in `openstack`, which `access` creates | `access`, `controllers`, `node-prep` | 4 |
+| `kvm-node-agent` | Upstream's kna chart, released from the hub: the `OCIRepository` `kvm-node-agent` and the `HelmRelease` `compute-kvm-node-agent` in `flux-system` of the management cluster, which installs it in `hypervisor-system`. Helm does not wait for its pod | `libvirt` | 4 |
 | `hypervisor-operator` | The hvo release, with its values from the auth Secret on the management cluster | `access`, `compute-pool` on management | 4 |
 | `ceph-libvirt-secret` | ExternalSecret for the `cinder` key that the `ceph-secret` container of libvirt reads | `openbao-remote-auth` on management | 5 |
 
@@ -925,7 +1020,7 @@ make vendor                 # check out the paths of upstream at the pin into ve
 make validate               # render every root and stage against vendor/cobaltcore, check schemas and patches
 make test                   # the unit tests of the command layer
 make test-validate          # the tests of make validate on a fixture tree, with flux and kubeconform
-make test-host              # the lifecycle, the profiles gateway, platform, identity and controlplane, controlplane on the TLS bus, and the compute cluster attached to the control plane against a real Docker, each creating and removing a sandbox
+make test-host              # the lifecycle, the profiles gateway, platform, identity and controlplane, controlplane on the TLS bus, the compute cluster attached to the control plane, and the hypervisor node against a real Docker, each creating and removing a sandbox
 make down                   # delete clusters, registry, network, loop devices
 ```
 
@@ -940,7 +1035,8 @@ than the 12 s Docker waits.
 each. `CONFIG=<file>` selects another configuration file. `make up` waits up
 to 600 s for the stages, and `SANDBOX_STAGE_TIMEOUT=<seconds>` changes that;
 `SANDBOX_SOURCE_TIMEOUT=<seconds>` does the same for the source, by default
-120 s. The first `make up PROFILE=gateway` pulls the images of every
+120 s, and `SANDBOX_NODE_TIMEOUT=<seconds>` for systemd of a hypervisor node
+to answer on the system bus `make up` gave it, by default 30 s. The first `make up PROFILE=gateway` pulls the images of every
 controller, which on a slow link can take longer than 600 s; a second
 `make up PROFILE=gateway` continues where the first stopped. The first
 `make up PROFILE=identity` also pulls the images of Keystone, MariaDB,
@@ -1040,7 +1136,7 @@ lists the checks it adds.
 | Disk | To be measured. Every kind node keeps its own image store, so an image is stored once per node that runs it. Working estimate: 60 GB free for `full`, 100 GB for `parity`, including the sparse OSD files |
 | DNS | The resolver must answer `*.nip.io` names with private addresses. Resolvers with DNS rebinding protection drop such answers. For such a host, `switches.resolver-fallback` adds the module `resolver`: the CoreDNS of every cluster answers the names itself, and the CoreDNS of the management cluster answers them on `addresses.dns`, to which the host routes `nip.io` with the settings `make up` prints ([ADR-0018](docs/adr/0018-print-the-host-resolver-settings-of-the-nip-io-fallback.md)) |
 | Tools | `docker`, `kind`, `kubectl`, `helm`, `flux`, `git`, `yq` v4.40.1 or newer, `jq`, `make`, `bats` (bats-core 1.5.0 or newer, for `make test`, `make test-validate` and `make test-host`), `kubeconform`, `curl` and `tar` for `make validate`, `curl` for `make verify`, `curl` and `openssl` for `make test-host`, and the OpenStack CLI with `osc-placement` and `python-barbicanclient` |
-| Network | Egress to `github.com` (upstream, the tools and schemas of `make validate`, the CRDs of the module `crds`), `raw.githubusercontent.com` (the Kubernetes schemas of `make validate`, the MetalLB manifest of the module `loadbalancer`), `ghcr.io` (among others the NFS server of `cinder-nfs`), `quay.io`, `docker.io`, `registry.k8s.io` (the images of `csi-driver-nfs`), the Helm repositories, `raw.githubusercontent.com` as the one of `csi-driver-nfs` among them, and the cirros download. The management cluster reads `github.com` and `raw.githubusercontent.com` at every reconcile of `crds` and `loadbalancer` ([ADR-0019](docs/adr/0019-read-third-party-manifests-as-pinned-remote-resources.md)) |
+| Network | Egress to `github.com` (upstream, the tools and schemas of `make validate`, the CRDs of the module `crds`), `raw.githubusercontent.com` (the Kubernetes schemas of `make validate`, the MetalLB manifest of the module `loadbalancer`), `ghcr.io` (among others the NFS server of `cinder-nfs`), `quay.io`, `docker.io`, `deb.debian.org` (the package `dbus` of the hypervisor nodes, for a profile with `node-prep`), `registry.k8s.io` (the images of `csi-driver-nfs`), the Helm repositories, `raw.githubusercontent.com` as the one of `csi-driver-nfs` among them, and the cirros download. The management cluster reads `github.com` and `raw.githubusercontent.com` at every reconcile of `crds` and `loadbalancer` ([ADR-0019](docs/adr/0019-read-third-party-manifests-as-pinned-remote-resources.md)) |
 
 `make up`, `make up-<cluster>` and `scripts/preflight.sh [<role>...]` check
 the host before anything is created. They print one line per check, with the
