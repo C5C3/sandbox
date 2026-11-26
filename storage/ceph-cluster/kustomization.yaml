@@ -1,0 +1,63 @@
+# The module ceph-cluster on sandbox-storage: upstream's CephCluster, pools,
+# clients and toolbox, patched for one host, and the pool .mgr of
+# mgr-pool.yaml. keys-push.yaml and keys-pull.yaml of upstream's directory
+# are the key hand-off, which this module does not carry.
+#
+# The stage substitutes cluster-vars: SWITCHES_OSD_COUNT and
+# SWITCHES_OSD_SIZE come from the switches, STORAGE_POOL_SIZE is 1 for one
+# OSD and 2 for two or more (cluster_vars in scripts/lib/hub.sh). kustomize
+# renders the three as plain scalars, and the substitution turns count and
+# size into integers.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../vendor/cobaltcore/deploy/overlays/metal-stack/ceph/cluster/cluster.yaml
+  - ../../vendor/cobaltcore/deploy/overlays/metal-stack/ceph/cluster/pools.yaml
+  - ../../vendor/cobaltcore/deploy/overlays/metal-stack/ceph/cluster/clients.yaml
+  - ../../vendor/cobaltcore/deploy/overlays/metal-stack/ceph/cluster/toolbox.yaml
+  - mgr-pool.yaml
+patches:
+  - target: {kind: CephCluster, name: rook-ceph}
+    patch: |
+      # Monitor and OSDs answer on the node's address on the Docker network,
+      # where the clients of the other clusters reach them.
+      - {op: add, path: /spec/network/provider, value: host}
+      # With one OSD upstream's "2" raises TOO_FEW_OSDS; the three pools set
+      # their size themselves. A string, as Ceph's configuration is.
+      - {op: replace, path: /spec/cephConfig/global/osd_pool_default_size, value: "1"}
+      # One OSD or one host never gives a pool redundancy: no POOL_NO_REDUNDANCY.
+      - {op: add, path: /spec/cephConfig/global/mon_warn_on_pool_no_redundancy, value: "false"}
+      # MON_DISK_LOW below 10 % free, not 30 %: the monitor's filesystem is
+      # the host's under Docker, as in Rook's deploy/examples/cluster-test.yaml.
+      - {op: add, path: /spec/cephConfig/global/mon_data_avail_warn, value: "10"}
+      # The OSDs sit on loop devices over files on the host's disk, which the
+      # host's other workloads share. One slow write raises
+      # BLUESTORE_SLOW_OP_ALERT, which Ceph keeps for
+      # bluestore_slow_ops_warn_lifetime, a day by default.
+      - {op: add, path: /spec/healthCheck/muteHealthWarning/BLUESTORE_SLOW_OP_ALERT, value: {policy: mute}}
+      # Lower requests, upstream's limits; #19 lowers further where a
+      # measurement shows room.
+      - {op: replace, path: /spec/resources/mon/requests/memory, value: 512Mi}
+      - {op: replace, path: /spec/resources/mgr/requests/memory, value: 256Mi}
+      # The device set on the loop devices of make up: one claim per OSD
+      # file, of its size, in the class of the module block-devices. Ceph
+      # takes osd_memory_target from the request of 1Gi.
+      - {op: replace, path: /spec/storage/storageClassDeviceSets/0/name, value: loop}
+      - {op: replace, path: /spec/storage/storageClassDeviceSets/0/count, value: "${SWITCHES_OSD_COUNT}"}
+      - {op: replace, path: /spec/storage/storageClassDeviceSets/0/resources/requests/memory, value: 1Gi}
+      - {op: add, path: /spec/storage/storageClassDeviceSets/0/volumeClaimTemplates/0/spec/storageClassName, value: sandbox-block}
+      - {op: replace, path: /spec/storage/storageClassDeviceSets/0/volumeClaimTemplates/0/spec/resources/requests/storage, value: "${SWITCHES_OSD_SIZE}"}
+  - target: {kind: CephBlockPool, name: volumes|backups}
+    patch: |
+      # One host: replicas go to different OSDs, one replica with one OSD.
+      - {op: replace, path: /spec/failureDomain, value: osd}
+      - {op: replace, path: /spec/replicated/size, value: "${STORAGE_POOL_SIZE}"}
+      - {op: replace, path: /spec/replicated/requireSafeReplicaSize, value: false}
+  - target: {kind: Deployment, name: rook-ceph-tools}
+    # The toolbox's script holds ${...} of bash, which the substitution of
+    # the stage would empty.
+    patch: |
+      - op: add
+        path: /metadata/annotations
+        value:
+          kustomize.toolkit.fluxcd.io/substitute: disabled

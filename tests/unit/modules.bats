@@ -438,18 +438,20 @@ EOF
 	[ "$(jq -r '.files | map(split("/")[-1]) | join(" ")' <<<"$generator")" = "tenant.sh common.sh setup-database-tenant.sh" ]
 }
 
-@test "the stages of messaging-tls and controlplane substitute from cluster-vars" {
-	local module
-	for module in messaging-tls controlplane; do
-		[ "$(yq -o=json -I=0 '.spec.postBuild' "$SANDBOX_ROOT/clusters/management/$module/stage.yaml")" = \
+@test "the stages of messaging-tls, controlplane and ceph-cluster on storage substitute from cluster-vars" {
+	local stage
+	for stage in management/messaging-tls management/controlplane storage/ceph-cluster; do
+		echo "$stage"
+		[ "$(yq -o=json -I=0 '.spec.postBuild' "$SANDBOX_ROOT/clusters/$stage/stage.yaml")" = \
 			'{"substituteFrom":[{"kind":"ConfigMap","name":"cluster-vars"}]}' ]
 	done
 }
 
-@test "the stages of openbao, objectstore, platform, sizing, cinder-nfs, fake-compute, hypervisor-fixtures and of access, controllers, node-prep, libvirt, kvm-node-agent and hypervisor-operator on compute substitute no variables" {
+@test "the stages of openbao, objectstore, platform, sizing, cinder-nfs, fake-compute, hypervisor-fixtures, of access, controllers, node-prep, libvirt, kvm-node-agent and hypervisor-operator on compute and of block-devices, rook-crds and rook-operator on storage substitute no variables" {
 	local stage
 	for stage in management/{openbao,objectstore,platform,sizing,cinder-nfs,fake-compute,hypervisor-fixtures} \
-		compute/{access,controllers,node-prep,libvirt,kvm-node-agent,hypervisor-operator}; do
+		compute/{access,controllers,node-prep,libvirt,kvm-node-agent,hypervisor-operator} \
+		storage/{block-devices,rook-crds,rook-operator}; do
 		echo "$stage"
 		[ "$(yq '.spec | has("postBuild")' "$SANDBOX_ROOT/clusters/$stage/stage.yaml")" = false ]
 	done
@@ -799,6 +801,18 @@ EOF
 	[ "$(yq ea -o=json -I=0 '[select(.kind == "MariaDBDatabase" or .kind == "RabbitMQVhost") | .spec | has("deletionPolicy")]' "$file")" = '[false,false]' ]
 }
 
+@test "the four stages of sandbox-storage meet the stage contract, rook-operator after rook-crds and ceph-cluster after rook-operator and block-devices" {
+	local module
+	for module in block-devices rook-crds rook-operator ceph-cluster; do
+		run stage_contract "$SANDBOX_ROOT" "storage/$module"
+		echo "storage/$module: point $output"
+		[ "$status" -eq 0 ]
+	done
+	[ "$(yq -o=json -I=0 '.spec.dependsOn' "$SANDBOX_ROOT/clusters/storage/rook-operator/stage.yaml")" = '[{"name":"storage-rook-crds"}]' ]
+	[ "$(yq -o=json -I=0 '.spec.dependsOn' "$SANDBOX_ROOT/clusters/storage/ceph-cluster/stage.yaml")" = \
+		'[{"name":"storage-rook-operator"},{"name":"storage-block-devices"}]' ]
+}
+
 @test "the stages storage-block-devices and storage-rook-crds apply their modules on sandbox-storage without a dependency" {
 	local module
 	for module in block-devices rook-crds; do
@@ -859,3 +873,36 @@ EOF
 	[ "$output" = 4 ]
 }
 
+@test "the module ceph-cluster applies upstream's cluster, pools, clients and toolbox without the key hand-off, and the pool .mgr" {
+	local upstream=../../vendor/cobaltcore/deploy/overlays/metal-stack/ceph/cluster file
+	[ "$(yq -o=json -I=0 '.resources' "$SANDBOX_ROOT/storage/ceph-cluster/kustomization.yaml")" = \
+		"[\"$upstream/cluster.yaml\",\"$upstream/pools.yaml\",\"$upstream/clients.yaml\",\"$upstream/toolbox.yaml\",\"mgr-pool.yaml\"]" ]
+	for file in $(yq '.resources[]' "$SANDBOX_ROOT/storage/ceph-cluster/kustomization.yaml"); do
+		[ -f "$SANDBOX_ROOT/storage/ceph-cluster/$file" ]
+	done
+	# Upstream's directory holds the key hand-off, which the module leaves out.
+	[ -f "$SANDBOX_ROOT/storage/ceph-cluster/$upstream/keys-push.yaml" ]
+	[ -f "$SANDBOX_ROOT/storage/ceph-cluster/$upstream/keys-pull.yaml" ]
+	[ "$(yq ea -o=json -I=0 '[[.apiVersion, .kind, .metadata.namespace, .metadata.name, .spec]]' "$SANDBOX_ROOT/storage/ceph-cluster/mgr-pool.yaml")" = \
+		'[["ceph.rook.io/v1","CephBlockPool","rook-ceph","builtin-mgr",{"name":".mgr","failureDomain":"osd","enableCrushUpdates":true,"replicated":{"size":"${STORAGE_POOL_SIZE}","requireSafeReplicaSize":false}}]]' ]
+}
+
+@test "the patches of ceph-cluster put the CephCluster on host networking and the loop devices, the pools on failure domain osd, and keep the toolbox from the substitution" {
+	local file=$SANDBOX_ROOT/storage/ceph-cluster/kustomization.yaml
+	[ "$(yq -o=json -I=0 '[.patches[].target]' "$file")" = \
+		'[{"kind":"CephCluster","name":"rook-ceph"},{"kind":"CephBlockPool","name":"volumes|backups"},{"kind":"Deployment","name":"rook-ceph-tools"}]' ]
+	[ "$(yq '.patches[0].patch' "$file" | yq -o=json -I=0 '.')" = \
+		'[{"op":"add","path":"/spec/network/provider","value":"host"},{"op":"replace","path":"/spec/cephConfig/global/osd_pool_default_size","value":"1"},{"op":"add","path":"/spec/cephConfig/global/mon_warn_on_pool_no_redundancy","value":"false"},{"op":"add","path":"/spec/cephConfig/global/mon_data_avail_warn","value":"10"},{"op":"add","path":"/spec/healthCheck/muteHealthWarning/BLUESTORE_SLOW_OP_ALERT","value":{"policy":"mute"}},{"op":"replace","path":"/spec/resources/mon/requests/memory","value":"512Mi"},{"op":"replace","path":"/spec/resources/mgr/requests/memory","value":"256Mi"},{"op":"replace","path":"/spec/storage/storageClassDeviceSets/0/name","value":"loop"},{"op":"replace","path":"/spec/storage/storageClassDeviceSets/0/count","value":"${SWITCHES_OSD_COUNT}"},{"op":"replace","path":"/spec/storage/storageClassDeviceSets/0/resources/requests/memory","value":"1Gi"},{"op":"add","path":"/spec/storage/storageClassDeviceSets/0/volumeClaimTemplates/0/spec/storageClassName","value":"sandbox-block"},{"op":"replace","path":"/spec/storage/storageClassDeviceSets/0/volumeClaimTemplates/0/spec/resources/requests/storage","value":"${SWITCHES_OSD_SIZE}"}]' ]
+	[ "$(yq '.patches[1].patch' "$file" | yq -o=json -I=0 '.')" = \
+		'[{"op":"replace","path":"/spec/failureDomain","value":"osd"},{"op":"replace","path":"/spec/replicated/size","value":"${STORAGE_POOL_SIZE}"},{"op":"replace","path":"/spec/replicated/requireSafeReplicaSize","value":false}]' ]
+	[ "$(yq '.patches[2].patch' "$file" | yq -o=json -I=0 '.')" = \
+		'[{"op":"add","path":"/metadata/annotations","value":{"kustomize.toolkit.fluxcd.io/substitute":"disabled"}}]' ]
+}
+
+@test "the stage storage-ceph-cluster applies the module on sandbox-storage after rook-operator and block-devices and waits for a healthy cluster, its pools and its clients" {
+	local stage=$SANDBOX_ROOT/clusters/storage/ceph-cluster/stage.yaml
+	[ "$(yq -o=json -I=0 '[.spec.path, .spec.interval, .spec.retryInterval, .spec.timeout, .spec.kubeConfig]' "$stage")" = \
+		'["./storage/ceph-cluster","10m","1m","30m",{"secretRef":{"name":"kubeconfig-storage"}}]' ]
+	[ "$(yq -o=json -I=0 '.spec.healthCheckExprs' "$stage")" = \
+		'[{"apiVersion":"ceph.rook.io/v1","kind":"CephCluster","current":"status.phase == '"'"'Ready'"'"' && status.ceph.health == '"'"'HEALTH_OK'"'"'"},{"apiVersion":"ceph.rook.io/v1","kind":"CephBlockPool","current":"status.phase == '"'"'Ready'"'"'"},{"apiVersion":"ceph.rook.io/v1","kind":"CephClient","current":"status.phase == '"'"'Ready'"'"'"}]' ]
+}

@@ -1,0 +1,18 @@
+# The pool .mgr of the manager, as in Rook's
+# deploy/examples/pool-builtin-mgr.yaml: the manager creates it with the
+# default rule, whose failure domain is host, and the sandbox has one host.
+# This pool puts it on failure domain osd with the size of the other pools.
+# The manager can create .mgr before Rook reconciles this pool, and Rook
+# changes the rule of a pool that exists only with enableCrushUpdates.
+apiVersion: ceph.rook.io/v1
+kind: CephBlockPool
+metadata:
+  name: builtin-mgr
+  namespace: rook-ceph
+spec:
+  name: .mgr
+  failureDomain: osd
+  enableCrushUpdates: true
+  replicated:
+    size: ${STORAGE_POOL_SIZE}
+    requireSafeReplicaSize: false
