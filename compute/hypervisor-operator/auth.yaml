@@ -1,0 +1,78 @@
+# The copy of the auth Secret of hvo in flux-system, the namespace of the
+# release. The ControlPlane writes controlplane-nova-hypervisor-operator-auth
+# into openstack with seven keys, a cloud-admin password among them. External
+# Secrets reads it through a SecretStore of the provider kubernetes, whose
+# ServiceAccount may get that one Secret and nothing else, as the transport
+# URL Secrets of the module messaging-tls do, and writes the seven keys into a
+# Secret of the same name. Its label makes helm-controller upgrade the release
+# as soon as the copy changes, which follows the source within the refresh
+# interval. Until the ControlPlane has written the Secret, the ExternalSecret
+# reports SecretSyncedError, and External Secrets retries.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: hypervisor-operator-auth
+  namespace: flux-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: hypervisor-operator-auth
+  namespace: openstack
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames: [controlplane-nova-hypervisor-operator-auth]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: hypervisor-operator-auth
+  namespace: openstack
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: hypervisor-operator-auth
+subjects:
+  - kind: ServiceAccount
+    name: hypervisor-operator-auth
+    namespace: flux-system
+---
+apiVersion: external-secrets.io/v1
+kind: SecretStore
+metadata:
+  name: hypervisor-operator-auth
+  namespace: flux-system
+spec:
+  provider:
+    kubernetes:
+      remoteNamespace: openstack
+      server:
+        caProvider:
+          type: ConfigMap
+          name: kube-root-ca.crt
+          key: ca.crt
+      auth:
+        serviceAccount:
+          name: hypervisor-operator-auth
+---
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: controlplane-nova-hypervisor-operator-auth
+  namespace: flux-system
+spec:
+  refreshInterval: 5m
+  secretStoreRef:
+    kind: SecretStore
+    name: hypervisor-operator-auth
+  target:
+    name: controlplane-nova-hypervisor-operator-auth
+    template:
+      metadata:
+        labels:
+          reconcile.fluxcd.io/watch: Enabled
+  dataFrom:
+    - extract:
+        key: controlplane-nova-hypervisor-operator-auth

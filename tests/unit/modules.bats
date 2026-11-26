@@ -231,7 +231,7 @@ EOF
 		'[{"apiGroups":[""],"resources":["secrets"],"verbs":["create"]}]' ]
 }
 
-@test "every rule of the two tenant Roles and of the Role rabbitmq-transport names its objects" {
+@test "every rule of the two tenant Roles and of the Roles rabbitmq-transport and hypervisor-operator-auth names its objects" {
 	local file count roles='select(.kind == "Role")'
 	while read -r file count; do
 		[ "$(yq ea "[$roles] | length" "$SANDBOX_ROOT/$file")" = "$count" ]
@@ -239,6 +239,7 @@ EOF
 	done <<'EOF'
 controlplane/tenant.yaml 2
 infrastructure/messaging-tls/transport.yaml 1
+compute/hypervisor-operator/auth.yaml 1
 EOF
 }
 
@@ -444,10 +445,10 @@ EOF
 	done
 }
 
-@test "the stages of openbao, objectstore, platform, sizing, cinder-nfs, fake-compute, hypervisor-fixtures and of access, controllers, node-prep, libvirt and kvm-node-agent on compute substitute no variables" {
+@test "the stages of openbao, objectstore, platform, sizing, cinder-nfs, fake-compute, hypervisor-fixtures and of access, controllers, node-prep, libvirt, kvm-node-agent and hypervisor-operator on compute substitute no variables" {
 	local stage
 	for stage in management/{openbao,objectstore,platform,sizing,cinder-nfs,fake-compute,hypervisor-fixtures} \
-		compute/{access,controllers,node-prep,libvirt,kvm-node-agent}; do
+		compute/{access,controllers,node-prep,libvirt,kvm-node-agent,hypervisor-operator}; do
 		echo "$stage"
 		[ "$(yq '.spec | has("postBuild")' "$SANDBOX_ROOT/clusters/$stage/stage.yaml")" = false ]
 	done
@@ -565,10 +566,80 @@ EOF
 	[ "$(yq -o=json -I=0 '.spec.postBuild' "$stage")" = '{"substituteFrom":[{"kind":"ConfigMap","name":"sandbox-trust"}]}' ]
 }
 
+@test "the stage compute-hypervisor-operator applies the module on sandbox-management after libvirt, trust and hypervisor-fixtures and waits for the release" {
+	local stage=$SANDBOX_ROOT/clusters/compute/hypervisor-operator/stage.yaml
+	run stage_contract "$SANDBOX_ROOT" compute/hypervisor-operator
+	echo "point $output"
+	[ "$status" -eq 0 ]
+	[ "$(yq -o=json -I=0 '[.spec.dependsOn, .spec.path, .spec.interval, .spec.retryInterval, .spec.timeout, (.spec | has("kubeConfig"))]' "$stage")" = \
+		'[[{"name":"compute-libvirt"},{"name":"compute-trust"},{"name":"management-hypervisor-fixtures"}],"./compute/hypervisor-operator","10m","1m","10m",false]' ]
+	[ "$(yq -o=json -I=0 '.spec.healthCheckExprs' "$stage")" = \
+		"$(yq -o=json -I=0 '.spec.healthCheckExprs' "$SANDBOX_ROOT/clusters/compute/kvm-node-agent/stage.yaml")" ]
+}
+
+@test "a release of compute/hypervisor-operator without kubeConfig breaks point 4" {
+	tree_copy
+	yq -i 'del(.spec.kubeConfig)' "$BATS_TEST_TMPDIR/tree/compute/hypervisor-operator/release.yaml"
+	run stage_contract "$BATS_TEST_TMPDIR/tree" compute/hypervisor-operator
+	echo "point $output"
+	[ "$status" -eq 1 ]
+	[ "$output" = 4 ]
+}
+
 @test "the module trust puts the sandbox CA into the Secrets nova-metadata-ca and sandbox-ca in openstack" {
 	[ "$(yq -o=json -I=0 '.resources' "$SANDBOX_ROOT/compute/trust/kustomization.yaml")" = '["secrets.yaml"]' ]
 	[ "$(yq ea -o=json -I=0 '[[.apiVersion, .kind, .metadata.namespace, .metadata.name, .data]]' "$SANDBOX_ROOT/compute/trust/secrets.yaml")" = \
 		'[["v1","Secret","openstack","nova-metadata-ca",{"ca.crt":"${SANDBOX_CA_B64}"}],["v1","Secret","openstack","sandbox-ca",{"ca.crt":"${SANDBOX_CA_B64}"}]]' ]
+}
+
+@test "the module hypervisor-operator releases upstream's chart from the hub with upstream's six values and auth_url from the copy of the auth Secret" {
+	local dir=$SANDBOX_ROOT/compute/hypervisor-operator upstream=$SANDBOX_ROOT/vendor/cobaltcore/deploy/overlays/metal-stack/hypervisor
+	local release=$dir/release.yaml
+	[ "$(yq -o=json -I=0 '.resources' "$dir/kustomization.yaml")" = '["source.yaml","auth.yaml","release.yaml"]' ]
+	[ "$(yq -o=json -I=0 '[.kind, .metadata.name, .metadata.namespace, .spec]' "$dir/source.yaml")" = \
+		"$(yq ea -o=json -I=0 'select(.metadata.name == "openstack-hypervisor-operator") | [.kind, .metadata.name, .metadata.namespace, .spec]' "$upstream/sources.yaml")" ]
+	[ "$(yq -o=json -I=0 '[.metadata.name, .metadata.namespace, .spec.interval, .spec.releaseName, .spec.targetNamespace, .spec.storageNamespace, .spec.chartRef, .spec.kubeConfig, .spec.install, .spec.upgrade]' "$release")" = \
+		'["compute-hypervisor-operator","flux-system","30m","openstack-hypervisor-operator","openstack","openstack",{"kind":"OCIRepository","name":"openstack-hypervisor-operator"},{"secretRef":{"name":"kubeconfig-compute"}},{"crds":"CreateReplace","remediation":{"retries":3}},{"crds":"CreateReplace","remediation":{"retries":3}}]' ]
+	[ "$(yq -o=json -I=0 '.spec.valuesFrom[0:6]' "$release")" = "$(yq -o=json -I=0 '.spec.valuesFrom' "$upstream/hvo-release.yaml")" ]
+	[ "$(yq -o=json -I=0 '.spec.valuesFrom[6:]' "$release")" = \
+		'[{"kind":"Secret","name":"controlplane-nova-hypervisor-operator-auth","valuesKey":"auth_url","targetPath":"controllerManager.manager.env.osAuthUrl"}]' ]
+	[ "$(yq -o=json -I=0 '.spec.values' "$release")" = \
+		'{"fullnameOverride":"hypervisor-operator","controllerManager":{"manager":{"image":{"repository":"ghcr.io/c5c3/openstack-hypervisor-operator"},"env":{"certificateNamespace":"hypervisor-system","agentNamespaces":"openstack"}}},"serviceMonitor":{"enabled":false},"prometheusRules":{"create":false},"dashboards":{"create":false},"customResourceMetrics":{"create":false}}' ]
+	# Beside upstream's values but osAuthUrl, which comes from the copy.
+	[ "$(yq -o=json -I=0 '.spec.values.controllerManager.manager | .env |= del(.osAuthUrl)' "$upstream/hvo-release.yaml")" = \
+		"$(yq -o=json -I=0 '.spec.values.controllerManager.manager' "$release")" ]
+}
+
+@test "the post-renderer of hvo mounts the Secret sandbox-ca, names it in SSL_CERT_FILE, appends upstream's argument and sets neither OS_CACERT nor OS_INTERFACE" {
+	local release=$SANDBOX_ROOT/compute/hypervisor-operator/release.yaml upstream=$SANDBOX_ROOT/vendor/cobaltcore/deploy/overlays/metal-stack/hypervisor/hvo-release.yaml
+	local patch
+	[ "$(yq -o=json -I=0 '[.spec.postRenderers[0].kustomize.patches[].target]' "$release")" = '[{"kind":"Deployment"},{"kind":"Deployment"}]' ]
+	patch=$(yq '.spec.postRenderers[0].kustomize.patches[0].patch' "$release" | yq -o=json -I=0 '.')
+	[ "$(jq -c '.spec.template.spec.containers' <<<"$patch")" = \
+		'[{"name":"manager","imagePullPolicy":"Always","env":[{"name":"SSL_CERT_FILE","value":"/etc/sandbox-ca/ca.crt"}],"volumeMounts":[{"name":"sandbox-ca","mountPath":"/etc/sandbox-ca","readOnly":true}]}]' ]
+	[ "$(jq -c '.spec.template.spec.volumes' <<<"$patch")" = '[{"name":"sandbox-ca","secret":{"secretName":"sandbox-ca"}}]' ]
+	[ "$(yq '.spec.postRenderers[0].kustomize.patches[1].patch' "$release" | yq -o=json -I=0 '.')" = \
+		"$(yq '.spec.postRenderers[0].kustomize.patches[1].patch' "$upstream" | yq -o=json -I=0 '.')" ]
+	[ "$(yq '.spec.postRenderers[0].kustomize.patches[1].patch' "$release" | yq '.[0].value')" = --default-high-availability=false ]
+	# The comments name both variables, no value does.
+	[ "$(yq '[.. | select(tag == "!!str") | select(test("OS_(CACERT|INTERFACE)"))] | length' "$release")" = 0 ]
+}
+
+@test "the copy of the auth Secret of hvo is an ExternalSecret in flux-system behind an account that may get that one Secret" {
+	local file=$SANDBOX_ROOT/compute/hypervisor-operator/auth.yaml
+	[ "$(yq ea -o=json -I=0 '[.kind + "/" + .metadata.namespace + "/" + .metadata.name]' "$file")" = \
+		'["ServiceAccount/flux-system/hypervisor-operator-auth","Role/openstack/hypervisor-operator-auth","RoleBinding/openstack/hypervisor-operator-auth","SecretStore/flux-system/hypervisor-operator-auth","ExternalSecret/flux-system/controlplane-nova-hypervisor-operator-auth"]' ]
+	[ "$(yq ea -o=json -I=0 'select(.kind == "Role") | .rules' "$file")" = \
+		'[{"apiGroups":[""],"resources":["secrets"],"resourceNames":["controlplane-nova-hypervisor-operator-auth"],"verbs":["get"]}]' ]
+	[ "$(yq ea -o=json -I=0 'select(.kind == "RoleBinding") | [.roleRef, .subjects]' "$file")" = \
+		'[{"apiGroup":"rbac.authorization.k8s.io","kind":"Role","name":"hypervisor-operator-auth"},[{"kind":"ServiceAccount","name":"hypervisor-operator-auth","namespace":"flux-system"}]]' ]
+	[ "$(yq ea -o=json -I=0 'select(.kind == "SecretStore") | .spec' "$file")" = \
+		'{"provider":{"kubernetes":{"remoteNamespace":"openstack","server":{"caProvider":{"type":"ConfigMap","name":"kube-root-ca.crt","key":"ca.crt"}},"auth":{"serviceAccount":{"name":"hypervisor-operator-auth"}}}}}' ]
+	[ "$(yq ea -o=json -I=0 'select(.kind == "ExternalSecret") | .spec' "$file")" = \
+		'{"refreshInterval":"5m","secretStoreRef":{"kind":"SecretStore","name":"hypervisor-operator-auth"},"target":{"name":"controlplane-nova-hypervisor-operator-auth","template":{"metadata":{"labels":{"reconcile.fluxcd.io/watch":"Enabled"}}}},"dataFrom":[{"extract":{"key":"controlplane-nova-hypervisor-operator-auth"}}]}' ]
+	# Every HelmRelease of the module reads its values from that copy.
+	[ "$(yq ea -o=json -I=0 '[select(.kind == "HelmRelease") | .spec.valuesFrom[].name] | unique' "$SANDBOX_ROOT/compute/hypervisor-operator/release.yaml")" = \
+		'["controlplane-nova-hypervisor-operator-auth"]' ]
 }
 
 @test "the c5c3-operator depends on no release that controllers suspends" {

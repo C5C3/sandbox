@@ -1,0 +1,17 @@
+# The OCIRepository openstack-hypervisor-operator of
+# vendor/cobaltcore/deploy/overlays/metal-stack/hypervisor/sources.yaml,
+# unchanged: the chart of the pinned hvo commit, by tag and digest.
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: OCIRepository
+metadata:
+  name: openstack-hypervisor-operator
+  namespace: flux-system
+spec:
+  interval: 1h
+  url: oci://ghcr.io/cobaltcore-dev/charts/openstack-hypervisor-operator
+  layerSelector:
+    mediaType: application/vnd.cncf.helm.chart.content.v1.tar+gzip
+    operation: copy
+  ref:
+    tag: "1.2.3_sha-a2baf3f"
+    digest: "sha256:a2442e53f92dc13bc5ab29ece620766388bb72624de8e922aa660b8e82ff360f"

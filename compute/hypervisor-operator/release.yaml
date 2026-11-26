@@ -1,0 +1,134 @@
+# The HelmRelease of hvo on sandbox-compute, after
+# vendor/cobaltcore/deploy/overlays/metal-stack/hypervisor/hvo-release.yaml,
+# where hvo runs beside Keystone. Here it runs on another cluster than its
+# control plane, as step 7 of upstream's guide Connect a Compute Cluster maps
+# it: valuesFrom holds upstream's six entries and auth_url, the public
+# Keystone URL of the Gateway, in place of the in-cluster URL. The release
+# history stays on sandbox-compute, in openstack, which the module access
+# creates. Helm waits for the Deployment, so a Ready release is an hvo that
+# authenticated twice through the Gateway. A first wait that runs out, such
+# as on a slow pull of the image, is retried three times, as the releases of
+# compute/controllers are; without remediation the release would stay failed
+# and a second make up would not retry it.
+#
+# The values are upstream's without osAuthUrl, which comes from the copy, and
+# with the ServiceMonitor and the PrometheusRules off as well: the compute
+# cluster has no CRD of the Prometheus Operator, and the chart's defaults for
+# both are on.
+#
+# The post-renderer's first patch sets imagePullPolicy Always, as upstream's
+# does, and gives hvo the sandbox CA. hvo builds its Keystone client with
+# clientconfig.AuthenticatedClient, which ignores OS_CACERT
+# (C5C3/cobaltcore#1885), so SSL_CERT_FILE names the CA for Go's default
+# trust store; the Gateway's certificate and every public catalog row are
+# signed by it. OS_INTERFACE stays unset: the patched image then reads the
+# public catalog rows, the ones a compute cluster reaches. The second patch
+# appends --default-high-availability=false, as upstream's does. Upstream's
+# patches of the ServiceMonitor and the PrometheusRules go with those objects.
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: compute-hypervisor-operator
+  namespace: flux-system
+spec:
+  interval: 30m
+  releaseName: openstack-hypervisor-operator
+  targetNamespace: openstack
+  storageNamespace: openstack
+  chartRef:
+    kind: OCIRepository
+    name: openstack-hypervisor-operator
+  kubeConfig:
+    secretRef:
+      name: kubeconfig-compute
+  install:
+    crds: CreateReplace
+    remediation:
+      retries: 3
+  upgrade:
+    crds: CreateReplace
+    remediation:
+      retries: 3
+  valuesFrom:
+    - kind: Secret
+      name: controlplane-nova-hypervisor-operator-auth
+      valuesKey: password
+      targetPath: secret.servicePassword
+    - kind: Secret
+      name: controlplane-nova-hypervisor-operator-auth
+      valuesKey: username
+      targetPath: controllerManager.manager.env.osUsername
+    - kind: Secret
+      name: controlplane-nova-hypervisor-operator-auth
+      valuesKey: user_domain_name
+      targetPath: controllerManager.manager.env.osUserDomainName
+    - kind: Secret
+      name: controlplane-nova-hypervisor-operator-auth
+      valuesKey: project_name
+      targetPath: controllerManager.manager.env.osProjectName
+    - kind: Secret
+      name: controlplane-nova-hypervisor-operator-auth
+      valuesKey: project_domain_name
+      targetPath: controllerManager.manager.env.osProjectDomainName
+    - kind: Secret
+      name: controlplane-nova-hypervisor-operator-auth
+      valuesKey: region_name
+      targetPath: controllerManager.manager.env.osRegionName
+    - kind: Secret
+      name: controlplane-nova-hypervisor-operator-auth
+      valuesKey: auth_url
+      targetPath: controllerManager.manager.env.osAuthUrl
+  values:
+    fullnameOverride: hypervisor-operator
+    controllerManager:
+      manager:
+        image:
+          repository: ghcr.io/c5c3/openstack-hypervisor-operator
+        env:
+          certificateNamespace: hypervisor-system
+          agentNamespaces: openstack
+    serviceMonitor:
+      enabled: false
+    prometheusRules:
+      create: false
+    dashboards:
+      create: false
+    customResourceMetrics:
+      create: false
+  postRenderers:
+    - kustomize:
+        patches:
+          # The chart renders one Deployment; kustomize replaces the patch's
+          # name with its own.
+          - target:
+              kind: Deployment
+            patch: |
+              apiVersion: apps/v1
+              kind: Deployment
+              metadata:
+                name: controller-manager
+              spec:
+                template:
+                  spec:
+                    containers:
+                      - name: manager
+                        imagePullPolicy: Always
+                        env:
+                          - name: SSL_CERT_FILE
+                            value: /etc/sandbox-ca/ca.crt
+                        volumeMounts:
+                          - name: sandbox-ca
+                            mountPath: /etc/sandbox-ca
+                            readOnly: true
+                    volumes:
+                      - name: sandbox-ca
+                        secret:
+                          secretName: sandbox-ca
+          # The chart has no value for this flag of the image's patch 0002,
+          # so the argument is appended to the list it renders.
+          - target:
+              kind: Deployment
+            patch: |
+              - op: add
+                path: /spec/template/spec/containers/0/args/-
+                value: --default-high-availability=false
