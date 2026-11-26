@@ -1,0 +1,79 @@
+# The releases of vendor/cobaltcore/deploy/bases/operators/releases/
+# cert-manager.yaml and external-secrets.yaml on sandbox-compute: the chart,
+# its version range, the values, install and upgrade are upstream's,
+# unchanged. The release history stays on sandbox-compute, which has no
+# flux-system, in the namespace of the chart. compute-external-secrets waits
+# for compute-cert-manager, as upstream's release waits for cert-manager.
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: compute-cert-manager
+  namespace: flux-system
+spec:
+  interval: 30m
+  releaseName: cert-manager
+  targetNamespace: cert-manager
+  storageNamespace: cert-manager
+  kubeConfig:
+    secretRef:
+      name: kubeconfig-compute
+  chart:
+    spec:
+      chart: cert-manager
+      version: ">=1.16.0 <2.0.0"
+      sourceRef:
+        kind: HelmRepository
+        name: compute-cert-manager
+  values:
+    crds:
+      enabled: true
+    prometheus:
+      enabled: false
+    startupapicheck:
+      enabled: true
+  install:
+    crds: CreateReplace
+    createNamespace: true
+  upgrade:
+    crds: CreateReplace
+    remediation:
+      retries: 3
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: compute-external-secrets
+  namespace: flux-system
+spec:
+  interval: 30m
+  releaseName: external-secrets
+  targetNamespace: external-secrets
+  storageNamespace: external-secrets
+  dependsOn:
+    - name: compute-cert-manager
+  kubeConfig:
+    secretRef:
+      name: kubeconfig-compute
+  chart:
+    spec:
+      chart: external-secrets
+      version: ">=0.10.0 <3.0.0"
+      sourceRef:
+        kind: HelmRepository
+        name: compute-external-secrets
+  values:
+    installCRDs: true
+    webhook:
+      port: 9443
+    certController:
+      enabled: true
+  install:
+    crds: CreateReplace
+    createNamespace: true
+    remediation:
+      retries: 3
+      remediateLastFailure: true
+  upgrade:
+    crds: CreateReplace
+    remediation:
+      retries: 3

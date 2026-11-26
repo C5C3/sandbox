@@ -41,9 +41,11 @@ stage_contract() {
 		[ "$(yq '.spec.kubeConfig.secretRef.name' "$dir/stage.yaml")" = "kubeconfig-$role" ] || { echo 4; return 1; }
 	else
 		# One list over all files: yq separates the results of several
-		# documents with ---.
-		names=$(yq ea '[select(.kind == "HelmRelease") | .spec.kubeConfig.secretRef.name // ""] | .[]' "$root/${path#./}"/*.yaml)
-		[ -n "$names" ] && ! grep -qvxF -- "kubeconfig-$role" <<<"$names" || { echo 4; return 1; }
+		# documents with ---. The list stays JSON, because the empty name of
+		# a last release without kubeConfig would end the text as an empty
+		# line, which $(...) removes.
+		names=$(yq ea -o=json -I=0 '[select(.kind == "HelmRelease") | .spec.kubeConfig.secretRef.name // ""]' "$root/${path#./}"/*.yaml)
+		jq -e --arg secret "kubeconfig-$role" 'length > 0 and all(. == $secret)' <<<"$names" >/dev/null || { echo 4; return 1; }
 	fi
 
 	# 5. Every dependency is the stage of an existing module.
@@ -153,6 +155,17 @@ EOF
 		[ "$status" -eq 1 ]
 		[ "$output" = 4 ]
 	done
+}
+
+@test "a release of compute/controllers without kubeConfig breaks point 4" {
+	local file=$BATS_TEST_TMPDIR/tree/compute/controllers/releases.yaml
+	tree_copy
+	yq -i '(select(.metadata.name == "compute-external-secrets") | .spec) |= del(.kubeConfig)' "$file"
+	[ "$(yq ea -o=json -I=0 '[select(.kind == "HelmRelease") | .spec | has("kubeConfig")]' "$file")" = '[true,false]' ]
+	run stage_contract "$BATS_TEST_TMPDIR/tree" compute/controllers
+	echo "point $output"
+	[ "$status" -eq 1 ]
+	[ "$output" = 4 ]
 }
 
 @test "a stage.yaml with a second document breaks point 2" {
@@ -431,10 +444,10 @@ EOF
 	done
 }
 
-@test "the stages of openbao, objectstore, platform, sizing, cinder-nfs, fake-compute, hypervisor-fixtures and of access and node-prep on compute substitute no variables" {
+@test "the stages of openbao, objectstore, platform, sizing, cinder-nfs, fake-compute, hypervisor-fixtures and of access, controllers and node-prep on compute substitute no variables" {
 	local stage
 	for stage in management/{openbao,objectstore,platform,sizing,cinder-nfs,fake-compute,hypervisor-fixtures} \
-		compute/{access,node-prep}; do
+		compute/{access,controllers,node-prep}; do
 		echo "$stage"
 		[ "$(yq '.spec | has("postBuild")' "$SANDBOX_ROOT/clusters/$stage/stage.yaml")" = false ]
 	done
@@ -453,6 +466,37 @@ EOF
 		'["ArtifactGenerator","target-cluster-access","flux-system",[{"alias":"sandbox","kind":"OCIRepository","name":"sandbox"}],[{"name":"target-cluster-access","copy":[{"from":"@sandbox/vendor/cobaltcore/deploy/bases/target-cluster-access/","to":"@artifact/"}]}]]' ]
 	[ "$(yq -o=json -I=0 '[.kind, .metadata.name, .metadata.namespace, .spec.releaseName, .spec.targetNamespace, .spec.storageNamespace, .spec.install, .spec.chartRef, .spec.kubeConfig, .spec.values]' "$dir/release.yaml")" = \
 		'["HelmRelease","compute-access","flux-system","target-cluster-access","c5c3-access","c5c3-access",{"createNamespace":true},{"kind":"ExternalArtifact","name":"target-cluster-access"},{"secretRef":{"name":"kubeconfig-compute"}},{"namespaces":["openstack"],"privilegedNamespaces":["openstack"],"createNamespaces":true}]' ]
+}
+
+@test "the stage compute-controllers applies the sources and releases of cert-manager and External Secrets on sandbox-management and waits for the releases" {
+	local stage=$SANDBOX_ROOT/clusters/compute/controllers/stage.yaml
+	[ "$(yq -o=json -I=0 '[.spec.path, .spec.interval, .spec.retryInterval, .spec.timeout, (.spec | has("kubeConfig")), (.spec | has("dependsOn"))]' "$stage")" = \
+		'["./compute/controllers","10m","1m","10m",false,false]' ]
+	[ "$(yq -o=json -I=0 '.spec.healthCheckExprs' "$stage")" = \
+		"$(yq -o=json -I=0 '[.spec.healthCheckExprs[] | select(.kind == "HelmRelease")]' "$SANDBOX_ROOT/clusters/compute/access/stage.yaml")" ]
+	[ "$(yq -o=json -I=0 '.resources' "$SANDBOX_ROOT/compute/controllers/kustomization.yaml")" = '["sources.yaml","releases.yaml"]' ]
+}
+
+@test "the sources and releases of compute/controllers are upstream's, under names of their own and with the kubeconfig of compute" {
+	local dir=$SANDBOX_ROOT/compute/controllers upstream=$SANDBOX_ROOT/vendor/cobaltcore/deploy/bases/operators chart release original fields
+	[ "$(yq ea -o=json -I=0 '[.kind + "/" + .metadata.namespace + "/" + .metadata.name]' "$dir/sources.yaml" "$dir/releases.yaml")" = \
+		'["HelmRepository/flux-system/compute-cert-manager","HelmRepository/flux-system/compute-external-secrets","HelmRelease/flux-system/compute-cert-manager","HelmRelease/flux-system/compute-external-secrets"]' ]
+	fields='[.spec.interval, .spec.chart.spec.chart, .spec.chart.spec.version, .spec.values, .spec.install, .spec.upgrade]'
+	for chart in cert-manager external-secrets; do
+		echo "$chart"
+		[ "$(NAME=compute-$chart yq ea -o=json -I=0 'select(.metadata.name == env(NAME)) | [.spec.interval, .spec.url]' "$dir/sources.yaml")" = \
+			"$(yq -o=json -I=0 '[.spec.interval, .spec.url]' "$upstream/sources/$chart.yaml")" ]
+		release=$(NAME=compute-$chart yq -o=json -I=0 'select(.metadata.name == env(NAME))' "$dir/releases.yaml")
+		original=$(yq -o=json -I=0 '.' "$upstream/releases/$chart.yaml")
+		[ "$(jq -c "$fields" <<<"$release")" = "$(jq -c "$fields" <<<"$original")" ]
+		[ "$(jq -c '[.spec.releaseName, .spec.targetNamespace, .spec.storageNamespace, .spec.chart.spec.sourceRef, .spec.kubeConfig]' <<<"$release")" = \
+			"[\"$chart\",\"$chart\",\"$chart\",{\"kind\":\"HelmRepository\",\"name\":\"compute-$chart\"},{\"secretRef\":{\"name\":\"kubeconfig-compute\"}}]" ]
+	done
+	# External Secrets waits for cert-manager, as upstream's release does.
+	[ "$(yq ea -o=json -I=0 '[.spec | has("dependsOn")]' "$dir/releases.yaml")" = '[false,true]' ]
+	[ "$(yq ea -o=json -I=0 'select(.metadata.name == "compute-external-secrets") | .spec.dependsOn' "$dir/releases.yaml")" = \
+		'[{"name":"compute-cert-manager"}]' ]
+	[ "$(yq -o=json -I=0 '.spec.dependsOn' "$upstream/releases/external-secrets.yaml")" = '[{"name":"cert-manager","namespace":"cert-manager"}]' ]
 }
 
 @test "the stage compute-node-prep applies upstream's migration port reservation on sandbox-compute" {

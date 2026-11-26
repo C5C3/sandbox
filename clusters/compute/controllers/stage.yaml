@@ -1,0 +1,24 @@
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: compute-controllers
+  namespace: flux-system
+spec:
+  interval: 10m
+  retryInterval: 1m
+  # cert-manager is Ready once its startup API check passes.
+  timeout: 10m
+  # The sources and releases land on sandbox-management, where Flux runs; each
+  # HelmRelease reaches sandbox-compute through spec.kubeConfig of its own,
+  # so the stage names none.
+  path: ./compute/controllers
+  prune: true
+  wait: true
+  sourceRef:
+    kind: OCIRepository
+    name: sandbox
+  # kstatus reads no Ready condition of a HelmRelease.
+  healthCheckExprs:
+    - apiVersion: helm.toolkit.fluxcd.io/v2
+      kind: HelmRelease
+      current: status.conditions.exists(c, c.type == 'Ready' && c.status == 'True' && c.observedGeneration == metadata.generation)
