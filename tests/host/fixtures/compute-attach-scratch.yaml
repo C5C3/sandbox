@@ -1,0 +1,60 @@
+# The scratch chassis, metadata agent and pool of tests/host/compute-attach.bats
+# (ADR-0028). Each names sandbox-compute in targetClusterRef, so the
+# CobaltCore operators deliver the three Secrets of a compute cluster there:
+# controlplane-nova-compute-config and
+# controlplane-nova-hypervisor-operator-auth for the pool,
+# controlplane-nova-metadata-agent-secret for the agent. The selectors of the
+# chassis and the pool match no node, so nothing runs. The CA bundle
+# nova-metadata-ca belongs to a later module and does not exist, so the
+# objects never turn Ready; the test waits for the Secrets and deletes the
+# pool, the agent and the chassis in this order.
+apiVersion: ovn.openstack.c5c3.io/v1alpha1
+kind: OVNChassis
+metadata:
+  name: sandbox-verify-chassis
+  namespace: openstack
+spec:
+  targetClusterRef:
+    name: sandbox-compute
+  centralRef:
+    name: controlplane-ovn
+  nodeSelector:
+    sandbox.c5c3.io/verify: none
+---
+apiVersion: neutron.openstack.c5c3.io/v1alpha1
+kind: NeutronMetadataAgent
+metadata:
+  name: sandbox-verify-metadata
+  namespace: openstack
+spec:
+  targetClusterRef:
+    name: sandbox-compute
+  openStackRelease: "2026.1"
+  image:
+    repository: ghcr.io/c5c3/neutron
+    tag: "2026.1"
+  chassisRef:
+    name: sandbox-verify-chassis
+  novaMetadata:
+    host: nova-metadata.127-0-0-1.nip.io
+    port: 443
+    protocol: https
+    caBundleSecretRef:
+      name: nova-metadata-ca
+    sharedSecretRef:
+      name: controlplane-nova-metadata-agent-secret
+---
+apiVersion: nova.openstack.c5c3.io/v1alpha1
+kind: NovaCompute
+metadata:
+  name: sandbox-verify-pool
+  namespace: openstack
+spec:
+  targetClusterRef:
+    name: sandbox-compute
+  novaRef:
+    name: controlplane-nova
+  nodeSelector:
+    sandbox.c5c3.io/verify: none
+  libvirt:
+    virtType: qemu
