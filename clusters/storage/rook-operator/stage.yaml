@@ -1,0 +1,27 @@
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: storage-rook-operator
+  namespace: flux-system
+spec:
+  # rook-crds creates the Namespace rook-ceph and the CRD the operator
+  # watches from its start.
+  dependsOn:
+    - name: storage-rook-crds
+  interval: 10m
+  retryInterval: 1m
+  timeout: 10m
+  # The source and the release land on sandbox-management, where Flux runs;
+  # the HelmRelease reaches sandbox-storage through spec.kubeConfig of its
+  # own, so the stage names none.
+  path: ./storage/rook-operator
+  prune: true
+  wait: true
+  sourceRef:
+    kind: OCIRepository
+    name: sandbox
+  # kstatus reads no Ready condition of a HelmRelease.
+  healthCheckExprs:
+    - apiVersion: helm.toolkit.fluxcd.io/v2
+      kind: HelmRelease
+      current: status.conditions.exists(c, c.type == 'Ready' && c.status == 'True' && c.observedGeneration == metadata.generation)

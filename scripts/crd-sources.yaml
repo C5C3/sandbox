@@ -43,3 +43,7 @@ sources:
   # the module controllers installs.
   - name: k-orc
     crds: https://raw.githubusercontent.com/k-orc/openstack-resource-controller/bce09a051df31e12c415c1afd031e1fb3bb32208/dist/install.yaml
+  # The chart version of storage/rook-operator/release.yaml, whose chart
+  # installs these CRDs.
+  - name: rook
+    crds: https://raw.githubusercontent.com/rook/rook/v1.21.0/deploy/examples/crds.yaml

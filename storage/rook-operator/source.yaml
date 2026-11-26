@@ -1,0 +1,10 @@
+# Upstream's HelmRepository rook-release, under a name of the storage
+# cluster.
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  name: storage-rook-release
+  namespace: flux-system
+spec:
+  interval: 1h
+  url: https://charts.rook.io/release

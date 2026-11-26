@@ -1,0 +1,44 @@
+# Upstream's HelmRelease rook-ceph, released from the hub into rook-ceph of
+# sandbox-storage, with upstream's chart, version, install, upgrade and five
+# values, and one value more: allowLoopDevices. With it the operator sets
+# ROOK_CEPH_ALLOW_LOOP_DEVICES, the prepare Job gets
+# CEPH_VOLUME_ALLOW_LOOP_DEVICES=true, and only then is a loop device a
+# supported device type of Rook. The OSDs of the sandbox sit on the loop
+# devices make up creates (scripts/lib/storage.sh).
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: storage-rook-ceph
+  namespace: flux-system
+spec:
+  interval: 30m
+  releaseName: rook-ceph
+  targetNamespace: rook-ceph
+  storageNamespace: rook-ceph
+  kubeConfig:
+    secretRef:
+      name: kubeconfig-storage
+  chart:
+    spec:
+      chart: rook-ceph
+      version: "v1.21.0"
+      sourceRef:
+        kind: HelmRepository
+        name: storage-rook-release
+  install:
+    crds: CreateReplace
+    remediation:
+      retries: 3
+  upgrade:
+    crds: CreateReplace
+    remediation:
+      retries: 3
+  values:
+    csi:
+      installCsiOperator: false
+      createCsiOperatorResources: false
+    enableDiscoveryDaemon: false
+    monitoring:
+      enabled: false
+    hostpathRequiresPrivileged: false
+    allowLoopDevices: true
