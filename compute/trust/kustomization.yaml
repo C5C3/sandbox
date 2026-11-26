@@ -1,0 +1,17 @@
+# The module trust on sandbox-compute: the sandbox CA in openstack, where the
+# metadata agent and the hypervisor operator (hvo) read it. Upstream's remote
+# compute contract carries the broker's CA alone, and no field names a trust
+# anchor for the Gateway. The stage compute-trust substitutes SANDBOX_CA_B64
+# from the ConfigMap flux-system/sandbox-trust, which make up writes from the
+# Secret cert-manager/sandbox-ca of the management cluster.
+#
+# nova-metadata-ca is the name of step 5 of upstream's guide Connect a
+# Compute Cluster, which caBundleSecretRef of the metadata agent names.
+# sandbox-ca is mounted by the post-renderer of the release of the module
+# hypervisor-operator. nova-compute mounts nothing of the module: its pod has
+# no free mount, and cafile of its client sections names ca.crt of the
+# mirrored contract, the same CA.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - secrets.yaml
