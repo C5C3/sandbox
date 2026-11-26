@@ -7,7 +7,7 @@ setup() {
 	load helpers
 	KC=$(kubeconfig_path compute)
 	export CALLS=$BATS_TEST_TMPDIR/calls KC
-	LABELS='openstack.c5c3.io/chassis=true openstack.c5c3.io/nova-compute-pool=lab nova.openstack.cloud.sap/virt-driver=kvm cobaltcore.cloud.sap/node-hypervisor-lifecycle=skip-tests'
+	LABELS='openstack.c5c3.io/chassis=true openstack.c5c3.io/nova-compute-pool=lab nova.openstack.cloud.sap/virt-driver=kvm cobaltcore.cloud.sap/node-hypervisor-lifecycle=skip-tests topology.kubernetes.io/zone=sandbox'
 }
 
 # attached <modules of compute>: loads a profile with the management and the
@@ -184,7 +184,7 @@ docker exec sandbox-compute-worker busctl --system status org.freedesktop.system
 	[ ! -e "$CALLS" ]
 }
 
-@test "ensure_node_prep gives every worker the bus, the four labels and the empty annotation with the kubeconfig of compute" {
+@test "ensure_node_prep gives every worker the bus, the five labels and the empty annotation with the kubeconfig of compute" {
 	attached node-prep
 	kind_nodes sandbox-compute-control-plane sandbox-compute-worker sandbox-compute-worker2
 	export BUS=up
@@ -226,7 +226,7 @@ kubectl --kubeconfig $KC annotate node sandbox-compute-worker2 --overwrite nova.
 	[ "$(<"$CALLS")" = "kind get nodes --name sandbox-compute" ]
 }
 
-@test "ensure_node_prep removes the four labels and the annotation from a labelled node of a profile without node-prep" {
+@test "ensure_node_prep removes the five labels and the annotation from a labelled node of a profile without node-prep" {
 	attached test
 	export LABELLED=sandbox-compute-worker
 	cluster_answers
@@ -235,7 +235,7 @@ kubectl --kubeconfig $KC annotate node sandbox-compute-worker2 --overwrite nova.
 	[ "${#lines[@]}" -eq 1 ]
 	[[ ${lines[0]} == *": removed the node labels of sandbox-compute" ]]
 	[ "$(<"$CALLS")" = "kubectl --kubeconfig $KC get nodes -l nova.openstack.cloud.sap/virt-driver -o name
-kubectl --kubeconfig $KC label node/sandbox-compute-worker openstack.c5c3.io/chassis- openstack.c5c3.io/nova-compute-pool- nova.openstack.cloud.sap/virt-driver- cobaltcore.cloud.sap/node-hypervisor-lifecycle-
+kubectl --kubeconfig $KC label node/sandbox-compute-worker openstack.c5c3.io/chassis- openstack.c5c3.io/nova-compute-pool- nova.openstack.cloud.sap/virt-driver- cobaltcore.cloud.sap/node-hypervisor-lifecycle- topology.kubernetes.io/zone-
 kubectl --kubeconfig $KC annotate node/sandbox-compute-worker nova.openstack.cloud.sap/aggregates-" ]
 }
 
