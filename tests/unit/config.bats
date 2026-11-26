@@ -19,6 +19,8 @@ setup() {
 	[ "$SANDBOX_SWITCH_BARBICAN" = false ]
 	[ "$SANDBOX_SWITCH_HORIZON" = false ]
 	[ "$SANDBOX_SWITCH_FAKE_COMPUTE" = false ]
+	[ "$SANDBOX_OSD_COUNT" = 1 ]
+	[ "$SANDBOX_OSD_SIZE" = 10Gi ]
 	[ "$SANDBOX_FLUX_OPERATOR_VERSION" = 0.63.1 ]
 	# The pin moves with upstream, so the test reads it.
 	[ "$SANDBOX_UPSTREAM_COMMIT" = "$(yq '.upstream.cobaltcore' "$SANDBOX_ROOT/config.yaml")" ]
@@ -35,12 +37,46 @@ setup() {
 @test "config_load fails for each key that is absent" {
 	for key in network.subnet addresses.gateway registry.image switches.hypervisor-nodes flux.operator upstream.cobaltcore \
 		addresses.pool addresses.dns addresses.rabbitmq switches.resolver-fallback \
-		switches.glance switches.barbican switches.horizon switches.fake-compute; do
+		switches.glance switches.barbican switches.horizon switches.fake-compute switches.osd-count switches.osd-size; do
 		config_with "del(.${key%%.*}[\"${key#*.}\"])"
 		run config_load
 		[ "$status" -eq 1 ]
 		[ "$output" = "error: config: $key is not set" ]
 	done
+}
+
+@test "config_load treats an empty OSD count or size as not set" {
+	for key in osd-count osd-size; do
+		config_with ".switches[\"$key\"] = \"\""
+		run config_load
+		[ "$status" -eq 1 ]
+		[ "$output" = "error: config: switches.$key is not set" ]
+	done
+}
+
+@test "config_load rejects an OSD count below 1 or not an integer" {
+	for osds in 0 -1 1.5 '"three"'; do
+		config_with ".switches[\"osd-count\"] = $osds"
+		run config_load
+		[ "$status" -eq 1 ]
+		[ "$output" = "error: config: switches.osd-count must be an integer of 1 or more, got '${osds//\"/}'" ]
+	done
+}
+
+@test "config_load rejects an OSD size that is not a whole number of Gi" {
+	for size in 10 10G 0Gi 1.5Gi 500Mi; do
+		config_with ".switches[\"osd-size\"] = \"$size\""
+		run config_load
+		[ "$status" -eq 1 ]
+		[ "$output" = "error: config: switches.osd-size must be a whole number of Gi such as 10Gi, got '$size'" ]
+	done
+}
+
+@test "config_load accepts three OSDs of 20Gi" {
+	config_with '.switches["osd-count"] = 3 | .switches["osd-size"] = "20Gi"'
+	config_load
+	[ "$SANDBOX_OSD_COUNT" = 3 ]
+	[ "$SANDBOX_OSD_SIZE" = 20Gi ]
 }
 
 @test "config_load treats a null pool, DNS address, RabbitMQ address or switch as not set" {

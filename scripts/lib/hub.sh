@@ -206,23 +206,31 @@ host_virt_type() {
 # cluster_vars: prints the ConfigMap flux-system/cluster-vars. Its data holds
 # every scalar leaf of config_merged that is neither null nor empty, as a
 # string named by the path joined with _, in upper case, with - replaced by
-# _: network.subnet becomes NETWORK_SUBNET. It also holds one variable no key
-# of the configuration carries, COMPUTE_VIRT_TYPE, the output of
-# host_virt_type, which the checks below treat like a key under the path
-# "the host's /dev/kvm". The label reconcile.fluxcd.io/watch makes Flux
-# reconcile the stages that read it as soon as a value changes.
+# _: network.subnet becomes NETWORK_SUBNET. It also holds two variables no
+# key of the configuration carries, which the checks below treat like keys
+# under the paths given: COMPUTE_VIRT_TYPE, the output of host_virt_type,
+# under "the host's /dev/kvm", and STORAGE_POOL_SIZE, the replicas of the
+# pools of the module ceph-cluster, under "the pool size of
+# switches.osd-count": "2" when switches.osd-count is an integer of 2 or
+# more, "1" otherwise, an absent key included. A stage cannot compute it from
+# the count. The label reconcile.fluxcd.io/watch makes Flux reconcile the
+# stages that read it as soon as a value changes.
 cluster_vars() {
 	local merged entries bad same virt
 	merged=$(config_merged) || exit 1
 	virt=$(host_virt_type)
-	entries=$(yq -o=json '.' - <<<"$merged" | jq -c --arg virt "$virt" --arg kvm "the host's /dev/kvm" '
-		[paths(type != "object" and type != "array") as $p
+	entries=$(yq -o=json '.' - <<<"$merged" | jq -c --arg virt "$virt" --arg kvm "the host's /dev/kvm" \
+		--arg pool "the pool size of switches.osd-count" '
+		(.switches["osd-count"]? | tostring) as $osds
+		| [paths(type != "object" and type != "array") as $p
 		 | getpath($p) as $value
 		 | select($value != null and $value != "")
 		 | {path: ($p | map(tostring) | join(".")),
 		    name: ($p | map(tostring) | join("_") | ascii_upcase | gsub("-"; "_")),
 		    value: ($value | tostring)}]
-		+ [{path: $kvm, name: "COMPUTE_VIRT_TYPE", value: $virt}]')
+		+ [{path: $kvm, name: "COMPUTE_VIRT_TYPE", value: $virt},
+		   {path: $pool, name: "STORAGE_POOL_SIZE",
+		    value: (if ($osds | test("^[1-9][0-9]*$")) and ($osds | tonumber) >= 2 then "2" else "1" end)}]')
 	bad=$(jq -r 'map(select(.name | test("^[A-Z_][A-Z0-9_]*$") | not))[0] // empty | "\(.path)\t\(.name)"' <<<"$entries")
 	[ -z "$bad" ] ||
 		die "config: ${bad%%$'\t'*} cannot be a Flux variable, ${bad#*$'\t'} does not match ^[A-Z_][A-Z0-9_]*\$"

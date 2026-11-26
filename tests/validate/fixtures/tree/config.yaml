@@ -17,6 +17,8 @@ switches:
   barbican: false
   horizon: false
   fake-compute: false
+  osd-count: 1
+  osd-size: 10Gi
 upstream:
   cobaltcore: 15a0323e243c7f53b91200f193a58b5b41d41f6a
 flux:
