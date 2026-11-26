@@ -29,6 +29,9 @@ Each file in this directory records one decision with its context, the alternati
 | [ADR-0023](0023-select-the-services-of-the-controlplane-as-modules-without-a-stage.md) | Select the services of the ControlPlane as modules without a stage | Proposed |
 | [ADR-0024](0024-run-cinder-on-upstreams-nfs-export-in-the-profile-controlplane.md) | Run Cinder on upstream's NFS export in the profile controlplane | Proposed |
 | [ADR-0025](0025-check-the-orders-with-scratch-orders-and-a-scheduled-rotation.md) | Check the orders with scratch orders and a scheduled rotation | Proposed |
+| [ADR-0026](0026-release-a-vendored-chart-through-an-artifactgenerator-on-the-hub.md) | Release a vendored chart through an ArtifactGenerator on the hub | Proposed |
+| [ADR-0027](0027-register-a-compute-cluster-through-the-command-layer.md) | Register a compute cluster through the command layer | Proposed |
+| [ADR-0028](0028-prove-the-delivery-to-a-compute-cluster-with-a-scratch-pool.md) | Prove the delivery to a compute cluster with a scratch pool | Proposed |
 
 ## Points to prove first
 
