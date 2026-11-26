@@ -1,0 +1,41 @@
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: management-compute-pool
+  namespace: flux-system
+spec:
+  # controlplane runs the OVNCentral and the Nova the three objects name;
+  # trust puts nova-metadata-ca on sandbox-compute, which the metadata agent
+  # mounts. No dependency on the stage of hypervisor-operator, which upstream
+  # applies at the same time: a NovaCompute is Ready only once nova-compute
+  # runs, which needs libvirtd, which waits for the TLS files of the
+  # Hypervisor hvo creates.
+  dependsOn:
+    - name: management-controlplane
+    - name: compute-trust
+  interval: 10m
+  retryInterval: 1m
+  timeout: 20m
+  path: ./controlplane/compute-pool
+  prune: true
+  wait: true
+  sourceRef:
+    kind: OCIRepository
+    name: sandbox
+  postBuild:
+    substitute:
+      COMPUTE_CLUSTER: sandbox-compute
+    substituteFrom:
+      - kind: ConfigMap
+        name: cluster-vars
+  # kstatus reads no Ready condition of the three kinds.
+  healthCheckExprs:
+    - apiVersion: ovn.openstack.c5c3.io/v1alpha1
+      kind: OVNChassis
+      current: status.conditions.exists(c, c.type == 'Ready' && c.status == 'True' && c.observedGeneration == metadata.generation)
+    - apiVersion: neutron.openstack.c5c3.io/v1alpha1
+      kind: NeutronMetadataAgent
+      current: status.conditions.exists(c, c.type == 'Ready' && c.status == 'True' && c.observedGeneration == metadata.generation)
+    - apiVersion: nova.openstack.c5c3.io/v1alpha1
+      kind: NovaCompute
+      current: status.conditions.exists(c, c.type == 'Ready' && c.status == 'True' && c.observedGeneration == metadata.generation)

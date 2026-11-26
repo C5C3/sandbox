@@ -586,6 +586,24 @@ EOF
 	[ "$output" = 4 ]
 }
 
+@test "the stage management-compute-pool applies the pool after controlplane and trust, substitutes cluster-vars and COMPUTE_CLUSTER, and waits for the three objects; neither it nor the stage of hvo depends on the other" {
+	local stage=$SANDBOX_ROOT/clusters/management/compute-pool/stage.yaml
+	run stage_contract "$SANDBOX_ROOT" management/compute-pool
+	echo "point $output"
+	[ "$status" -eq 0 ]
+	[ "$(yq -o=json -I=0 '[.spec.dependsOn, .spec.path, .spec.interval, .spec.retryInterval, .spec.timeout]' "$stage")" = \
+		'[[{"name":"management-controlplane"},{"name":"compute-trust"}],"./controlplane/compute-pool","10m","1m","20m"]' ]
+	[ "$(yq '[.spec.dependsOn[].name] | contains(["compute-hypervisor-operator"])' "$stage")" = false ]
+	[ "$(yq '[.spec.dependsOn[].name] | contains(["management-compute-pool"])' "$SANDBOX_ROOT/clusters/compute/hypervisor-operator/stage.yaml")" = false ]
+	[ "$(yq -o=json -I=0 '.spec.postBuild' "$stage")" = \
+		'{"substitute":{"COMPUTE_CLUSTER":"sandbox-compute"},"substituteFrom":[{"kind":"ConfigMap","name":"cluster-vars"}]}' ]
+	# The three objects are waited for as the ControlPlane is.
+	[ "$(yq -o=json -I=0 '[.spec.healthCheckExprs[] | [.apiVersion, .kind]]' "$stage")" = \
+		'[["ovn.openstack.c5c3.io/v1alpha1","OVNChassis"],["neutron.openstack.c5c3.io/v1alpha1","NeutronMetadataAgent"],["nova.openstack.c5c3.io/v1alpha1","NovaCompute"]]' ]
+	[ "$(yq -o=json -I=0 '[.spec.healthCheckExprs[].current] | unique' "$stage")" = \
+		"$(yq -o=json -I=0 '[.spec.healthCheckExprs[].current]' "$SANDBOX_ROOT/clusters/management/controlplane/stage.yaml")" ]
+}
+
 @test "the module trust puts the sandbox CA into the Secrets nova-metadata-ca and sandbox-ca in openstack" {
 	[ "$(yq -o=json -I=0 '.resources' "$SANDBOX_ROOT/compute/trust/kustomization.yaml")" = '["secrets.yaml"]' ]
 	[ "$(yq ea -o=json -I=0 '[[.apiVersion, .kind, .metadata.namespace, .metadata.name, .data]]' "$SANDBOX_ROOT/compute/trust/secrets.yaml")" = \
@@ -640,6 +658,27 @@ EOF
 	# Every HelmRelease of the module reads its values from that copy.
 	[ "$(yq ea -o=json -I=0 '[select(.kind == "HelmRelease") | .spec.valuesFrom[].name] | unique' "$SANDBOX_ROOT/compute/hypervisor-operator/release.yaml")" = \
 		'["controlplane-nova-hypervisor-operator-auth"]' ]
+}
+
+@test "the module compute-pool applies upstream's chassis, agent and pool on the cluster COMPUTE_CLUSTER, with the agent at 768Mi over https and the pool on the virt type of the host" {
+	local file=$SANDBOX_ROOT/controlplane/compute-pool/pool.yaml upstream=$SANDBOX_ROOT/vendor/cobaltcore/deploy/overlays/metal-stack/hypervisor/compute.yaml
+	[ "$(yq -o=json -I=0 '.resources' "$SANDBOX_ROOT/controlplane/compute-pool/kustomization.yaml")" = '["pool.yaml"]' ]
+	[ "$(yq ea -o=json -I=0 '[[.apiVersion, .kind, .metadata.namespace, .metadata.name, .spec.targetClusterRef]]' "$file")" = \
+		'[["ovn.openstack.c5c3.io/v1alpha1","OVNChassis","openstack","lab-chassis",{"name":"${COMPUTE_CLUSTER}"}],["neutron.openstack.c5c3.io/v1alpha1","NeutronMetadataAgent","openstack","lab-metadata-agent",{"name":"${COMPUTE_CLUSTER}"}],["nova.openstack.c5c3.io/v1alpha1","NovaCompute","openstack","lab",{"name":"${COMPUTE_CLUSTER}"}]]' ]
+	# The chassis is upstream's; the agent and the pool keep upstream's
+	# release, image, chassis, Nova and nodes.
+	[ "$(yq ea -o=json -I=0 'select(.kind == "OVNChassis") | .spec | del(.targetClusterRef)' "$file")" = \
+		"$(yq ea -o=json -I=0 'select(.kind == "OVNChassis") | .spec' "$upstream")" ]
+	[ "$(yq ea -o=json -I=0 'select(.kind == "NeutronMetadataAgent") | .spec | [.openStackRelease, .image, .chassisRef]' "$file")" = \
+		"$(yq ea -o=json -I=0 'select(.kind == "NeutronMetadataAgent") | .spec | [.openStackRelease, .image, .chassisRef]' "$upstream")" ]
+	[ "$(yq ea -o=json -I=0 'select(.kind == "NeutronMetadataAgent") | .spec | [.novaMetadata, .resources]' "$file")" = \
+		'[{"host":"nova-metadata.${ADDRESSES_GATEWAY//./-}.nip.io","port":443,"protocol":"https","caBundleSecretRef":{"name":"nova-metadata-ca"},"sharedSecretRef":{"name":"controlplane-nova-metadata-agent-secret"}},{"requests":{"memory":"768Mi"},"limits":{"memory":"768Mi"}}]' ]
+	[ "$(yq ea -o=json -I=0 'select(.kind == "NovaCompute") | .spec | [.novaRef, .nodeSelector]' "$file")" = \
+		"$(yq ea -o=json -I=0 'select(.kind == "NovaCompute") | .spec | [.novaRef, .nodeSelector]' "$upstream")" ]
+	# No cpuMode, so Nova's default for the virt type applies.
+	[ "$(yq ea -o=json -I=0 'select(.kind == "NovaCompute") | .spec.libvirt' "$file")" = '{"virtType":"${COMPUTE_VIRT_TYPE}","imagesType":"qcow2"}' ]
+	[ "$(yq ea -o=json -I=0 'select(.kind == "NovaCompute") | .spec.extraConfig' "$file")" = \
+		"$(jq -n -c '["keystone_authtoken", "service_user", "placement", "neutron", "glance"] | map({key: ., value: {cafile: "/etc/nova/compute-config/ca.crt"}}) | from_entries')" ]
 }
 
 @test "the c5c3-operator depends on no release that controllers suspends" {
