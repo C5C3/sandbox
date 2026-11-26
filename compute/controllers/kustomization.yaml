@@ -1,0 +1,15 @@
+# The module controllers on sandbox-compute: cert-manager and External
+# Secrets, released from the hub. The compute cluster runs no Flux, so the
+# sources and the releases live in flux-system of sandbox-management, and
+# each release installs its chart on sandbox-compute through the Secret
+# kubeconfig-compute. They are copies of upstream's files under names of
+# their own: point 4 of the stage contract reads the HelmRelease files of the
+# stage's path, and the sources cert-manager and external-secrets in
+# flux-system belong to the stage management-controllers.
+# tests/unit/modules.bats compares each copy with upstream's file, so a move
+# of the pin that changes one fails make test.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - sources.yaml
+  - releases.yaml
