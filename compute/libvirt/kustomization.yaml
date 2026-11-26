@@ -1,0 +1,25 @@
+# The module libvirt on sandbox-compute: upstream's libvirt migration CA and
+# its Issuer in hypervisor-system, bootstrapped from the ClusterIssuer
+# selfsigned-cluster-issuer, which the compute cluster has nowhere else, and
+# the ConfigMap libvirt-lab and the DaemonSet libvirt in openstack, on the
+# nodes labelled openstack.c5c3.io/nova-compute-pool=lab. The namespace
+# openstack comes from the module access, hypervisor-system from node-prep.
+#
+# The merge replaces the one key host-prepare.sh of libvirt-lab and keeps its
+# name and the other four keys. Upstream's script fails the pod on a node
+# without /dev/kvm; this one logs it, and QEMU runs guests under TCG there.
+# Nothing else of upstream is patched: the host scope, the host units, the
+# container ceph-secret and the image pin stay.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../vendor/cobaltcore/deploy/bases/tls/cluster-issuer.yaml
+  - ../../vendor/cobaltcore/deploy/overlays/metal-stack/hypervisor/libvirt-ca.yaml
+  - ../../vendor/cobaltcore/deploy/overlays/metal-stack/hypervisor/libvirt-configmap.yaml
+  - ../../vendor/cobaltcore/deploy/overlays/metal-stack/hypervisor/libvirt-daemonset.yaml
+configMapGenerator:
+  - name: libvirt-lab
+    namespace: openstack
+    behavior: merge
+    files:
+      - host-prepare.sh
