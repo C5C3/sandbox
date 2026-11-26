@@ -330,7 +330,16 @@ that deploys them.
   `HelmRelease` objects on the management cluster with the same field. Two
   clusters run without Flux controllers, which saves memory, and the hvo
   release reads its values straight from the Secret the ControlPlane writes on
-  the management cluster.
+  the management cluster. The `FluxInstance` runs four controllers:
+  source-controller, kustomize-controller, helm-controller and
+  source-watcher. source-watcher copies a chart that upstream ships as a
+  directory, such as `target-cluster-access`, out of the artifact of the
+  working tree into an `ExternalArtifact`, from which a `HelmRelease` installs
+  it; with source-watcher listed, the flux-operator turns on the feature gate
+  `ExternalArtifact` of helm-controller and kustomize-controller
+  ([ADR-0026](docs/adr/0026-release-a-vendored-chart-through-an-artifactgenerator-on-the-hub.md)).
+  The `FluxInstance` is the same for every profile, so a running sandbox
+  gains source-watcher at its next `make up`.
 - **Source from the working tree.** A small registry container on the Docker
   network holds the repository as an OCI artifact. `make push` packages the
   working tree and pushes it, and Flux follows the tag. Changes are tested
@@ -494,6 +503,69 @@ changed with them. Two states of the module need to be known:
   `spec.infrastructure.messaging cannot be removed once declared`, and
   `make down` is the way out.
 
+### The registration of a compute cluster
+
+The CobaltCore operators of the management cluster reach a compute cluster
+through its registration: the Secret `c5c3-clusters/<name>` on
+`sandbox-management` with the label
+`sigs.k8s.io/multicluster-runtime-kubeconfig: "true"`, the key `kubeconfig`,
+with which they reach the cluster, and the key `namespaces`, the
+comma-separated namespaces they may use there. Its name is the cluster name
+that every `targetClusterRef` names. The kubeconfig is that of the
+ServiceAccount `target-cluster-access` of the access chart, which the
+cluster's owner installs with the same namespaces
+([ADR-0027](docs/adr/0027-register-a-compute-cluster-through-the-command-layer.md)).
+
+`make up` registers the kind compute cluster as `sandbox-compute` when the
+profile lists the module `access` on it. After it has applied the roots it
+logs `registering sandbox-compute in c5c3-clusters for the namespaces
+openstack`, waits until the stage `compute-access` has installed the chart
+and the Secret `c5c3-access/target-cluster-access-token` holds a token, and
+writes the registration with the server `https://sandbox-compute-control-plane:6443`
+that `kind get kubeconfig --internal` gives, the token and the CA of that
+Secret, and the label `sandbox.c5c3.io/cluster: compute`. Only then does it
+wait for the stages. A second `make up` writes the same Secret and changes
+nothing. A profile that does not list `access` removes the registrations
+with that label, and when there was one, `make up` logs `removed the
+registration of sandbox-compute`.
+
+`scripts/register.sh <name> <kubeconfig-file> [<namespaces>]` registers a
+cluster the sandbox did not create, whose owner installed the access chart
+and hands over the kubeconfig of its account; `-` reads the kubeconfig from
+stdin, and the namespaces are `openstack` unless given. The Secret carries
+no `sandbox.c5c3.io/cluster`, so `make up` leaves it alone. The script
+refuses a name that is no DNS-1123 subdomain, a namespace that is no DNS-1123
+label, an empty kubeconfig, one that does not parse or names no server, and
+one whose user runs a credential plugin (`exec` or `auth-provider`), which
+the operators refuse without a message on any object. The kubeconfig reaches
+no file and no argument list on either path.
+
+The registrations, the role of each, and the operators engaging a cluster:
+
+```bash
+kubectl --kubeconfig .sandbox/kubeconfig/management.yaml -n c5c3-clusters get secrets \
+  -l sigs.k8s.io/multicluster-runtime-kubeconfig=true -L sandbox.c5c3.io/cluster
+kubectl --kubeconfig .sandbox/kubeconfig/management.yaml -n keystone-system logs \
+  -l app.kubernetes.io/name=keystone-operator --tail=-1 | grep 'building the cluster from its registration Secret'
+```
+
+A registration of `scripts/register.sh` is removed with
+`kubectl --kubeconfig .sandbox/kubeconfig/management.yaml -n c5c3-clusters delete secret <name>`.
+The registration of `sandbox-compute` is removed by taking `access` off the
+profile and running `make up`; one deleted by hand comes back at the next
+`make up`. Every `OVNChassis`, `NeutronMetadataAgent` and `NovaCompute` that
+names a cluster goes before its registration.
+
+- **The token Secret holds no token.** `make up` stops with
+  `register: the Secret c5c3-access/target-cluster-access-token on
+  sandbox-compute holds no token after <n> s; make status shows the stage
+  compute-access`, followed by `; kubectl: <line>` when the last read of the
+  Secret failed. `make status` shows the message of the stage
+  `compute-access`, and the conditions of the `ArtifactGenerator`
+  `target-cluster-access` and the `HelmRelease` `compute-access` in
+  `flux-system` say which step of the release failed. Once the cause is
+  fixed, `make up` continues where it stopped.
+
 ## Modules
 
 A module of a cluster is the directory `clusters/<role>/<module>/` with two
@@ -504,7 +576,10 @@ directory of the tree that the stage names in `spec.path`, such as
 `infrastructure/test`. A cluster enables a module when the profile lists it,
 which puts the module into `spec.components` of the root `cluster-<role>`.
 The stages of the storage and compute clusters run on the management cluster
-and reach their cluster through the Secret `kubeconfig-<role>`. The module
+and reach their cluster through the Secret `kubeconfig-<role>`. A stage of
+such a cluster that installs a Helm chart names no kubeconfig: it applies a
+`HelmRelease` to the management cluster that names the Secret itself, as
+the stage `compute-access` does. The module
 `test` writes the ConfigMap `sandbox-test/hub` on each cluster and is the
 check of the hub.
 
@@ -557,10 +632,49 @@ The table is the planned set; M marks the milestone that builds it.
 | `openbao-remote-auth` | Auth mounts, roles and policies for the storage and compute clusters, OpenBao on a load-balancer address | `openbao` | 3 |
 | `ceph-keys` | ExternalSecrets `ceph-client-cinder` and `ceph-client-cinder-backup` in `openstack` | `openbao-remote-auth` | 3 |
 | `cinder-rbd` | The `cinder` block of the ControlPlane with the backend `ceph1`. The backup target `cephbk` is a switch | `ceph-keys`, `controlplane` | 3 |
-| `remote-compute` | `remoteCompute`, `hypervisorOperator`, `metadataGateway`, `consoleProxy` on the ControlPlane, `externallyReachable` on the OVN central | `controlplane`, `messaging-tls` | 4 |
-| `hypervisor-fixtures` | The K-ORC fixtures hvo needs: domain `cc3test`, project `test`, flavor `1`, image `cirros-kvm` | `remote-compute` | 4 |
+| `remote-compute` | No stage. `remoteCompute` with the transport URL Secret of `messaging-tls`, `hypervisorOperator`, and `metadataGateway` and `consoleProxy` at `nova-metadata.<suffix>` and `nova-console.<suffix>` on the ControlPlane; `externallyReachable` on both databases of the OVN central, through a Flux patch of the stage of `controlplane` | `controlplane`; needs `messaging-tls`, `glance`, `placement`, `neutron` and `nova` beside it | 4 |
+| `hypervisor-fixtures` | The K-ORC fixtures hvo looks up, from upstream's lab overlay: domain `cc3test` with project `test`, the imports of the domain `Default`, the user `hypervisor-operator` and the role `admin`, the assignment of `admin` on `test`, flavor `1`, image `cirros-kvm` | `controlplane`; needs `remote-compute`, `glance` and `nova` beside it | 4 |
 | `compute-pool` | `OVNChassis`, `NeutronMetadataAgent` with reduced memory, `NovaCompute`, each with `targetClusterRef` | `remote-compute`, registration of the compute cluster | 4 |
 | `observability`, `ui` | Prometheus and Grafana; Headlamp and Flux Web. Off by default | `controllers` | later |
+
+Three states of `remote-compute` and `hypervisor-fixtures` need to be known:
+
+- **`remote-compute` on the managed bus.** Upstream admits `remoteCompute`
+  only on a brownfield bus with TLS, so a profile that lists
+  `remote-compute` without `messaging-tls` leaves the stage
+  `management-controlplane` with `requires a brownfield bus with tls`. When
+  no `ControlPlane` exists yet, adding `messaging-tls` to the profile and
+  running `make up` repairs it. Under a `ControlPlane` that already runs on
+  the managed bus, `messaging-tls` cannot be added ([Profiles](#profiles)),
+  and `make down` is the way out.
+- **`hypervisor-fixtures` without `remote-compute`.** Without
+  `hypervisorOperator` no Keystone user `hypervisor-operator` exists, the
+  User `hvo-user` never turns `Available`, and the stage
+  `management-hypervisor-fixtures` reports it after its timeout of 15
+  minutes. Adding `remote-compute`, with what it needs beside it, and
+  running `make up` repairs it.
+- **`hypervisor-fixtures` taken off a running sandbox.** The stage goes with
+  the module and deletes the fixtures, but Keystone refuses to delete an
+  enabled domain and K-ORC does not disable one, so the Domain `hvo-cc3test`
+  stays in deletion. Its condition `Progressing` reads `TransientError` with
+  Keystone's `Cannot delete a domain that is enabled, please disable it
+  first`, while `make up` reports its stages Ready. Disabling the domain in
+  Keystone releases it, and an annotation makes K-ORC retry the delete at
+  once instead of after its backoff:
+
+  ```bash
+  eval "$(make --no-print-directory env)" && openstack domain set --disable cc3test
+  kubectl --kubeconfig .sandbox/kubeconfig/management.yaml -n openstack annotate \
+    domains.openstack.k-orc.cloud hvo-cc3test sandbox.c5c3.io/retry="$(date +%s)"
+  ```
+
+  Upstream's overlay
+  (`vendor/cobaltcore/deploy/overlays/metal-stack/hypervisor-fixtures/kustomization.yaml`)
+  disables the domain on the Domain with `kubectl patch` before it deletes
+  the fixtures. That does not hold in the sandbox: while the module is
+  listed, the next reconcile of its stage takes the field back and K-ORC
+  enables the domain again, and once the Domain is in deletion K-ORC applies
+  no change to it.
 
 ### On sandbox-storage
 
@@ -578,7 +692,7 @@ The table is the planned set; M marks the milestone that builds it.
 | Module | Content | Depends on | M |
 | --- | --- | --- | --- |
 | `resolver` | The CoreDNS block that answers nip.io names. Added by the switch `resolver-fallback` | | 1 |
-| `access` | The `target-cluster-access` chart with `namespaces={openstack}`, `privilegedNamespaces={openstack}`, `createNamespaces=true` | | 4 |
+| `access` | The `target-cluster-access` chart with `namespaces={openstack}`, `privilegedNamespaces={openstack}`, `createNamespaces=true`, released from the hub: the stage `compute-access` applies an `ArtifactGenerator` and the `HelmRelease` `compute-access` to `flux-system` of the management cluster, which installs the release `target-cluster-access` in `c5c3-access` through `kubeconfig-compute`. `make up` then registers the cluster, see [The registration of a compute cluster](#the-registration-of-a-compute-cluster) | | 4 |
 | `controllers` | cert-manager, External Secrets | | 4 |
 | `node-prep` | Node labels and the `aggregates` annotation, the migration port reservation, the namespace `hypervisor-system` | | 4 |
 | `trust` | The sandbox CA where the metadata agent, `nova-compute` and hvo read it | `access` | 4 |
@@ -780,7 +894,8 @@ infrastructure/      Stages every cluster may use: crds, controllers,
 platform/            The c5c3-operator and the sizing profile
 controlplane/        OVNCentral, ControlPlane base and one component per service
 storage/             rook-operator, ceph-cluster, block-devices, key-push
-compute/             access, node-prep, libvirt, hypervisor-operator, ...
+compute/             Modules of sandbox-compute released from the hub: access,
+                     node-prep, libvirt, hypervisor-operator, ...
 orders/              Owners' namespaces and example orders
 profiles/            One file per profile: clusters, modules, switches
 kind/                kind cluster configurations
@@ -810,7 +925,7 @@ make vendor                 # check out the paths of upstream at the pin into ve
 make validate               # render every root and stage against vendor/cobaltcore, check schemas and patches
 make test                   # the unit tests of the command layer
 make test-validate          # the tests of make validate on a fixture tree, with flux and kubeconform
-make test-host              # the lifecycle, the profiles gateway, platform, identity and controlplane, and controlplane on the TLS bus against a real Docker, each creating and removing a sandbox
+make test-host              # the lifecycle, the profiles gateway, platform, identity and controlplane, controlplane on the TLS bus, and the compute cluster attached to the control plane against a real Docker, each creating and removing a sandbox
 make down                   # delete clusters, registry, network, loop devices
 ```
 
