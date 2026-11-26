@@ -1,0 +1,11 @@
+# The module compute-pool: upstream's chassis, metadata agent and pool of
+# vendor/cobaltcore/deploy/overlays/metal-stack/hypervisor/compute.yaml on
+# sandbox-compute, as steps 4 to 6 of upstream's guide Connect a Compute
+# Cluster place them, under the names of the quick start so its commands run
+# unchanged. Each object names the registration sandbox-compute, which the
+# stage substitutes, and the operators of the management cluster create
+# their DaemonSets there.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - pool.yaml

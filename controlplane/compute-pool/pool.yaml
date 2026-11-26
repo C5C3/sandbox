@@ -1,0 +1,81 @@
+# The chassis registers with the Southbound database of controlplane-ovn
+# through the node ports the module remote-compute publishes, on every node
+# labelled chassis.
+apiVersion: ovn.openstack.c5c3.io/v1alpha1
+kind: OVNChassis
+metadata:
+  name: lab-chassis
+  namespace: openstack
+spec:
+  centralRef:
+    name: controlplane-ovn
+  nodeSelector:
+    openstack.c5c3.io/chassis: "true"
+  targetClusterRef:
+    name: ${COMPUTE_CLUSTER}
+---
+# The agent proxies the link-local metadata address of the servers to the
+# metadata API that remote-compute publishes on the Gateway, over https with the sandbox CA of the module
+# trust, and signs with the copy of the shared secret the ControlPlane
+# writes beside it. 768Mi is the floor of upstream's formula, where the
+# operator's default of 2Gi covers 32 networks on a node.
+apiVersion: neutron.openstack.c5c3.io/v1alpha1
+kind: NeutronMetadataAgent
+metadata:
+  name: lab-metadata-agent
+  namespace: openstack
+spec:
+  openStackRelease: "2026.1"
+  image:
+    repository: ghcr.io/c5c3/neutron
+    tag: "2026.1"
+  chassisRef:
+    name: lab-chassis
+  targetClusterRef:
+    name: ${COMPUTE_CLUSTER}
+  novaMetadata:
+    host: nova-metadata.${ADDRESSES_GATEWAY//./-}.nip.io
+    port: 443
+    protocol: https
+    caBundleSecretRef:
+      name: nova-metadata-ca
+    sharedSecretRef:
+      name: controlplane-nova-metadata-agent-secret
+  resources:
+    requests:
+      memory: 768Mi
+    limits:
+      memory: 768Mi
+---
+# virtType is that of the host, kvm with /dev/kvm and qemu without, and no
+# cpuMode, so Nova's default for the virt type applies. The contract names
+# the public catalog rows and Keystone on the Gateway, whose certificate the
+# sandbox CA signs, and carries that CA as the broker's ca.crt, mounted at
+# /etc/nova/compute-config. cafile, no owned key of the pool, points the
+# client sections of the services this pool reaches at it.
+apiVersion: nova.openstack.c5c3.io/v1alpha1
+kind: NovaCompute
+metadata:
+  name: lab
+  namespace: openstack
+spec:
+  novaRef:
+    name: controlplane-nova
+  nodeSelector:
+    openstack.c5c3.io/nova-compute-pool: lab
+  targetClusterRef:
+    name: ${COMPUTE_CLUSTER}
+  libvirt:
+    virtType: ${COMPUTE_VIRT_TYPE}
+    imagesType: qcow2
+  extraConfig:
+    keystone_authtoken:
+      cafile: /etc/nova/compute-config/ca.crt
+    service_user:
+      cafile: /etc/nova/compute-config/ca.crt
+    placement:
+      cafile: /etc/nova/compute-config/ca.crt
+    neutron:
+      cafile: /etc/nova/compute-config/ca.crt
+    glance:
+      cafile: /etc/nova/compute-config/ca.crt
