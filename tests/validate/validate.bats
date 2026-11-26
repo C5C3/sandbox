@@ -112,6 +112,26 @@ failed() {
 	[[ $output == *"validate: error: render: profile all: management/base depends on the stage management-gone, which the profile does not list"* ]]
 }
 
+@test "the ConfigMap sandbox-trust in substituteFrom renders with the placeholder of the sandbox CA, and another ConfigMap fails" {
+	yq -i '.spec.postBuild.substituteFrom += [{"kind": "ConfigMap", "name": "sandbox-trust"}]' "$STAGE"
+	echo '  ca: ${SANDBOX_CA_B64}' >>"$TREE/infrastructure/base/settings.yaml"
+	validate
+	[ "$status" -eq 0 ]
+
+	# The placeholder is a string of base64, which the integer level of the
+	# Widget refuses; an empty value would be null.
+	sed -i 's/level: 2/level: ${SANDBOX_CA_B64}/' "$BASE/widget.yaml"
+	validate
+	failed kubeconform
+	[[ $output == *"Widget demo is invalid"*"/spec/nested/inner/level': got string, want integer"* ]]
+
+	git -C "$TREE/vendor/cobaltcore" checkout --quiet -- .
+	yq -i '.spec.postBuild.substituteFrom[1].name = "other-vars"' "$STAGE"
+	validate
+	failed render
+	[[ $output == *"validate: error: render: stage management-base: substituteFrom ConfigMap other-vars cannot be resolved offline"* ]]
+}
+
 @test "a Secret in substituteFrom fails unless it is optional" {
 	yq -i '.spec.postBuild.substituteFrom += [{"kind": "Secret", "name": "extra"}]' "$STAGE"
 	validate
