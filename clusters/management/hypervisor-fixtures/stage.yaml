@@ -1,0 +1,43 @@
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: management-hypervisor-fixtures
+  namespace: flux-system
+spec:
+  dependsOn:
+    - name: management-controlplane
+  interval: 10m
+  retryInterval: 1m
+  # K-ORC downloads the image cirros-kvm.
+  timeout: 15m
+  path: ./controlplane/hypervisor-fixtures
+  prune: true
+  wait: true
+  sourceRef:
+    kind: OCIRepository
+    name: sandbox
+  # kstatus reads neither Available nor Progressing, the two conditions
+  # K-ORC sets. The user hvo-user turns Available only once the module
+  # remote-compute has made the ControlPlane provision hypervisor-operator.
+  healthCheckExprs:
+    - apiVersion: openstack.k-orc.cloud/v1alpha1
+      kind: Domain
+      current: status.conditions.exists(c, c.type == 'Available' && c.status == 'True')
+    - apiVersion: openstack.k-orc.cloud/v1alpha1
+      kind: Project
+      current: status.conditions.exists(c, c.type == 'Available' && c.status == 'True')
+    - apiVersion: openstack.k-orc.cloud/v1alpha1
+      kind: User
+      current: status.conditions.exists(c, c.type == 'Available' && c.status == 'True')
+    - apiVersion: openstack.k-orc.cloud/v1alpha1
+      kind: Role
+      current: status.conditions.exists(c, c.type == 'Available' && c.status == 'True')
+    - apiVersion: openstack.k-orc.cloud/v1alpha1
+      kind: RoleAssignment
+      current: status.conditions.exists(c, c.type == 'Available' && c.status == 'True')
+    - apiVersion: openstack.k-orc.cloud/v1alpha1
+      kind: Flavor
+      current: status.conditions.exists(c, c.type == 'Available' && c.status == 'True')
+    - apiVersion: openstack.k-orc.cloud/v1alpha1
+      kind: Image
+      current: status.conditions.exists(c, c.type == 'Available' && c.status == 'True')
