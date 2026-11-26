@@ -33,8 +33,27 @@
 #                                 openstack/controlplane-fake-compute exists
 #   horizon    horizon-login      admin logs in to the dashboard with curl
 #
-# After them, when spec.namespaceAssignments assigns a namespace on the
-# management cluster, come the five checks of scripts/lib/orders.sh:
+# After them, when a NovaCompute in openstack names the registration
+# sandbox-compute, come the eight checks of scripts/lib/compute.sh:
+#
+#   compute-pool            the pools are Ready, their nodes Active, up and
+#                           enabled
+#   compute-chassis         the OVNChassis is Ready, an alive ovn-controller
+#                           agent runs on each node
+#   compute-metadata-agent  the same for the metadata agent
+#   compute-hypervisor      the Hypervisor of each node on sandbox-compute is
+#                           onboarded within 600 s, the node in its aggregate
+#   compute-network         sandbox-verify-compute-net has the MTU 1442
+#   compute-server          sandbox-verify-compute-server boots from
+#                           cirros-kvm to ACTIVE on the first node within
+#                           600 s
+#   compute-metadata        cirros reads its instance id from the metadata
+#                           service within 300 s
+#   compute-console         the noVNC console relays the RFB greeting of the
+#                           server
+#
+# Then, when spec.namespaceAssignments assigns a namespace on the management
+# cluster, come the five checks of scripts/lib/orders.sh:
 #
 #   orders-ready      the orders of the assigned namespaces are Ready
 #   orders-secrets    each Ready order that delivers a Secret has it
@@ -47,10 +66,11 @@
 # A key outside the table adds no check. It prints one line per check,
 # ok <id>: <detail> or FAIL <id>: <first line of the error>, then
 # verify: <passed> of <total> checks passed, and exits 1 when a check failed.
-# Without a ControlPlane it runs no check and exits 0. It reads the hub only,
-# no configuration and no profile, and no call passes --insecure or -k: the
-# CLI trusts the CA of the sandbox through OS_CACERT, and curl through
-# --cacert. A check deletes what an earlier run left of its sandbox-verify
+# Without a ControlPlane it runs no check and exits 0. It reads the hub, and
+# compute-hypervisor also sandbox-compute, no configuration and no profile.
+# No call passes --insecure or -k: the CLI trusts the CA of the sandbox
+# through OS_CACERT, curl through --cacert, and openssl through -CAfile. A
+# check deletes what an earlier run left of its sandbox-verify
 # names before it creates, and deletes what it created when it ends, also
 # after a failure; a failed delete is not reported. The temporary files of
 # its checks live in one directory, which the script removes when it exits.
@@ -62,6 +82,8 @@ set -euo pipefail
 . "$SANDBOX_ROOT/scripts/lib/hub.sh"
 # shellcheck source=lib/access.sh
 . "$SANDBOX_ROOT/scripts/lib/access.sh"
+# shellcheck source=lib/compute.sh
+. "$SANDBOX_ROOT/scripts/lib/compute.sh"
 # shellcheck source=lib/orders.sh
 . "$SANDBOX_ROOT/scripts/lib/orders.sh"
 
@@ -571,6 +593,7 @@ for service in keystone glance placement barbican neutron cinder nova horizon; d
 		"check_$service"
 	fi
 done
+check_compute
 check_orders
 
 echo "verify: $passed of $total checks passed"
