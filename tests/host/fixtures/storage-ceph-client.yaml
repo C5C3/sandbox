@@ -1,0 +1,16 @@
+# The RBD client of tests/host/storage-ceph.bats on sandbox-management. The
+# test replaces @IMAGE@ with spec.cephVersion.image of upstream's
+# cluster.yaml, so the client follows the pin of the daemons, and copies the
+# key of a client into the pod over stdin.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: sandbox-verify-ceph
+  namespace: default
+spec:
+  restartPolicy: Never
+  automountServiceAccountToken: false
+  containers:
+    - name: ceph
+      image: "@IMAGE@"
+      command: [sleep, infinity]
