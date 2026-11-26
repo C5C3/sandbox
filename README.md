@@ -221,10 +221,12 @@ The cluster upstream labels Ceph Storage.
 - The Ceph toolbox for the checks of the quick start (`ceph status`,
   `rbd info`).
 
-One node. The OSDs sit on loop devices that the sandbox creates in the node
-and offers to Rook as static local volumes with `volumeMode: Block`, so the
-upstream `storageClassDeviceSets` shape stays. This is the first point to
-prove, see [Points to prove first](#points-to-prove-first).
+One node. `make up` creates loop devices over sparse files in the node and
+one static local volume with `volumeMode: Block` per device, on which Rook
+puts the OSDs, so the upstream `storageClassDeviceSets` shape stays, see
+[The storage cluster](#the-storage-cluster). This is the first point to
+prove, see [Points to prove first](#points-to-prove-first), and
+`tests/host/storage-ceph.bats` proves it on a host.
 
 ### sandbox-compute
 
@@ -760,6 +762,176 @@ Five states need to be known:
   which Helm keeps, with the `Hypervisor` of each node. All of it goes with
   `make down`.
 
+### The storage cluster
+
+`make up` gives the node of `sandbox-storage` the devices of its OSDs when
+the profile lists the module `block-devices` on the storage cluster. After
+it has installed Flux, and before it writes `cluster-vars`, it logs
+`preparing the loop devices of sandbox-storage: <count> of <size>` with the
+switches `osd-count` and `osd-size`, and takes four steps
+([ADR-0034](docs/adr/0034-create-the-loop-devices-and-their-local-volumes-in-the-command-layer.md)):
+
+- It creates in the node `sandbox-storage-control-plane` each of the
+  device nodes `/dev/loop0` to `/dev/loop255` and `/dev/loop-control` that
+  the node lacks. A kind node has no devtmpfs: Docker fills its `/dev`
+  once, when it creates the node, so a loop device the kernel creates later
+  has no node there. kubelet holds every block volume open through a loop
+  device of its own, so the node needs device nodes beyond those of the
+  OSDs.
+- It creates in the node an empty udev record
+  `/run/udev/data/b<major>:<minor>` for each block device of the host and
+  each loop device 0 to 255 that lacks one. ceph-volume in the OSD prepare
+  Job reads the record of every block device of the host, partitions
+  included, and fails with `No udev data could be retrieved for <device>`
+  without it; a kind node runs no udev. A device the host adds after
+  `make up` gets its record at the next `make up`.
+- For each OSD it creates the sparse file `/var/lib/sandbox/osd-<i>.img` of
+  `osd-size`, which costs what Ceph writes to it, and attaches it to a free
+  loop device with the line
+  `attaching /var/lib/sandbox/osd-<i>.img to /dev/loop<n> on sandbox-storage-control-plane`.
+  The device belongs to the kernel of the host, whose
+  `/sys/block/loop<n>/loop/backing_file` names the file.
+- It applies one PersistentVolume `sandbox-osd-<i>` per device to
+  `sandbox-storage`: `volumeMode: Block`, the StorageClass `sandbox-block`,
+  the loop device as `local.path`, the policy `Retain` and the node
+  `sandbox-storage-control-plane`.
+
+The steps come before `cluster-vars`, so a count the node cannot follow
+stops `make up` before the ConfigMap carries it to the stages. A second
+`make up` finds every file attached, applies the same volumes and changes
+nothing. Four modules build the cluster, each a stage on the management
+cluster:
+
+- `block-devices`: the StorageClass `sandbox-block` with the provisioner
+  `kubernetes.io/no-provisioner`, `volumeBindingMode: WaitForFirstConsumer`
+  and `reclaimPolicy: Retain`, in which the claims of the OSDs bind to the
+  volumes of `make up`. Its stage `storage-block-devices` depends on no
+  other.
+- `rook-crds`: upstream's Namespace `rook-ceph` and CRD
+  `clientprofiles.csi.ceph.io`, unchanged, in the stage
+  `storage-rook-crds`, which depends on no other. Upstream's `ceph` overlay
+  holds them beside the `HelmRepository` and the `HelmRelease`, which live
+  on the hub here, and one stage applies to one cluster. The Rook operator
+  watches `ClientProfile` and exits after about two minutes without the CRD,
+  so the CRD comes first
+  ([ADR-0035](docs/adr/0035-apply-rooks-namespace-and-crd-in-a-module-of-their-own-before-the-release-from-the-hub.md)).
+- `rook-operator`: upstream's chart `rook-ceph` at `v1.21.0`, released from
+  the hub as the releases for the compute cluster are. The stage
+  `storage-rook-operator` depends on `storage-rook-crds` and applies the
+  `HelmRepository` `storage-rook-release` and the `HelmRelease`
+  `storage-rook-ceph` to `flux-system` of `sandbox-management`, which
+  install the release `rook-ceph` in `rook-ceph` on `sandbox-storage`
+  through `kubeconfig-storage`. Both are copies of upstream's objects under
+  names of their own, which `tests/unit/modules.bats` compares with
+  upstream's files. The release carries one value more,
+  `allowLoopDevices: true`: with it the operator sets
+  `ROOK_CEPH_ALLOW_LOOP_DEVICES`, the prepare Job gets
+  `CEPH_VOLUME_ALLOW_LOOP_DEVICES=true`, and only then is a loop device a
+  device type Rook supports.
+- `ceph-cluster`: upstream's `CephCluster` `rook-ceph` with one monitor and
+  one manager, the pools `volumes` and `backups`, the clients `cinder` and
+  `cinder-backup` and the toolbox `rook-ceph-tools`, patched for one host,
+  and the pool `.mgr`. Upstream's `keys-push.yaml` and `keys-pull.yaml`
+  belong to the key hand-off and stay out. The device set `loop` asks for
+  `osd-count` claims of `osd-size` in `sandbox-block`. The stage
+  `storage-ceph-cluster` depends on `storage-rook-operator` and
+  `storage-block-devices`, substitutes `cluster-vars`, and is Ready once the
+  `CephCluster` is Ready with `HEALTH_OK` and each `CephBlockPool` and
+  `CephClient` is Ready, within its timeout of 30 minutes. It does not
+  count OSDs.
+
+The patch of `ceph-cluster` sets what differs from upstream's lab, and
+`storage/ceph-cluster/kustomization.yaml` gives the reason of each
+operation:
+
+- Host networking, `network.provider: host`. Monitor (3300) and OSDs
+  (6800 to 7300) answer on the node's address on the Docker network, and a
+  client on another cluster names the monitor
+  `sandbox-storage-control-plane:3300`, which Docker's DNS resolves.
+- Memory requests of 512Mi for the monitor, 256Mi for the manager and 1Gi
+  for each OSD, under upstream's limits of 1Gi, 512Mi and 2Gi. Ceph takes
+  `osd_memory_target` from the smaller of the request and 80 % of the
+  limit, so the memory target of an OSD is 1Gi.
+- Three health settings, as in Rook's `deploy/examples/cluster-test.yaml`:
+  `osd_pool_default_size` `"1"`, because with one OSD upstream's `"2"`
+  raises `TOO_FEW_OSDS`; `mon_warn_on_pool_no_redundancy` `"false"`,
+  because one OSD or one host never gives a pool redundancy; and
+  `mon_data_avail_warn` `"10"`, so the monitor raises `MON_DISK_LOW` below
+  10 % free on its filesystem, which is that of Docker on the host, and not
+  below 30 %.
+- `BLUESTORE_SLOW_OP_ALERT` muted, beside upstream's three mutes. The OSDs
+  write to loop devices over files on the host's disk, which the host's
+  other workloads share, and one slow write raises the warning, which Ceph
+  keeps for `bluestore_slow_ops_warn_lifetime`, a day by default. A host run
+  saw it after the restart of the monitor. `ceph health detail` still lists
+  it as muted.
+- The pools `volumes` and `backups` on failure domain `osd` with
+  `STORAGE_POOL_SIZE` replicas and `requireSafeReplicaSize: false`, where
+  upstream's have two replicas on failure domain `host`. `make up` adds
+  `STORAGE_POOL_SIZE` to `cluster-vars`: `"1"` for one OSD, `"2"` for two
+  or more. The pool `.mgr` of `mgr-pool.yaml` has the same settings, as in
+  Rook's `deploy/examples/pool-builtin-mgr.yaml`; without it the manager
+  creates `.mgr` with the default rule, whose failure domain is host. The
+  manager can create `.mgr` before Rook reconciles that pool, so it carries
+  `enableCrushUpdates: true`, with which Rook moves an existing pool to a
+  rule of its own, `.mgr_osd`.
+
+The cluster, its OSDs and an image of a pool, read in the toolbox:
+
+```bash
+kubectl --kubeconfig .sandbox/kubeconfig/storage.yaml -n rook-ceph exec deploy/rook-ceph-tools -- ceph status
+kubectl --kubeconfig .sandbox/kubeconfig/storage.yaml -n rook-ceph exec deploy/rook-ceph-tools -- ceph osd tree
+kubectl --kubeconfig .sandbox/kubeconfig/storage.yaml -n rook-ceph exec deploy/rook-ceph-tools -- rbd info volumes/<image>
+```
+
+`tests/host/storage-ceph.bats` proves point 1 and, of point 2, the reach
+from the management cluster, on `sandbox-management` and `sandbox-storage`:
+an RBD client in a pod on `sandbox-management` writes an image to the pool
+`volumes` as `cinder` through `sandbox-storage-control-plane:3300`, the
+monitor keeps its address when its pod is replaced, and the sandbox then
+grows from one OSD to three
+([ADR-0036](docs/adr/0036-prove-the-storage-cluster-with-an-rbd-client-on-the-management-cluster-and-a-growth-to-three-osds.md)).
+
+Seven states need to be known:
+
+- **The first `make up`.** It pulls the images of Rook and Ceph, and the
+  operator brings up monitor, manager and OSDs before the `CephCluster`
+  reports `HEALTH_OK`, so it needs `SANDBOX_STAGE_TIMEOUT=3600`. The stage
+  `storage-ceph-cluster` has a timeout of 30 minutes.
+- **A raised `osd-count`.** `make up` attaches the new files, applies their
+  volumes and writes the count to `cluster-vars`, and Flux raises the count
+  of the device set. `make up` waits for the stages at the pushed revision
+  and does not count OSDs, so it can return before Rook has added the new
+  ones; `ceph osd tree` shows them as they come up. With two or more OSDs
+  the pools have two replicas.
+- **A lower `osd-count` or another `osd-size`.** Removing an OSD or
+  resizing BlueStore is an operation on Ceph, so `make up` stops before it
+  writes `cluster-vars`, and the running Ceph keeps its OSDs:
+  `block-devices: sandbox-storage-control-plane holds <n> OSD files, switches.osd-count says <count>; run make down first`
+  or
+  `block-devices: <file> on sandbox-storage-control-plane has <bytes> bytes, switches.osd-size says <size>; run make down first`.
+- **Less than 10 % free under Docker.** The monitor raises `MON_DISK_LOW`,
+  the `CephCluster` leaves `HEALTH_OK`, and the stage
+  `storage-ceph-cluster` stays not Ready; `ceph status` names the warning.
+- **A loop device left over.** `make down` detaches the loop devices of a
+  running storage node, kubelet's first, and logs
+  `detaching <n> loop devices of sandbox-storage`; a device an OSD still
+  holds is detached by the kernel when the node stops. A storage node
+  deleted or stopped outside `make down` leaves its devices attached on the
+  host, each holding an OSD file open. Detaching them needs root, and
+  `make down` runs no `sudo`: its check exits 1 with one line per device,
+  `error: left over: loop device /dev/<name> on <backing file>; detach it with sudo losetup -d /dev/<name>`.
+- **A kernel with `loop.max_part`.** Its loop devices do not number their
+  minors by index, so the device nodes of `make up` would point at other
+  devices. `make up` stops before it creates one, with
+  `block-devices: the loop devices of this kernel do not number their minors by index (loop.max_part is set), sandbox-storage-control-plane reads <value> for loop1`.
+- **The Ceph modules taken off.** This is not supported. Upstream removes
+  its Ceph in six ordered steps with a confirmed cleanup policy, as
+  `vendor/cobaltcore/deploy/overlays/metal-stack/ceph/kustomization.yaml`
+  describes, and no order of stages reproduces them. `make down` is the
+  way out. The loop devices of `make up` stay until `make down` in any
+  case.
+
 ## Modules
 
 A module of a cluster is the directory `clusters/<role>/<module>/` with two
@@ -876,9 +1048,10 @@ Three states of `remote-compute` and `hypervisor-fixtures` need to be known:
 | --- | --- | --- | --- |
 | `resolver` | The CoreDNS block that answers nip.io names. Added by the switch `resolver-fallback` | | 1 |
 | `controllers` | External Secrets; cert-manager only if the key hand-off needs it there | | 3 |
-| `block-devices` | StorageClass and static local volumes over the loop devices | node preparation | 3 |
-| `rook-operator` | The upstream `ceph` overlay: Rook chart, namespace, the `ClientProfile` CRD | | 3 |
-| `ceph-cluster` | `CephCluster`, pools, clients, toolbox, patched for one host, host networking and the sandbox's sizes | `rook-operator`, `block-devices` | 3 |
+| `block-devices` | The StorageClass `sandbox-block`, in which the claims of the OSDs bind to the static local volumes that `make up` creates over the loop devices, one per OSD, see [The storage cluster](#the-storage-cluster) | | 3 |
+| `rook-crds` | Upstream's Namespace `rook-ceph` and CRD `clientprofiles.csi.ceph.io`, unchanged, which the Rook operator needs at its start | | 3 |
+| `rook-operator` | Upstream's Rook chart with one value more, `allowLoopDevices: true`, released from the hub: the stage `storage-rook-operator` applies the `HelmRepository` `storage-rook-release` and the `HelmRelease` `storage-rook-ceph` to `flux-system` of the management cluster, which install the release `rook-ceph` in `rook-ceph` through `kubeconfig-storage` | `rook-crds` | 3 |
+| `ceph-cluster` | Upstream's `CephCluster`, pools `volumes` and `backups`, clients `cinder` and `cinder-backup` and toolbox, patched for one host (host networking, lower memory requests, three health settings and the mute of `BLUESTORE_SLOW_OP_ALERT`, the pools on failure domain `osd` with `STORAGE_POOL_SIZE` replicas), and the pool `.mgr`. See [The storage cluster](#the-storage-cluster) | `rook-operator`, `block-devices` | 3 |
 | `key-push` | SecretStore against the management OpenBao and the two PushSecrets | `ceph-cluster`, `openbao-remote-auth` on management | 3 |
 
 ### On sandbox-compute
@@ -949,7 +1122,7 @@ switches on top of the profiles:
 | `horizon`, `barbican`, `glance` | The module of the service: its block of the `ControlPlane` and its operator. Each needs `controlplane`, and `glance` also `objectstore` | off; on in `controlplane` |
 | `cinder-backup` | The backup target `cephbk` and the `cinder-backup` Deployment | on in `parity` |
 | `hypervisor-nodes` | Worker nodes of the compute cluster | 1; 2 in `parity` |
-| `osd-count`, `osd-size` | OSDs of the storage cluster and the size of their sparse files | 1 OSD; 3 in `parity` |
+| `osd-count`, `osd-size` | OSDs of the storage cluster and the size of their sparse files | 1 OSD of `10Gi`; 3 in `parity` |
 | `fake-compute` | The module `fake-compute`, a compute without a hypervisor. Needs `controlplane` and `nova` | off; on in `controlplane` |
 | `observability`, `ui` | Prometheus and Grafana; Headlamp and Flux Web | off |
 | `resolver-fallback` | The module `resolver` on every cluster, for a host whose resolver drops private answers. Needs `loadbalancer` on the management cluster | off |
@@ -1087,7 +1260,8 @@ infrastructure/      Stages every cluster may use: crds, controllers,
                      loadbalancer, pki, gateway, openbao, objectstore, ...
 platform/            The c5c3-operator and the sizing profile
 controlplane/        OVNCentral, ControlPlane base and one component per service
-storage/             rook-operator, ceph-cluster, block-devices, key-push
+storage/             rook-crds, rook-operator, ceph-cluster, block-devices,
+                     key-push
 compute/             Modules of sandbox-compute released from the hub: access,
                      node-prep, libvirt, hypervisor-operator, ...
 orders/              Owners' namespaces and example orders
@@ -1119,7 +1293,7 @@ make vendor                 # check out the paths of upstream at the pin into ve
 make validate               # render every root and stage against vendor/cobaltcore, check schemas and patches
 make test                   # the unit tests of the command layer
 make test-validate          # the tests of make validate on a fixture tree, with flux and kubeconform
-make test-host              # the lifecycle, the profiles gateway, platform, identity and controlplane, controlplane on the TLS bus, the compute cluster attached to the control plane, the hypervisor node and the compute pool against a real Docker, each creating and removing a sandbox
+make test-host              # the lifecycle, the profiles gateway, platform, identity and controlplane, controlplane on the TLS bus, the compute cluster attached to the control plane, the hypervisor node, the compute pool and the storage cluster against a real Docker, each creating and removing a sandbox
 make down                   # delete clusters, registry, network, loop devices
 ```
 
@@ -1148,7 +1322,10 @@ with the compute pool also pulls the images of hvo, libvirt, the
 kvm-node-agent, Open vSwitch and OVN, the metadata agent and `nova-compute`
 on the compute cluster, and waits for `nova-compute` to run beside libvirtd
 on every node, so it needs `SANDBOX_STAGE_TIMEOUT=3600` as well; hvo onboards
-the node after `make up`, and `make verify` waits for it.
+the node after `make up`, and `make verify` waits for it. The first `make up`
+of a profile with `ceph-cluster` pulls the images of Rook and Ceph on the
+storage cluster and waits for the `CephCluster` to report `HEALTH_OK`, so it
+needs `SANDBOX_STAGE_TIMEOUT=3600` too.
 
 `make env` prints the seven variables `OS_AUTH_URL`, `OS_USERNAME`,
 `OS_PASSWORD`, `OS_PROJECT_NAME`, `OS_USER_DOMAIN_NAME`,
@@ -1254,7 +1431,7 @@ lists the checks it adds.
 | Disk | To be measured. Every kind node keeps its own image store, so an image is stored once per node that runs it. Working estimate: 60 GB free for `full`, 100 GB for `parity`, including the sparse OSD files |
 | DNS | The resolver must answer `*.nip.io` names with private addresses. Resolvers with DNS rebinding protection drop such answers. For such a host, `switches.resolver-fallback` adds the module `resolver`: the CoreDNS of every cluster answers the names itself, and the CoreDNS of the management cluster answers them on `addresses.dns`, to which the host routes `nip.io` with the settings `make up` prints ([ADR-0018](docs/adr/0018-print-the-host-resolver-settings-of-the-nip-io-fallback.md)) |
 | Tools | `docker`, `kind`, `kubectl`, `helm`, `flux`, `git`, `yq` v4.40.1 or newer, `jq`, `make`, `bats` (bats-core 1.5.0 or newer, for `make test`, `make test-validate` and `make test-host`), `kubeconform`, `curl` and `tar` for `make validate`, `curl` and `openssl` for `make verify` and `make test-host`, and the OpenStack CLI with `osc-placement` and `python-barbicanclient` |
-| Network | Egress to `github.com` (upstream, the tools and schemas of `make validate`, the CRDs of the module `crds`), `raw.githubusercontent.com` (the Kubernetes schemas of `make validate`, the MetalLB manifest of the module `loadbalancer`), `ghcr.io` (among others the NFS server of `cinder-nfs`), `quay.io`, `docker.io`, `deb.debian.org` (the package `dbus` of the hypervisor nodes, for a profile with `node-prep`), `registry.k8s.io` (the images of `csi-driver-nfs`), the Helm repositories, `raw.githubusercontent.com` as the one of `csi-driver-nfs` among them, and the cirros download. The management cluster reads `github.com` and `raw.githubusercontent.com` at every reconcile of `crds` and `loadbalancer` ([ADR-0019](docs/adr/0019-read-third-party-manifests-as-pinned-remote-resources.md)) |
+| Network | Egress to `github.com` (upstream, the tools and schemas of `make validate`, the CRDs of the module `crds`), `raw.githubusercontent.com` (the Kubernetes schemas of `make validate`, the MetalLB manifest of the module `loadbalancer`), `ghcr.io` (among others the NFS server of `cinder-nfs`), `quay.io`, `docker.io`, `deb.debian.org` (the package `dbus` of the hypervisor nodes, for a profile with `node-prep`), `registry.k8s.io` (the images of `csi-driver-nfs`), the Helm repositories, `raw.githubusercontent.com` as the one of `csi-driver-nfs` and `charts.rook.io` as the one of the Rook chart among them, and the cirros download. The management cluster reads `github.com` and `raw.githubusercontent.com` at every reconcile of `crds` and `loadbalancer` ([ADR-0019](docs/adr/0019-read-third-party-manifests-as-pinned-remote-resources.md)) |
 
 `make up`, `make up-<cluster>` and `scripts/preflight.sh [<role>...]` check
 the host before anything is created. They print one line per check, with the
@@ -1273,8 +1450,8 @@ its plugins are reported as warnings. The warning for the resolver names
 `switches.resolver-fallback`, or says that the fallback is on. A configuration
 file without `addresses.pool`, `addresses.dns`, `addresses.rabbitmq`,
 `switches.resolver-fallback`, `switches.glance`, `switches.barbican`,
-`switches.horizon` or `switches.fake-compute` fails the check of the
-configuration.
+`switches.horizon`, `switches.fake-compute`, `switches.osd-count` or
+`switches.osd-size` fails the check of the configuration.
 
 Every kind node mounts `kind/containerd-nofile.conf`, which limits the open
 files of every pod to 1048576. kind runs containerd with
@@ -1376,6 +1553,32 @@ The compute cluster with one hypervisor node, hvo, libvirt, Open vSwitch,
 the metadata agent and `nova-compute` works in about 2.3 GiB without a
 guest, against the estimate of about 3 GiB with two guests in the table
 above; the server of `make verify` was deleted before the measurement.
+
+`make footprint` on the scratch profiles of `tests/host/storage-ceph.bats`,
+the four modules of the storage cluster and none on the management cluster,
+on 2026-11-26, on the same host: with one OSD after a second `make up`, and
+with three OSDs after the growth of `ceph-3`:
+
+```text
+CLUSTER              REQUESTS_MIB WORKING_SET_MIB
+sandbox-management            610            1079
+sandbox-storage              2274            1216
+registry                        -              15
+total                        2884            2309
+```
+
+```text
+CLUSTER              REQUESTS_MIB WORKING_SET_MIB
+sandbox-management            610            1141
+sandbox-storage              4322            1450
+registry                        -              16
+total                        4932            2607
+```
+
+The storage cluster with Rook, one monitor, one manager, the toolbox and
+one OSD works in about 1.2 GiB against 2.2 GiB of requests, below the
+estimate of about 3 GiB in the table above. Each further OSD adds 1 GiB of
+requests and worked in about 120 MiB, with the pools idle.
 
 ## Milestones
 
