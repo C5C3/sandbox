@@ -57,7 +57,9 @@ jobs:
           git --version
           bats --version
 
-      # tests/unit/crd-sources.bats reads the source of K-ORC of upstream.
+      # tests/unit/crd-sources.bats reads the source of K-ORC of upstream, and
+      # tests/unit/modules.bats compares the copies of compute/ with
+      # upstream's files.
       - name: Check out upstream at the pin
         run: make vendor
 

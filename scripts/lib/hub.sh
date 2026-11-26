@@ -2,7 +2,8 @@
 # Flux on sandbox-management, the hub that applies the stages of all three
 # clusters. Source scripts/lib/common.sh first, scripts/lib/profile.sh for
 # the functions that read the profile, scripts/lib/vendor.sh for
-# push_artifact, and scripts/lib/register.sh for ensure_registrations.
+# push_artifact, scripts/lib/register.sh for ensure_registrations, and
+# scripts/lib/nodes.sh for ensure_node_prep.
 #
 # The command layer applies the FluxInstance, the source, cluster-vars, the
 # kubeconfig Secrets and one root Kustomization per cluster. Each apply is a
@@ -379,15 +380,17 @@ resolver_hint() {
 # hub_sync: installs Flux on sandbox-management and makes it apply the
 # cluster_modules of every attached cluster, registers each attached cluster
 # whose modules list access with the CobaltCore operators and removes the
-# registration of one that no longer lists it (ensure_registrations), then
-# waits for their stages and logs how many stages, those of cluster_stages,
-# are Ready. The registration comes before the wait: the stage <role>-access
+# registration of one that no longer lists it (ensure_registrations),
+# prepares the worker nodes of sandbox-compute (ensure_node_prep), then waits
+# for their stages and logs how many stages, those of cluster_stages, are
+# Ready. The registration comes before the wait: the stage <role>-access
 # fills the token it needs, and a stage that needs the registration would
-# otherwise be waited for before it exists. It stops before
-# the first step when a stage depends on a stage of a cluster that is not
-# attached, because no root would create that stage. Every step is safe to
-# repeat; a failed step stops the run and leaves what the steps before it
-# applied.
+# otherwise be waited for before it exists. The node preparation runs while
+# Flux applies the stages, whose pods wait for the bus and the labels. It
+# stops before the first step when a stage depends on a stage of a cluster
+# that is not attached, because no root would create that stage. Every step
+# is safe to repeat; a failed step stops the run and leaves what the steps
+# before it applied.
 hub_sync() {
 	local attached role modules module dep stages=0
 	attached=$(attached_roles) || exit 1
@@ -416,6 +419,7 @@ hub_sync() {
 		ensure_root "$role"
 	done
 	ensure_registrations
+	ensure_node_prep
 	wait_stages
 	for role in $attached; do
 		modules=$(cluster_stages "$role") || exit 1

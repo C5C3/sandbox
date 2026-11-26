@@ -1,0 +1,12 @@
+# The module node-prep on sandbox-compute: upstream's reservation of QEMU's
+# migration ports, unchanged. It renders the Namespace hypervisor-system,
+# where the modules libvirt and kvm-node-agent put their objects, and the
+# DaemonSet migration-port-reservation, whose init container adds
+# 49152-49215 to net.ipv4.ip_local_reserved_ports of each node it runs on. It
+# tolerates no taint, so it runs on the workers and not on the control-plane
+# node. The system bus and the labels of the module come from make up
+# (scripts/lib/nodes.sh), because no manifest can change a Node.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../vendor/cobaltcore/deploy/overlays/metal-stack/migration-ports

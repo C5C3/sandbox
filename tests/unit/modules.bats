@@ -1,6 +1,9 @@
 #!/usr/bin/env bats
 # The tree Flux reads: the stage contract of every module of a cluster, the
-# kustomization of each cluster, and no literal address in a manifest.
+# kustomization of each cluster, and no literal address in a manifest. The
+# modules of compute/ copy objects of upstream under names of their own, and
+# the tests compare each copy with upstream's file, so this file needs the
+# checkout of make vendor.
 
 setup() {
 	load helpers
@@ -428,9 +431,10 @@ EOF
 	done
 }
 
-@test "the stages of openbao, objectstore, platform, sizing, cinder-nfs, fake-compute, hypervisor-fixtures and compute access substitute no variables" {
+@test "the stages of openbao, objectstore, platform, sizing, cinder-nfs, fake-compute, hypervisor-fixtures and of access and node-prep on compute substitute no variables" {
 	local stage
-	for stage in management/{openbao,objectstore,platform,sizing,cinder-nfs,fake-compute,hypervisor-fixtures} compute/access; do
+	for stage in management/{openbao,objectstore,platform,sizing,cinder-nfs,fake-compute,hypervisor-fixtures} \
+		compute/{access,node-prep}; do
 		echo "$stage"
 		[ "$(yq '.spec | has("postBuild")' "$SANDBOX_ROOT/clusters/$stage/stage.yaml")" = false ]
 	done
@@ -449,6 +453,15 @@ EOF
 		'["ArtifactGenerator","target-cluster-access","flux-system",[{"alias":"sandbox","kind":"OCIRepository","name":"sandbox"}],[{"name":"target-cluster-access","copy":[{"from":"@sandbox/vendor/cobaltcore/deploy/bases/target-cluster-access/","to":"@artifact/"}]}]]' ]
 	[ "$(yq -o=json -I=0 '[.kind, .metadata.name, .metadata.namespace, .spec.releaseName, .spec.targetNamespace, .spec.storageNamespace, .spec.install, .spec.chartRef, .spec.kubeConfig, .spec.values]' "$dir/release.yaml")" = \
 		'["HelmRelease","compute-access","flux-system","target-cluster-access","c5c3-access","c5c3-access",{"createNamespace":true},{"kind":"ExternalArtifact","name":"target-cluster-access"},{"secretRef":{"name":"kubeconfig-compute"}},{"namespaces":["openstack"],"privilegedNamespaces":["openstack"],"createNamespaces":true}]' ]
+}
+
+@test "the stage compute-node-prep applies upstream's migration port reservation on sandbox-compute" {
+	[ "$(yq -o=json -I=0 '[.spec.path, .spec.interval, .spec.retryInterval, .spec.timeout, .spec.kubeConfig, (.spec | has("dependsOn"))]' \
+		"$SANDBOX_ROOT/clusters/compute/node-prep/stage.yaml")" = \
+		'["./compute/node-prep","10m","1m","5m",{"secretRef":{"name":"kubeconfig-compute"}},false]' ]
+	[ "$(yq -o=json -I=0 '[.resources, has("patches")]' "$SANDBOX_ROOT/compute/node-prep/kustomization.yaml")" = \
+		'[["../../vendor/cobaltcore/deploy/overlays/metal-stack/migration-ports"],false]' ]
+	[ -f "$SANDBOX_ROOT/vendor/cobaltcore/deploy/overlays/metal-stack/migration-ports/kustomization.yaml" ]
 }
 
 @test "the stage of hypervisor-fixtures applies upstream's lab fixtures after controlplane and waits for the seven K-ORC kinds to be Available" {
