@@ -491,6 +491,39 @@ EOF
 	[ -f "$SANDBOX_ROOT/controlplane/components/orders/kustomization.yaml" ]
 }
 
+@test "the patches Component of remote-compute appends its component and the published OVN databases to the stage of controlplane" {
+	local file=$SANDBOX_ROOT/clusters/management/remote-compute/patches/kustomization.yaml ops flux
+	[ ! -e "$SANDBOX_ROOT/clusters/management/remote-compute/stage.yaml" ]
+	[ "$(yq -o=json -I=0 '[.patches[].target]' "$file")" = \
+		'[{"group":"kustomize.toolkit.fluxcd.io","kind":"Kustomization","name":"management-controlplane"},{"group":"kustomize.toolkit.fluxcd.io","kind":"Kustomization","name":"management-controlplane"}]' ]
+	[ "$(yq '.patches[0].patch' "$file" | yq -o=json -I=0 '.')" = \
+		'[{"op":"add","path":"/spec/components/-","value":"components/remote-compute"}]' ]
+	ops=$(yq '.patches[1].patch' "$file")
+	[ "$(yq -o=json -I=0 '[.[] | [.op, .path]]' - <<<"$ops")" = '[["add","/spec/patches/-"]]' ]
+	flux=$(yq '.[0].value' - <<<"$ops")
+	[ "$(yq -o=json -I=0 '.target' - <<<"$flux")" = \
+		'{"group":"ovn.openstack.c5c3.io","kind":"OVNCentral","name":"controlplane-ovn","namespace":"openstack"}' ]
+	[ "$(yq '.patch' - <<<"$flux" | yq -o=json -I=0 '.')" = \
+		'[{"op":"add","path":"/spec/northbound/externallyReachable","value":true},{"op":"add","path":"/spec/southbound/externallyReachable","value":true}]' ]
+	# The stage declares the list the Flux patch appends to.
+	[ "$(yq -o=json -I=0 '.spec.patches' "$SANDBOX_ROOT/clusters/management/controlplane/stage.yaml")" = '[]' ]
+}
+
+@test "the component remote-compute patches the ControlPlane controlplane alone with the remote compute contract of Nova" {
+	local file=$SANDBOX_ROOT/controlplane/components/remote-compute/kustomization.yaml
+	[ "$(yq -o=json -I=0 '[.apiVersion, .kind, (.patches | length), has("resources")]' "$file")" = \
+		'["kustomize.config.k8s.io/v1alpha1","Component",1,false]' ]
+	[ "$(yq -o=json -I=0 '.patches[0].target' "$file")" = \
+		'{"group":"c5c3.io","version":"v1alpha1","kind":"ControlPlane","name":"controlplane","namespace":"openstack"}' ]
+	[ "$(component_patch remote-compute 0 | jq -c '[.apiVersion, .kind, .metadata.name, .metadata.namespace, (.spec | keys), (.spec.services | keys)]')" = \
+		'["c5c3.io/v1alpha1","ControlPlane","controlplane","openstack",["services"],["nova"]]' ]
+	[ "$(component_patch remote-compute 0 | jq -c '.spec.services.nova')" = \
+		'{"remoteCompute":{"transportURLSecretRef":{"name":"controlplane-nova-remote-transport"}},"hypervisorOperator":{},"metadataGateway":{"parentRef":{"name":"openstack-gw"},"hostname":"nova-metadata.${ADDRESSES_GATEWAY//./-}.nip.io"},"consoleProxy":{"gateway":{"parentRef":{"name":"openstack-gw"},"hostname":"nova-console.${ADDRESSES_GATEWAY//./-}.nip.io"}}}' ]
+	# The transport URL Secret is the one the module messaging-tls writes.
+	[ "$(yq ea '[select(.kind == "ExternalSecret") | .spec.target.name] | contains(["controlplane-nova-remote-transport"])' \
+		"$SANDBOX_ROOT/infrastructure/messaging-tls/transport.yaml")" = true ]
+}
+
 @test "the component orders assigns exactly the namespaces of orders/, each with the role member and catalog entries" {
 	local file=$SANDBOX_ROOT/controlplane/components/orders/kustomization.yaml ops owners
 	[ "$(yq -o=json -I=0 '[.apiVersion, .kind, (.patches | length), has("resources")]' "$file")" = \

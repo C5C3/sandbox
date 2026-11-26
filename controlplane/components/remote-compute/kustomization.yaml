@@ -1,0 +1,48 @@
+# The remote compute contract of Steps 1 to 3 of upstream's guide Connect a
+# Compute Cluster on the ControlPlane controlplane, with the consoleProxy and
+# the hypervisorOperator that
+# vendor/cobaltcore/deploy/overlays/metal-stack/controlplane/controlplane-lab.yaml
+# carries. remoteCompute names the Secret controlplane-nova-remote-transport
+# of the module messaging-tls, the transport URL of the broker at
+# rabbitmq.<a-b-c-d>.nip.io:5671. hypervisorOperator provisions the Keystone
+# user hypervisor-operator and the Secret
+# controlplane-nova-hypervisor-operator-auth. metadataGateway and
+# consoleProxy publish the metadata API and the noVNC proxy on the wildcard
+# listener of the Gateway openstack-gw, at nova-metadata.<a-b-c-d>.nip.io and
+# nova-console.<a-b-c-d>.nip.io.
+#
+# A merge patch needs no Nova block before it, so the Component may come
+# before or after components/nova. Upstream admits remoteCompute only on a
+# brownfield bus with TLS and Nova only beside glance, placement and neutron;
+# the stage management-controlplane reports a refusal.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+patches:
+  - target:
+      group: c5c3.io
+      version: v1alpha1
+      kind: ControlPlane
+      name: controlplane
+      namespace: openstack
+    patch: |
+      apiVersion: c5c3.io/v1alpha1
+      kind: ControlPlane
+      metadata:
+        name: controlplane
+        namespace: openstack
+      spec:
+        services:
+          nova:
+            remoteCompute:
+              transportURLSecretRef:
+                name: controlplane-nova-remote-transport
+            hypervisorOperator: {}
+            metadataGateway:
+              parentRef:
+                name: openstack-gw
+              hostname: nova-metadata.${ADDRESSES_GATEWAY//./-}.nip.io
+            consoleProxy:
+              gateway:
+                parentRef:
+                  name: openstack-gw
+                hostname: nova-console.${ADDRESSES_GATEWAY//./-}.nip.io

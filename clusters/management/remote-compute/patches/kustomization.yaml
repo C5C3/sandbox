@@ -1,0 +1,44 @@
+# The module remote-compute publishes the control plane to a compute cluster
+# and has no stage of its own. It appends the Component
+# components/remote-compute, the remote compute contract of Nova, to the
+# stage of the module controlplane, and a Flux patch that publishes both
+# databases of the OVNCentral controlplane-ovn on node ports of the
+# management node with externallyReachable. A Flux patch runs after every
+# Component of the stage, so it finds the OVNCentral of components/neutron
+# wherever the profile lists neutron; a patch inside the Component would
+# change nothing when components/neutron came after it.
+#
+# The module needs controlplane, messaging-tls, glance, placement, neutron and
+# nova beside it, and admission checks that: on the managed bus the stage
+# management-controlplane reports "requires a brownfield bus with tls".
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+patches:
+  - target:
+      group: kustomize.toolkit.fluxcd.io
+      kind: Kustomization
+      name: management-controlplane
+    patch: |
+      - op: add
+        path: /spec/components/-
+        value: components/remote-compute
+  - target:
+      group: kustomize.toolkit.fluxcd.io
+      kind: Kustomization
+      name: management-controlplane
+    patch: |
+      - op: add
+        path: /spec/patches/-
+        value:
+          target:
+            group: ovn.openstack.c5c3.io
+            kind: OVNCentral
+            name: controlplane-ovn
+            namespace: openstack
+          patch: |
+            - op: add
+              path: /spec/northbound/externallyReachable
+              value: true
+            - op: add
+              path: /spec/southbound/externallyReachable
+              value: true
