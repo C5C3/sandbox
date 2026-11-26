@@ -1,0 +1,18 @@
+# The OpenStack objects the openstack-hypervisor-operator (hvo) looks up at
+# its start, as K-ORC resources in openstack: upstream's lab overlay
+# unchanged, the shared fixtures of deploy/bases/hypervisor-fixtures without
+# the volume type premium and the network and subnet hvo-smoke-test, which
+# only the operator's smoke test uses. That leaves the domain cc3test with the
+# project test, the imports of the domain Default, the user
+# hypervisor-operator and the role admin, the assignment of admin on test,
+# the flavor 1 and the image cirros-kvm, which K-ORC downloads from GitHub.
+# The user hypervisor-operator exists once the module remote-compute has
+# declared hypervisorOperator on the ControlPlane.
+#
+# Keystone refuses to delete an enabled domain and K-ORC does not disable
+# it, so taking the module off a running sandbox leaves the Domain
+# hvo-cc3test in deletion; the README says how to release it.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../vendor/cobaltcore/deploy/overlays/metal-stack/hypervisor-fixtures

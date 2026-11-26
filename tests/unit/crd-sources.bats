@@ -1,6 +1,8 @@
 #!/usr/bin/env bats
 # scripts/crd-sources.yaml: the schemas of Flux name the versions the hub
-# runs, and the CRD streams the remote resources the stages read.
+# runs, and the CRD streams the remote resources the stages read and the
+# commit of K-ORC that upstream's source pins. The last needs the checkout of
+# make vendor.
 
 setup() {
 	load helpers
@@ -46,4 +48,12 @@ crds_url() {
 
 @test "the schemas of flux-operator are the release of flux.operator of config.yaml" {
 	[ "$(source_url flux-operator)" = "https://github.com/controlplaneio-fluxcd/flux-operator/releases/download/v$(yq '.flux.operator' "$SANDBOX_ROOT/config.yaml")/crd-schemas.tar.gz" ]
+}
+
+@test "the CRD stream of k-orc is that of the commit of upstream's source of K-ORC" {
+	local commit
+	commit=$(yq 'select(.kind == "GitRepository" and .metadata.name == "k-orc") | .spec.ref.commit' \
+		"$SANDBOX_ROOT/vendor/cobaltcore/deploy/bases/operators/sources/k-orc.yaml")
+	[[ $commit =~ $SANDBOX_SHA_RE ]]
+	[ "$(crds_url k-orc)" = "https://raw.githubusercontent.com/k-orc/openstack-resource-controller/$commit/dist/install.yaml" ]
 }

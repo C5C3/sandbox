@@ -57,6 +57,10 @@ jobs:
           git --version
           bats --version
 
+      # tests/unit/crd-sources.bats reads the source of K-ORC of upstream.
+      - name: Check out upstream at the pin
+        run: make vendor
+
       - name: Run the unit tests
         run: make test
 

@@ -38,3 +38,8 @@ sources:
   # vendor/cobaltcore/deploy/bases/operators/sources/rabbitmq-cluster-operator.yaml.
   - name: rabbitmq-cluster-operator
     crds: https://github.com/rabbitmq/cluster-operator/releases/download/v2.23.3/cluster-operator.yml
+  # The commit of
+  # vendor/cobaltcore/deploy/bases/operators/sources/k-orc.yaml, whose CRDs
+  # the module controllers installs.
+  - name: k-orc
+    crds: https://raw.githubusercontent.com/k-orc/openstack-resource-controller/bce09a051df31e12c415c1afd031e1fb3bb32208/dist/install.yaml

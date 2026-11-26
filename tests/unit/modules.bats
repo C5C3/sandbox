@@ -428,9 +428,9 @@ EOF
 	done
 }
 
-@test "the stages of openbao, objectstore, platform, sizing, cinder-nfs, fake-compute and compute access substitute no variables" {
+@test "the stages of openbao, objectstore, platform, sizing, cinder-nfs, fake-compute, hypervisor-fixtures and compute access substitute no variables" {
 	local stage
-	for stage in management/{openbao,objectstore,platform,sizing,cinder-nfs,fake-compute} compute/access; do
+	for stage in management/{openbao,objectstore,platform,sizing,cinder-nfs,fake-compute,hypervisor-fixtures} compute/access; do
 		echo "$stage"
 		[ "$(yq '.spec | has("postBuild")' "$SANDBOX_ROOT/clusters/$stage/stage.yaml")" = false ]
 	done
@@ -449,6 +449,18 @@ EOF
 		'["ArtifactGenerator","target-cluster-access","flux-system",[{"alias":"sandbox","kind":"OCIRepository","name":"sandbox"}],[{"name":"target-cluster-access","copy":[{"from":"@sandbox/vendor/cobaltcore/deploy/bases/target-cluster-access/","to":"@artifact/"}]}]]' ]
 	[ "$(yq -o=json -I=0 '[.kind, .metadata.name, .metadata.namespace, .spec.releaseName, .spec.targetNamespace, .spec.storageNamespace, .spec.install, .spec.chartRef, .spec.kubeConfig, .spec.values]' "$dir/release.yaml")" = \
 		'["HelmRelease","compute-access","flux-system","target-cluster-access","c5c3-access","c5c3-access",{"createNamespace":true},{"kind":"ExternalArtifact","name":"target-cluster-access"},{"secretRef":{"name":"kubeconfig-compute"}},{"namespaces":["openstack"],"privilegedNamespaces":["openstack"],"createNamespaces":true}]' ]
+}
+
+@test "the stage of hypervisor-fixtures applies upstream's lab fixtures after controlplane and waits for the seven K-ORC kinds to be Available" {
+	local file=$SANDBOX_ROOT/clusters/management/hypervisor-fixtures/stage.yaml expected
+	[ "$(yq -o=json -I=0 '[.spec.dependsOn, .spec.path, .spec.interval, .spec.retryInterval, .spec.timeout, (.spec | has("kubeConfig"))]' "$file")" = \
+		'[[{"name":"management-controlplane"}],"./controlplane/hypervisor-fixtures","10m","1m","15m",false]' ]
+	expected=$(jq -n -c --arg available "status.conditions.exists(c, c.type == 'Available' && c.status == 'True')" '
+		[("Domain", "Project", "User", "Role", "RoleAssignment", "Flavor", "Image")
+		 | {apiVersion: "openstack.k-orc.cloud/v1alpha1", kind: ., current: $available}]')
+	[ "$(yq -o=json -I=0 '.spec.healthCheckExprs' "$file")" = "$expected" ]
+	[ "$(yq -o=json -I=0 '.resources' "$SANDBOX_ROOT/controlplane/hypervisor-fixtures/kustomization.yaml")" = \
+		'["../../vendor/cobaltcore/deploy/overlays/metal-stack/hypervisor-fixtures"]' ]
 }
 
 @test "the c5c3-operator depends on no release that controllers suspends" {
