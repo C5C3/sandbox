@@ -6,9 +6,11 @@
 # Docker network, the registry and the kind clusters of the given roles, or
 # of the profile's clusters when none is given. When the management cluster
 # exists, it installs Flux there, pushes the working tree and has Flux apply
-# the profile's modules to every cluster of the sandbox, and registers each
+# the profile's modules to every cluster of the sandbox, registers each
 # cluster whose modules list access with the CobaltCore operators, or removes
-# the registration of one that no longer lists it. With
+# the registration of one that no longer lists it, and gives the worker nodes
+# of sandbox-compute a system bus and the labels of upstream's lab when its
+# modules list node-prep, or removes those labels. With
 # switches.resolver-fallback on, it then prints the host's resolver settings.
 #
 # Each step creates its object or checks that the existing one matches the
@@ -26,6 +28,8 @@ set -euo pipefail
 . "$SANDBOX_ROOT/scripts/lib/hub.sh"
 # shellcheck source=lib/register.sh
 . "$SANDBOX_ROOT/scripts/lib/register.sh"
+# shellcheck source=lib/nodes.sh
+. "$SANDBOX_ROOT/scripts/lib/nodes.sh"
 # shellcheck source=lib/vendor.sh
 . "$SANDBOX_ROOT/scripts/lib/vendor.sh"
 
