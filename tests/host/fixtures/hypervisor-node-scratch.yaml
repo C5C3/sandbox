@@ -1,0 +1,31 @@
+# The objects the hypervisor operator creates for the worker of
+# sandbox-compute in #17, which tests/host/hypervisor-node.bats applies in
+# its place (ADR-0030): the Hypervisor of the node, which the kvm-node-agent
+# needs to start and to install a certificate, and the Certificate whose
+# Secret tls-libvirt-sandbox-compute-worker it installs under /etc/pki of the
+# node. evacuateOnReboot: false keeps the agent from asking logind for a
+# shutdown inhibitor, which is no part of point 6.
+apiVersion: kvm.cloud.sap/v1
+kind: Hypervisor
+metadata:
+  name: sandbox-compute-worker
+spec:
+  installCertificate: true
+  createCertManagerCertificate: false
+  highAvailability: false
+  evacuateOnReboot: false
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: libvirt-sandbox-compute-worker
+  namespace: hypervisor-system
+spec:
+  secretName: tls-libvirt-sandbox-compute-worker
+  commonName: sandbox-compute-worker
+  dnsNames: [sandbox-compute-worker]
+  usages: [server auth, client auth, digital signature, key encipherment]
+  issuerRef:
+    name: nova-hypervisor-agents-ca-issuer
+    kind: Issuer
+    group: cert-manager.io
