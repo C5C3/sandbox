@@ -28,6 +28,10 @@ switches:
   horizon: false
   # Read by cluster_modules in scripts/lib/profile.sh: true adds the module fake-compute to sandbox-management.
   fake-compute: false
+  # Read by ensure_block_devices in scripts/lib/storage.sh and by the module ceph-cluster: the OSDs of sandbox-storage.
+  osd-count: 1
+  # Read by ensure_block_devices in scripts/lib/storage.sh and by the module ceph-cluster: the size of the sparse file of each OSD, a whole number of Gi.
+  osd-size: 10Gi
 upstream:
   # Read by config_load in scripts/lib/common.sh: the commit of C5C3/cobaltcore that make vendor checks out. scripts/pin.sh moves it.
   cobaltcore: 15a0323e243c7f53b91200f193a58b5b41d41f6a

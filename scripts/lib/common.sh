@@ -132,19 +132,19 @@ _cidr_contains() {
 # SANDBOX_GATEWAY_ADDRESS, SANDBOX_ADDRESS_POOL, SANDBOX_DNS_ADDRESS,
 # SANDBOX_RABBITMQ_ADDRESS, SANDBOX_REGISTRY_IMAGE, SANDBOX_HYPERVISOR_NODES,
 # SANDBOX_RESOLVER_FALLBACK, SANDBOX_SWITCH_GLANCE, SANDBOX_SWITCH_BARBICAN,
-# SANDBOX_SWITCH_HORIZON, SANDBOX_SWITCH_FAKE_COMPUTE,
-# SANDBOX_FLUX_OPERATOR_VERSION and SANDBOX_UPSTREAM_COMMIT. A missing key is
-# an error; no script carries a default for these fourteen. The pool lies
-# inside the subnet, and the Gateway, DNS and RabbitMQ addresses, three
-# different ones, inside the pool: MetalLB gives a Service no address outside
-# its pool.
+# SANDBOX_SWITCH_HORIZON, SANDBOX_SWITCH_FAKE_COMPUTE, SANDBOX_OSD_COUNT,
+# SANDBOX_OSD_SIZE, SANDBOX_FLUX_OPERATOR_VERSION and SANDBOX_UPSTREAM_COMMIT.
+# A missing key is an error; no script carries a default for these sixteen.
+# The pool lies inside the subnet, and the Gateway, DNS and RabbitMQ
+# addresses, three different ones, inside the pool: MetalLB gives a Service
+# no address outside its pool.
 config_load() {
-	local merged key value subnet gateway pool dns rabbitmq nodes fallback operator upstream
+	local merged key value subnet gateway pool dns rabbitmq nodes fallback operator upstream osds size
 	local -A values=() switches=()
 
 	merged=$(config_merged) || exit 1
 	for key in network.subnet addresses.gateway registry.image switches.hypervisor-nodes flux.operator upstream.cobaltcore \
-		addresses.pool addresses.dns addresses.rabbitmq; do
+		addresses.pool addresses.dns addresses.rabbitmq switches.osd-count switches.osd-size; do
 		# The bracket form reads a key with a hyphen, such as hypervisor-nodes.
 		value=$(yq ".${key%%.*}[\"${key#*.}\"] // \"\"" - <<<"$merged")
 		[ -n "$value" ] || die "config: $key is not set"
@@ -162,6 +162,7 @@ config_load() {
 	subnet=${values[network.subnet]} gateway=${values[addresses.gateway]} nodes=${values[switches.hypervisor-nodes]}
 	operator=${values[flux.operator]} upstream=${values[upstream.cobaltcore]}
 	pool=${values[addresses.pool]} dns=${values[addresses.dns]} rabbitmq=${values[addresses.rabbitmq]}
+	osds=${values[switches.osd-count]} size=${values[switches.osd-size]}
 
 	[[ $subnet == */* ]] && _cidr_range "$subnet" >/dev/null ||
 		die "config: network.subnet '$subnet' is not an IPv4 CIDR"
@@ -169,6 +170,10 @@ config_load() {
 		die "config: addresses.gateway '$gateway' is not an IPv4 address"
 	[[ $nodes =~ ^[1-9][0-9]*$ ]] ||
 		die "config: switches.hypervisor-nodes must be an integer of 1 or more, got '$nodes'"
+	[[ $osds =~ ^[1-9][0-9]*$ ]] ||
+		die "config: switches.osd-count must be an integer of 1 or more, got '$osds'"
+	[[ $size =~ ^[1-9][0-9]*Gi$ ]] ||
+		die "config: switches.osd-size must be a whole number of Gi such as 10Gi, got '$size'"
 	[[ $operator =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] ||
 		die "config: flux.operator '$operator' is not a version"
 	[[ $upstream =~ $SANDBOX_SHA_RE ]] ||
@@ -213,6 +218,8 @@ config_load() {
 	export SANDBOX_SWITCH_BARBICAN=${switches[barbican]}
 	export SANDBOX_SWITCH_HORIZON=${switches[horizon]}
 	export SANDBOX_SWITCH_FAKE_COMPUTE=${switches[fake-compute]}
+	export SANDBOX_OSD_COUNT=$osds
+	export SANDBOX_OSD_SIZE=$size
 	export SANDBOX_FLUX_OPERATOR_VERSION=$operator
 	export SANDBOX_UPSTREAM_COMMIT=$upstream
 }

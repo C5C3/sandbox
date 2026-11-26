@@ -324,8 +324,29 @@ scaffold_attached() {
 	[ "$status" -eq 0 ]
 	[ "$(yq '[.apiVersion, .kind, .metadata.name, .metadata.namespace] | join(" ")' - <<<"$output")" = "v1 ConfigMap cluster-vars flux-system" ]
 	[ "$(yq -o=json -I=0 '.metadata.labels' - <<<"$output")" = '{"reconcile.fluxcd.io/watch":"Enabled"}' ]
-	[ "$(yq -o=json -I=0 '.data' - <<<"$output")" = '{"NETWORK_SUBNET":"172.30.0.0/16","ADDRESSES_GATEWAY":"172.30.255.10","ADDRESSES_POOL":"172.30.255.0/24","ADDRESSES_DNS":"172.30.255.53","ADDRESSES_RABBITMQ":"172.30.255.11","REGISTRY_IMAGE":"registry:3","SWITCHES_HYPERVISOR_NODES":"1","SWITCHES_RESOLVER_FALLBACK":"false","SWITCHES_GLANCE":"false","SWITCHES_BARBICAN":"false","SWITCHES_HORIZON":"false","SWITCHES_FAKE_COMPUTE":"false","UPSTREAM_COBALTCORE":"'"$pin"'","FLUX_OPERATOR":"0.63.1","COMPUTE_VIRT_TYPE":"kvm"}' ]
+	[ "$(yq -o=json -I=0 '.data' - <<<"$output")" = '{"NETWORK_SUBNET":"172.30.0.0/16","ADDRESSES_GATEWAY":"172.30.255.10","ADDRESSES_POOL":"172.30.255.0/24","ADDRESSES_DNS":"172.30.255.53","ADDRESSES_RABBITMQ":"172.30.255.11","REGISTRY_IMAGE":"registry:3","SWITCHES_HYPERVISOR_NODES":"1","SWITCHES_RESOLVER_FALLBACK":"false","SWITCHES_GLANCE":"false","SWITCHES_BARBICAN":"false","SWITCHES_HORIZON":"false","SWITCHES_FAKE_COMPUTE":"false","SWITCHES_OSD_COUNT":"1","SWITCHES_OSD_SIZE":"10Gi","UPSTREAM_COBALTCORE":"'"$pin"'","FLUX_OPERATOR":"0.63.1","COMPUTE_VIRT_TYPE":"kvm","STORAGE_POOL_SIZE":"1"}' ]
 	[ "$(yq '[.data[] | tag] | unique | join(" ")' - <<<"$output")" = '!!str' ]
+}
+
+@test "cluster_vars carries STORAGE_POOL_SIZE 2 for two and three OSDs, and 1 without the key" {
+	local osds
+	for osds in 2 3; do
+		config_with ".switches[\"osd-count\"] = $osds"
+		run cluster_vars
+		[ "$status" -eq 0 ]
+		[ "$(yq -o=json '.data.STORAGE_POOL_SIZE' - <<<"$output")" = '"2"' ]
+	done
+	config_with 'del(.switches["osd-count"])'
+	run cluster_vars
+	[ "$status" -eq 0 ]
+	[ "$(yq -o=json '.data.STORAGE_POOL_SIZE' - <<<"$output")" = '"1"' ]
+}
+
+@test "cluster_vars fails for a key of the configuration that becomes STORAGE_POOL_SIZE" {
+	config_with '.storage["pool-size"] = 3'
+	run cluster_vars
+	[ "$status" -eq 1 ]
+	[ "$output" = "error: config: storage.pool-size and the pool size of switches.osd-count become the same Flux variable STORAGE_POOL_SIZE" ]
 }
 
 @test "cluster_vars carries COMPUTE_VIRT_TYPE qemu on a host without /dev/kvm" {

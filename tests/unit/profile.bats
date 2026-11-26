@@ -252,11 +252,12 @@ profile_fails_with() {
 	profile_load
 	run config_merged
 	[ "$status" -eq 0 ]
-	[ "$(yq -o=json -I=0 '.switches' - <<<"$output")" = '{"hypervisor-nodes":2,"resolver-fallback":false,"glance":false,"barbican":false,"horizon":false,"fake-compute":false,"osd-count":3}' ]
+	[ "$(yq -o=json -I=0 '.switches' - <<<"$output")" = '{"hypervisor-nodes":2,"resolver-fallback":false,"glance":false,"barbican":false,"horizon":false,"fake-compute":false,"osd-count":3,"osd-size":"10Gi"}' ]
 	[ "$(yq '.network.subnet' - <<<"$output")" = 172.30.0.0/16 ]
 
 	config_load
 	[ "$SANDBOX_HYPERVISOR_NODES" = 2 ]
+	[ "$SANDBOX_OSD_COUNT" = 3 ]
 }
 
 @test "a profile without switches leaves the configuration's" {
@@ -272,7 +273,7 @@ profile_fails_with() {
 
 @test "a switch of a profile adds switches to a configuration without them" {
 	config_with 'del(.switches)'
-	profile_with $'clusters: [management]\nswitches:\n  hypervisor-nodes: 3\n  resolver-fallback: true\n  glance: true\n  barbican: false\n  horizon: true\n  fake-compute: false'
+	profile_with $'clusters: [management]\nswitches:\n  hypervisor-nodes: 3\n  resolver-fallback: true\n  glance: true\n  barbican: false\n  horizon: true\n  fake-compute: false\n  osd-count: 2\n  osd-size: 20Gi'
 	profile_load
 	config_load
 	[ "$SANDBOX_HYPERVISOR_NODES" = 3 ]
@@ -281,6 +282,8 @@ profile_fails_with() {
 	[ "$SANDBOX_SWITCH_BARBICAN" = false ]
 	[ "$SANDBOX_SWITCH_HORIZON" = true ]
 	[ "$SANDBOX_SWITCH_FAKE_COMPUTE" = false ]
+	[ "$SANDBOX_OSD_COUNT" = 2 ]
+	[ "$SANDBOX_OSD_SIZE" = 20Gi ]
 }
 
 @test "an invalid switch of a profile fails with the message of config_load" {
