@@ -11,6 +11,8 @@
 . "$BATS_TEST_DIRNAME/../../scripts/lib/profile.sh"
 # shellcheck source=../../scripts/lib/hub.sh
 . "$BATS_TEST_DIRNAME/../../scripts/lib/hub.sh"
+# shellcheck source=../../scripts/lib/register.sh
+. "$BATS_TEST_DIRNAME/../../scripts/lib/register.sh"
 # shellcheck source=../../scripts/lib/vendor.sh
 . "$BATS_TEST_DIRNAME/../../scripts/lib/vendor.sh"
 
