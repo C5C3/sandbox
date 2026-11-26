@@ -32,6 +32,8 @@ Each file in this directory records one decision with its context, the alternati
 | [ADR-0026](0026-release-a-vendored-chart-through-an-artifactgenerator-on-the-hub.md) | Release a vendored chart through an ArtifactGenerator on the hub | Proposed |
 | [ADR-0027](0027-register-a-compute-cluster-through-the-command-layer.md) | Register a compute cluster through the command layer | Proposed |
 | [ADR-0028](0028-prove-the-delivery-to-a-compute-cluster-with-a-scratch-pool.md) | Prove the delivery to a compute cluster with a scratch pool | Proposed |
+| [ADR-0029](0029-install-the-system-bus-of-the-hypervisor-nodes-from-the-debian-archive.md) | Install the system bus of the hypervisor nodes from the Debian archive | Proposed |
+| [ADR-0030](0030-prove-the-hypervisor-node-with-a-scratch-hypervisor.md) | Prove the hypervisor node with a scratch Hypervisor | Proposed |
 
 ## Points to prove first
 
@@ -44,7 +46,7 @@ The [points to prove first of the README at 546377a](https://github.com/C5C3/san
 | 3 | OpenBao on the management cluster authenticates service accounts of the storage and compute clusters through `kubernetes/<cluster>` mounts, and those clusters obtain the client certificate its mutual TLS requires. | [#13](https://github.com/C5C3/sandbox/issues/13) | [ADR-0007](0007-ceph-client-keys-through-openbao.md) |
 | 4 | A `RabbitmqCluster` owned by the sandbox, with a TLS listener on a load-balancer address, is accepted as brownfield bus, and all control-plane services run on it. | [#9](https://github.com/C5C3/sandbox/issues/9) and [#10](https://github.com/C5C3/sandbox/issues/10) | [ADR-0006](0006-brownfield-rabbitmq-with-tls-from-milestone-1.md) |
 | 5 | `nova-compute` and the openstack-hypervisor-operator (hvo) on the compute cluster trust the Gateway's certificate. | [#17](https://github.com/C5C3/sandbox/issues/17) | [ADR-0005](0005-metallb-addresses-nip-io-names-one-ca-port-443.md), [ADR-0006](0006-brownfield-rabbitmq-with-tls-from-milestone-1.md), [ADR-0012](0012-external-clusters-over-a-vpn.md) |
-| 6 | The libvirt DaemonSet of the upstream lab runs on a kind node, with `/dev/kvm` present, `vhost_net` loadable, libvirtd in a systemd scope of the node and the kvm-node-agent writing the TLS files. | [#16](https://github.com/C5C3/sandbox/issues/16) | none |
+| 6 | The libvirt DaemonSet of the upstream lab runs on a kind node, with `/dev/kvm` present, `vhost_net` loadable, libvirtd in a systemd scope of the node and the kvm-node-agent writing the TLS files. | [#16](https://github.com/C5C3/sandbox/issues/16) | [ADR-0029](0029-install-the-system-bus-of-the-hypervisor-nodes-from-the-debian-archive.md), [ADR-0030](0030-prove-the-hypervisor-node-with-a-scratch-hypervisor.md) |
 | 7 | hvo onboards a node across the cluster boundary with the patched images upstream publishes. | [#17](https://github.com/C5C3/sandbox/issues/17) | [ADR-0002](0002-flux-on-the-management-cluster-as-hub.md) |
 | 8 | A chassis on the compute cluster registers with the Southbound database through node ports. | [#17](https://github.com/C5C3/sandbox/issues/17) | none |
 | 9 | Flux on the management cluster applies stages and Helm releases to the other clusters through kubeconfig Secrets, the hvo release with values from a Secret on the management cluster. | [#4](https://github.com/C5C3/sandbox/issues/4) and [#17](https://github.com/C5C3/sandbox/issues/17) | [ADR-0002](0002-flux-on-the-management-cluster-as-hub.md), [ADR-0014](0014-16-gib-host-for-the-profiles-up-to-full.md) |
