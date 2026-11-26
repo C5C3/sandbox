@@ -12,9 +12,10 @@ The idea for this sandbox and its implementation come out of the
 [IPCEI-CIS Hackathon Potsdam](https://apeirora.eu/content/news/apeirora-ipcei-cis-hackathon/)
 of the IPCEI-CIS and NeoNephos community, November 24 to 26, 2026.
 
-> **Status: milestones 0 to 2 built.** The scaffold of milestone 0, the
-> control plane of milestone 1 and the orders of milestone 2 are
-> implemented, and milestones 3 to 7 are specification.
+> **Status: milestones 0 to 2 and 4 built.** The scaffold of milestone 0,
+> the control plane of milestone 1, the orders of milestone 2 and the
+> hypervisor of milestone 4 are implemented, and milestones 3 and 5 to 7
+> are specification.
 > This README describes what is to be built, which upstream material it builds
 > on, and which points have to be proven first. It was written against
 > `C5C3/cobaltcore` at `15a0323e` and `C5C3/playground` at `d2e6b596`
@@ -329,8 +330,10 @@ that deploys them.
   Secret in `spec.kubeConfig`, and Helm releases for those clusters are
   `HelmRelease` objects on the management cluster with the same field. Two
   clusters run without Flux controllers, which saves memory, and the hvo
-  release reads its values straight from the Secret the ControlPlane writes on
-  the management cluster. The `FluxInstance` runs four controllers:
+  release reads its values from a copy on the management cluster of the
+  Secret the ControlPlane writes there
+  ([ADR-0032](docs/adr/0032-release-the-hypervisor-operator-from-the-hub-with-a-copy-of-its-auth-secret.md)).
+  The `FluxInstance` runs four controllers:
   source-controller, kustomize-controller, helm-controller and
   source-watcher. source-watcher copies a chart that upstream ships as a
   directory, such as `target-cluster-access`, out of the artifact of the
@@ -387,7 +390,8 @@ that deploys them.
   nodes (loop devices; the system bus, the labels and the annotation of the
   hypervisor nodes), install Flux, exchange what crosses a cluster
   boundary before Flux can (kubeconfigs, the token-review configuration of
-  OpenBao, CA bundles), and print access data.
+  OpenBao, the sandbox CA for the compute cluster in the ConfigMap
+  `flux-system/sandbox-trust`), and print access data.
 
 ### Moving the upstream pin
 
@@ -588,9 +592,12 @@ gives each worker two things, while Flux applies the stages:
   `openstack.c5c3.io/nova-compute-pool=lab`,
   `nova.openstack.cloud.sap/virt-driver=kvm`,
   `cobaltcore.cloud.sap/node-hypervisor-lifecycle=skip-tests` and
-  `nova.openstack.cloud.sap/aggregates` with an empty value. The libvirt
-  DaemonSet runs on the pool `lab`, the kvm-node-agent on every node with
-  `virt-driver`.
+  `nova.openstack.cloud.sap/aggregates` with an empty value, and the fifth
+  label `topology.kubernetes.io/zone=sandbox`, which the lab's nodes get
+  from Gardener. The libvirt DaemonSet runs on the pool `lab`, the
+  kvm-node-agent on every node with `virt-driver`, and the pool puts each
+  node into the aggregate and the availability zone of its zone, without
+  which hvo does not onboard it.
 
 A second `make up` finds the bus, applies the same labels and changes
 nothing. Four modules build the node, each a stage on the management
@@ -661,6 +668,98 @@ its chart keeps, and the namespaces `cert-manager` and `external-secrets`;
 and on the host the kernel module `vhost_net`, which `host-prepare.sh`
 loads. All but `vhost_net` go with `make down`.
 
+### The compute pool
+
+`make up` runs a compute service on every hypervisor node, so the node can
+boot servers, when the profile lists the module `compute-pool` on the
+management cluster and `trust` and
+`hypervisor-operator` on the compute cluster, beside the modules of the
+attachment (`remote-compute`, `hypervisor-fixtures`, `access`) and of the
+hypervisor node. After the node preparation it logs `waiting for the
+sandbox CA of sandbox-management`, waits up to `SANDBOX_STAGE_TIMEOUT`
+seconds for `tls.crt` of the Secret `cert-manager/sandbox-ca`, logs
+`writing the ConfigMap flux-system/sandbox-trust` and writes the CA there
+([ADR-0031](docs/adr/0031-carry-the-sandbox-ca-to-a-compute-cluster-through-the-command-layer.md)).
+A second `make up` writes the same ConfigMap and changes nothing. Three
+modules build the pool, each a stage on the management cluster:
+
+- `trust`: the Secrets `nova-metadata-ca` and `sandbox-ca` in `openstack`
+  on `sandbox-compute`, both with the sandbox CA, which the stage
+  `compute-trust` substitutes from the ConfigMap. Until `make up` has
+  written it, the stage fails its build and retries every minute.
+- `hypervisor-operator`: upstream's chart of hvo, released from the hub
+  as the other releases for the compute cluster are. An `ExternalSecret`
+  copies the auth Secret the ControlPlane writes into `openstack` to
+  `flux-system`, through an account that may read that one Secret, and the
+  `HelmRelease` `compute-hypervisor-operator` takes its values from the
+  copy and installs hvo in `openstack` on `sandbox-compute`, with the
+  sandbox CA in `SSL_CERT_FILE`
+  ([ADR-0032](docs/adr/0032-release-the-hypervisor-operator-from-the-hub-with-a-copy-of-its-auth-secret.md)).
+  hvo creates the `Hypervisor` of each node and requests its libvirt
+  certificate, after which the kvm-node-agent installs the TLS files and
+  the libvirt pod turns Ready.
+- `compute-pool`: upstream's `OVNChassis` `lab-chassis`,
+  `NeutronMetadataAgent` `lab-metadata-agent` and `NovaCompute` `lab`, each
+  with `targetClusterRef` `sandbox-compute`. The agent reaches the metadata
+  API at `nova-metadata.<suffix>` over https with `nova-metadata-ca` and
+  runs with 768Mi of memory. The pool runs `virtType` `kvm` on a host with
+  `/dev/kvm` and `qemu` without, the variable `COMPUTE_VIRT_TYPE` that
+  `make up` adds to `cluster-vars`, and points `cafile` of its client
+  sections at the CA of the mirrored contract.
+
+The stages `management-compute-pool` and `compute-hypervisor-operator` do
+not wait for each other, as upstream applies both at once. The pool's stage
+waits for the three objects to be Ready, and a pool is Ready only once
+`nova-compute` runs beside libvirtd and its service is up, so a finished
+`make up` means a compute service on every node. hvo then onboards the node
+into the aggregate `sandbox` of its zone, and `make verify` waits for that
+before it boots its server.
+The pool and the onboarding:
+
+```bash
+kubectl --kubeconfig .sandbox/kubeconfig/management.yaml -n openstack get novacomputes,ovnchassis,neutronmetadataagents
+kubectl --kubeconfig .sandbox/kubeconfig/compute.yaml get hypervisors
+```
+
+Five states need to be known:
+
+- **`compute-pool` without `hypervisor-operator`.** No `Hypervisor` exists,
+  the libvirt pod waits for its TLS files, and the stage
+  `management-compute-pool` runs into its timeout of 20 minutes with the
+  `NovaCompute` `lab` not Ready. Adding `hypervisor-operator`, with
+  `trust`, and running `make up` repairs it.
+- **`compute-pool` without `remote-compute`.** The OVN central publishes no
+  external address, and the `OVNChassis` `lab-chassis` reports
+  `CentralReady=False` under `CentralNotExternallyReachable` until the
+  stage runs into its timeout.
+- **The CA that does not come.** `make up` stops with `trust: the Secret
+  cert-manager/sandbox-ca on sandbox-management holds no tls.crt after
+  <n> s; make status shows the stage management-pki`, followed by
+  `; kubectl: <line>` when the last read of the Secret failed. Once the
+  cause is fixed, `make up` continues where it stopped.
+- **An hvo that exits at start.** The `HelmRelease`
+  `compute-hypervisor-operator` is not Ready, and the log of hvo names
+  Keystone's answer or an `x509` error:
+
+  ```bash
+  kubectl --kubeconfig .sandbox/kubeconfig/compute.yaml -n openstack logs deploy/hypervisor-operator-controller-manager -c manager
+  ```
+
+- **The modules taken off.** The pool goes before the registration
+  ([The registration of a compute cluster](#the-registration-of-a-compute-cluster)):
+  a profile that keeps `access` and takes `compute-pool`, `trust` and
+  `hypervisor-operator` off makes Flux remove the three stages and what
+  they applied, and the operators remove the DaemonSets of the pool, the
+  agent and the chassis and the three Secrets they delivered.
+  `make test-host` found the three stages, those DaemonSets and Secrets,
+  `nova-metadata-ca` and `sandbox-ca` on `sandbox-compute`, the Deployment
+  of hvo, and the `ExternalSecret` with its copy in `flux-system` gone by
+  the time `make up` returned. The ConfigMap `flux-system/sandbox-trust`
+  stays, because no stage owns it, and so do the CRDs
+  `hypervisors.kvm.cloud.sap` and `evictions.kvm.cloud.sap` of hvo's chart,
+  which Helm keeps, with the `Hypervisor` of each node. All of it goes with
+  `make down`.
+
 ## Modules
 
 A module of a cluster is the directory `clusters/<role>/<module>/` with two
@@ -729,7 +828,7 @@ The table is the planned set; M marks the milestone that builds it.
 | `cinder-rbd` | The `cinder` block of the ControlPlane with the backend `ceph1`. The backup target `cephbk` is a switch | `ceph-keys`, `controlplane` | 3 |
 | `remote-compute` | No stage. `remoteCompute` with the transport URL Secret of `messaging-tls`, `hypervisorOperator`, and `metadataGateway` and `consoleProxy` at `nova-metadata.<suffix>` and `nova-console.<suffix>` on the ControlPlane; `externallyReachable` on both databases of the OVN central, through a Flux patch of the stage of `controlplane` | `controlplane`; needs `messaging-tls`, `glance`, `placement`, `neutron` and `nova` beside it | 4 |
 | `hypervisor-fixtures` | The K-ORC fixtures hvo looks up, from upstream's lab overlay: domain `cc3test` with project `test`, the imports of the domain `Default`, the user `hypervisor-operator` and the role `admin`, the assignment of `admin` on `test`, flavor `1`, image `cirros-kvm` | `controlplane`; needs `remote-compute`, `glance` and `nova` beside it | 4 |
-| `compute-pool` | `OVNChassis`, `NeutronMetadataAgent` with reduced memory, `NovaCompute`, each with `targetClusterRef` | `remote-compute`, registration of the compute cluster | 4 |
+| `compute-pool` | The `OVNChassis` `lab-chassis`, the `NeutronMetadataAgent` `lab-metadata-agent` at 768Mi and the `NovaCompute` `lab` on the virt type of the host, each with `targetClusterRef` `sandbox-compute`. See [The compute pool](#the-compute-pool) | `controlplane`, `trust` on compute; needs `remote-compute`, the registration of the compute cluster and `hypervisor-operator` on compute beside it | 4 |
 | `observability`, `ui` | Prometheus and Grafana; Headlamp and Flux Web. Off by default | `controllers` | later |
 
 Three states of `remote-compute` and `hypervisor-fixtures` need to be known:
@@ -789,11 +888,11 @@ Three states of `remote-compute` and `hypervisor-fixtures` need to be known:
 | `resolver` | The CoreDNS block that answers nip.io names. Added by the switch `resolver-fallback` | | 1 |
 | `access` | The `target-cluster-access` chart with `namespaces={openstack}`, `privilegedNamespaces={openstack}`, `createNamespaces=true`, released from the hub: the stage `compute-access` applies an `ArtifactGenerator` and the `HelmRelease` `compute-access` to `flux-system` of the management cluster, which installs the release `target-cluster-access` in `c5c3-access` through `kubeconfig-compute`. `make up` then registers the cluster, see [The registration of a compute cluster](#the-registration-of-a-compute-cluster) | | 4 |
 | `controllers` | cert-manager and External Secrets with upstream's charts and values, released from the hub: the stage `compute-controllers` applies the `HelmRepository` and `HelmRelease` objects `compute-cert-manager` and `compute-external-secrets` to `flux-system` of the management cluster, which install them through `kubeconfig-compute` | | 4 |
-| `node-prep` | The migration port reservation of upstream and the namespace `hypervisor-system`; `make up` gives the workers the system bus, the node labels and the `aggregates` annotation, see [The hypervisor node](#the-hypervisor-node) | | 4 |
-| `trust` | The sandbox CA where the metadata agent, `nova-compute` and hvo read it | `access` | 4 |
+| `node-prep` | The migration port reservation of upstream and the namespace `hypervisor-system`; `make up` gives the workers the system bus, the five node labels, the zone `sandbox` among them, and the `aggregates` annotation, see [The hypervisor node](#the-hypervisor-node) | | 4 |
+| `trust` | The Secrets `nova-metadata-ca` and `sandbox-ca` in `openstack` with the sandbox CA, which `make up` copies into the ConfigMap `flux-system/sandbox-trust`, for the metadata agent and hvo; `nova-compute` reads the same CA from the mirrored contract | `access`, `pki` on management | 4 |
 | `libvirt` | The ClusterIssuer `selfsigned-cluster-issuer`, the libvirt CA and Issuer, the libvirt DaemonSet and its ConfigMap of upstream, with a `host-prepare.sh` that runs guests under TCG on a node without `/dev/kvm`. The DaemonSet runs in `openstack`, which `access` creates | `access`, `controllers`, `node-prep` | 4 |
 | `kvm-node-agent` | Upstream's kna chart, released from the hub: the `OCIRepository` `kvm-node-agent` and the `HelmRelease` `compute-kvm-node-agent` in `flux-system` of the management cluster, which installs it in `hypervisor-system`. Helm does not wait for its pod | `libvirt` | 4 |
-| `hypervisor-operator` | The hvo release, with its values from the auth Secret on the management cluster | `access`, `compute-pool` on management | 4 |
+| `hypervisor-operator` | Upstream's hvo chart, released from the hub: the `OCIRepository` `openstack-hypervisor-operator`, an `ExternalSecret` that copies hvo's auth Secret into `flux-system`, and the `HelmRelease` `compute-hypervisor-operator`, which installs hvo in `openstack` with the sandbox CA in `SSL_CERT_FILE` | `libvirt`, `trust`, `hypervisor-fixtures` on management | 4 |
 | `ceph-libvirt-secret` | ExternalSecret for the `cinder` key that the `ceph-secret` container of libvirt reads | `openbao-remote-auth` on management | 5 |
 
 ## Profiles
@@ -1020,7 +1119,7 @@ make vendor                 # check out the paths of upstream at the pin into ve
 make validate               # render every root and stage against vendor/cobaltcore, check schemas and patches
 make test                   # the unit tests of the command layer
 make test-validate          # the tests of make validate on a fixture tree, with flux and kubeconform
-make test-host              # the lifecycle, the profiles gateway, platform, identity and controlplane, controlplane on the TLS bus, the compute cluster attached to the control plane, and the hypervisor node against a real Docker, each creating and removing a sandbox
+make test-host              # the lifecycle, the profiles gateway, platform, identity and controlplane, controlplane on the TLS bus, the compute cluster attached to the control plane, the hypervisor node and the compute pool against a real Docker, each creating and removing a sandbox
 make down                   # delete clusters, registry, network, loop devices
 ```
 
@@ -1044,7 +1143,12 @@ Memcached and RabbitMQ and can take longer than 600 s as well; a second run
 continues too. The first `make up PROFILE=controlplane` pulls the images of
 all eight services, the OVN databases, the NFS server and the fake compute,
 and on a slow link exceeds 600 s as well; `SANDBOX_STAGE_TIMEOUT=3600`
-waits for it, or a second run continues.
+waits for it, or a second run continues. The first `make up` of a profile
+with the compute pool also pulls the images of hvo, libvirt, the
+kvm-node-agent, Open vSwitch and OVN, the metadata agent and `nova-compute`
+on the compute cluster, and waits for `nova-compute` to run beside libvirtd
+on every node, so it needs `SANDBOX_STAGE_TIMEOUT=3600` as well; hvo onboards
+the node after `make up`, and `make verify` waits for it.
 
 `make env` prints the seven variables `OS_AUTH_URL`, `OS_USERNAME`,
 `OS_PASSWORD`, `OS_PROJECT_NAME`, `OS_USER_DOMAIN_NAME`,
@@ -1074,12 +1178,25 @@ Quick Start (ControlPlane):
 | Cinder | `cinder-catalog`, and `cinder-volume` creates a 1 GiB volume that is `available` within 120 s |
 | Nova | `nova-catalog`, `nova-services` finds a `nova-scheduler` and a `nova-conductor` `up`, and, beside the Deployment `controlplane-fake-compute`, `nova-server` boots a server on the fake compute to `ACTIVE` |
 | Horizon | `horizon-login` logs in as `admin` through the login form with curl |
+| Compute pool | `compute-pool` finds each `NovaCompute` that names `sandbox-compute` Ready and its nodes `Active`, `up` and `enabled`; `compute-chassis` and `compute-metadata-agent` find the `OVNChassis` and the `NeutronMetadataAgent` Ready and an alive agent of `ovn-controller` and `neutron-ovn-metadata-agent` on each node; `compute-hypervisor` finds the `Hypervisor` of each node on `sandbox-compute` onboarded within 600 s and the node in the aggregate of its zone; `compute-network` creates a network on `198.51.100.0/24` with the MTU 1442; `compute-server` boots a server from `cirros-kvm` and the flavor `1` to `ACTIVE` on the first node; `compute-metadata` finds in its console log, within 300 s, the instance id cirros read from the metadata service; `compute-console` opens the noVNC console of the server through the Gateway and receives the RFB greeting of its VNC |
 | Orders | `orders-ready` finds the orders of the assigned namespaces `Ready`, `orders-secrets` the Secret beside each that delivers one, `orders-converge` orders a scratch set, `orders-rotation` watches its application credential rotate, `orders-teardown` deletes the scratch set and finds nothing left |
 
-On `controlplane` that is 21 checks, on `identity` 7. The five order checks
-run after those of the services whenever the `ControlPlane` assigns a
-namespace on the management cluster, and are the checks of Part 1 of
-upstream's Quick Start (Orders). The first two only read the orders they
+On `controlplane` that is 21 checks, on `identity` 7, and on the profile of
+the host test of the compute pool 18: the ten of Keystone, Glance,
+Placement, Neutron and Nova and the eight of the pool. The eight checks of
+the compute pool run after those of the services whenever a `NovaCompute`
+in `openstack` names the registration `sandbox-compute`, and are the checks
+of Part 2, Steps 1 to 6 of upstream's Quick Start (metal-stack) for one
+node
+([ADR-0033](docs/adr/0033-check-the-compute-pool-in-make-verify-with-a-server-on-the-first-node.md)).
+A check whose input an earlier check failed to create reports
+`FAIL <check>: skipped, <earlier check> failed`, so they are always eight.
+Their waits are bounded at 600 s for the onboarding, 600 s for the
+server's boot and 300 s for the console log. The console token reaches
+`openssl` on stdin and appears in no argument and no line. The five order
+checks run after those of the services and the pool whenever the
+`ControlPlane` assigns a namespace on the management cluster, and are the
+checks of Part 1 of upstream's Quick Start (Orders). The first two only read the orders they
 find. The other three order `sandbox-verify`, `sandbox-verify-project`,
 `sandbox-verify-member`, `sandbox-verify-catalog`, `sandbox-verify-appcred`,
 `sandbox-verify-db` and, on a managed bus, `sandbox-verify-bus` in the first
@@ -1098,8 +1215,9 @@ names that start with `sandbox-verify`, deletes what an earlier run left
 of them first and what it created when it ends. No check passes
 `--insecure` or `-k`, and curl reads the admin password from a file of mode
 600, never from an argument. Without a `ControlPlane`, `make verify` reports
-0 of 0 checks and exits 0. Both targets read the hub only, so they work with
-any `PROFILE` and `CONFIG`. `make verify`, like the `openstack` calls after
+0 of 0 checks and exits 0. Both targets read the hub, and `compute-hypervisor`
+also `sandbox-compute` with its kubeconfig file, so they work with any
+`PROFILE` and `CONFIG`. `make verify`, like the `openstack` calls after
 `make env`, needs the resolver of the host to answer the nip.io names.
 
 With `switches.resolver-fallback` on, `make up` prints the resolver settings
@@ -1135,7 +1253,7 @@ lists the checks it adds.
 | CPU | To be measured. *Upstream* budgets 4 vCPU for the control plane with all eight services. Working estimate for `full`: 8 cores |
 | Disk | To be measured. Every kind node keeps its own image store, so an image is stored once per node that runs it. Working estimate: 60 GB free for `full`, 100 GB for `parity`, including the sparse OSD files |
 | DNS | The resolver must answer `*.nip.io` names with private addresses. Resolvers with DNS rebinding protection drop such answers. For such a host, `switches.resolver-fallback` adds the module `resolver`: the CoreDNS of every cluster answers the names itself, and the CoreDNS of the management cluster answers them on `addresses.dns`, to which the host routes `nip.io` with the settings `make up` prints ([ADR-0018](docs/adr/0018-print-the-host-resolver-settings-of-the-nip-io-fallback.md)) |
-| Tools | `docker`, `kind`, `kubectl`, `helm`, `flux`, `git`, `yq` v4.40.1 or newer, `jq`, `make`, `bats` (bats-core 1.5.0 or newer, for `make test`, `make test-validate` and `make test-host`), `kubeconform`, `curl` and `tar` for `make validate`, `curl` for `make verify`, `curl` and `openssl` for `make test-host`, and the OpenStack CLI with `osc-placement` and `python-barbicanclient` |
+| Tools | `docker`, `kind`, `kubectl`, `helm`, `flux`, `git`, `yq` v4.40.1 or newer, `jq`, `make`, `bats` (bats-core 1.5.0 or newer, for `make test`, `make test-validate` and `make test-host`), `kubeconform`, `curl` and `tar` for `make validate`, `curl` and `openssl` for `make verify` and `make test-host`, and the OpenStack CLI with `osc-placement` and `python-barbicanclient` |
 | Network | Egress to `github.com` (upstream, the tools and schemas of `make validate`, the CRDs of the module `crds`), `raw.githubusercontent.com` (the Kubernetes schemas of `make validate`, the MetalLB manifest of the module `loadbalancer`), `ghcr.io` (among others the NFS server of `cinder-nfs`), `quay.io`, `docker.io`, `deb.debian.org` (the package `dbus` of the hypervisor nodes, for a profile with `node-prep`), `registry.k8s.io` (the images of `csi-driver-nfs`), the Helm repositories, `raw.githubusercontent.com` as the one of `csi-driver-nfs` among them, and the cirros download. The management cluster reads `github.com` and `raw.githubusercontent.com` at every reconcile of `crds` and `loadbalancer` ([ADR-0019](docs/adr/0019-read-third-party-manifests-as-pinned-remote-resources.md)) |
 
 `make up`, `make up-<cluster>` and `scripts/preflight.sh [<role>...]` check
@@ -1241,6 +1359,24 @@ the verdict on point 10 is that of the profile `full`. It was taken before
 the module `orders`; `controlplane` with the orders of `workflow` and the
 21 checks of `make verify` is not measured yet.
 
+`make footprint` on the scratch profile of `tests/host/compute-pool.bats`,
+Keystone, Glance, Placement, Neutron and Nova on the TLS bus with the
+compute pool on one hypervisor node, after `make verify` passed its 18
+checks and a second `make up`, on 2026-11-26, on the same host:
+
+```text
+CLUSTER              REQUESTS_MIB WORKING_SET_MIB
+sandbox-management          10498            6965
+sandbox-compute              2280            2311
+registry                        -              20
+total                       12778            9296
+```
+
+The compute cluster with one hypervisor node, hvo, libvirt, Open vSwitch,
+the metadata agent and `nova-compute` works in about 2.3 GiB without a
+guest, against the estimate of about 3 GiB with two guests in the table
+above; the server of `make verify` was deleted before the measurement.
+
 ## Milestones
 
 Each milestone ends with checks taken from the upstream quick starts, so
@@ -1274,7 +1410,7 @@ changes the design before the modules are written.
 | 2 | With host networking on the storage cluster, Cinder pods on the management cluster and QEMU on the compute node reach monitor and OSDs, and the monitor address stays valid for the life of the sandbox | 3 | Fixed addresses for the storage node; a load balancer per daemon |
 | 3 | OpenBao on the management cluster authenticates service accounts of the storage and compute clusters through `kubernetes/<cluster>` mounts, and those clusters obtain the client certificate its mutual TLS requires, which upstream issues from a ClusterIssuer of the management cluster | 3 | AppRole or a token for the remote stores; copying the key Secrets with a script |
 | 4 | A `RabbitmqCluster` owned by the sandbox, with a TLS listener on a load-balancer address, is accepted as brownfield bus, and all control-plane services run on it | 1 | None beside a compute cluster: the webhook requires it |
-| 5 | `nova-compute` and hvo on the compute cluster trust the Gateway's certificate. *Upstream*: the remote contract carries `ca.crt` for the broker only, and no field names a trust anchor for Keystone. Candidate: one CA signs broker and Gateway, and the pool's `extraConfig` points `cafile` of the client sections at the mounted `ca.crt`; hvo gets `OS_CACERT` through a post-renderer | 4 | A certificate from a public CA through DNS-01 on a real domain; an upstream change |
+| 5 | `nova-compute` and hvo on the compute cluster trust the Gateway's certificate. *Upstream*: the remote contract carries `ca.crt` for the broker only, and no field names a trust anchor for Keystone. Candidate: one CA signs broker and Gateway, and the pool's `extraConfig` points `cafile` of the client sections at the mounted `ca.crt`; hvo gets `SSL_CERT_FILE` through a post-renderer, because its Keystone client ignores `OS_CACERT` ([C5C3/cobaltcore#1885](https://github.com/C5C3/cobaltcore/issues/1885)) | 4 | A certificate from a public CA through DNS-01 on a real domain; an upstream change |
 | 6 | The upstream lab's libvirt DaemonSet runs on a kind node: `/dev/kvm` present, `vhost_net` loadable, libvirtd in a systemd scope of the node, kna writing the TLS files. *Upstream* notes that its kind suite does not reuse these manifests because CI has neither `/dev/kvm` nor kna | 4 | The simpler DaemonSet of `tests/e2e-nova-libvirt`, without migration TLS, which costs live migration |
 | 7 | hvo onboards a node across the cluster boundary, with the patched images upstream publishes (`--default-high-availability=false`, `OS_INTERFACE`) | 4 | Run the pool without hvo; aggregates and eviction by hand |
 | 8 | A chassis on the compute cluster registers with the Southbound database through node ports | 4 | Covered upstream in part by `e2e-multicluster/placed-services` |
