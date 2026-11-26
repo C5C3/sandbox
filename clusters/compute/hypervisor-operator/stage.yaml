@@ -1,0 +1,34 @@
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: compute-hypervisor-operator
+  namespace: flux-system
+spec:
+  # libvirt runs the Issuer of the libvirt certificates hvo requests, after
+  # access, controllers and node-prep; trust puts the Secret sandbox-ca beside
+  # the release; hvo scopes a token to the project test in the domain cc3test
+  # at its start, which hypervisor-fixtures creates, and exits without it.
+  # No dependency on the pool, whose stage waits for the pool to be Ready,
+  # which needs the Hypervisor hvo creates.
+  dependsOn:
+    - name: compute-libvirt
+    - name: compute-trust
+    - name: management-hypervisor-fixtures
+  interval: 10m
+  retryInterval: 1m
+  timeout: 10m
+  # The source, the account, the copy of the auth Secret and the release land
+  # on sandbox-management, where Flux runs; the HelmRelease reaches
+  # sandbox-compute through spec.kubeConfig of its own, so the stage names
+  # none.
+  path: ./compute/hypervisor-operator
+  prune: true
+  wait: true
+  sourceRef:
+    kind: OCIRepository
+    name: sandbox
+  # kstatus reads no Ready condition of a HelmRelease.
+  healthCheckExprs:
+    - apiVersion: helm.toolkit.fluxcd.io/v2
+      kind: HelmRelease
+      current: status.conditions.exists(c, c.type == 'Ready' && c.status == 'True' && c.observedGeneration == metadata.generation)

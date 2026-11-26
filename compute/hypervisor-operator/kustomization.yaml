@@ -1,0 +1,21 @@
+# The module hypervisor-operator on sandbox-compute: upstream's chart of the
+# openstack-hypervisor-operator (hvo), released from the hub. Every object
+# lives on sandbox-management: in flux-system the OCIRepository of
+# source.yaml, the copy of the auth Secret of auth.yaml with its account and
+# SecretStore, and the HelmRelease of release.yaml, which installs the chart
+# in openstack on sandbox-compute through the Secret kubeconfig-compute; in
+# openstack the Role and RoleBinding of auth.yaml, which let that account get
+# the one source Secret.
+#
+# valuesFrom and spec.kubeConfig read only the namespace of the release, and
+# the ControlPlane writes the auth Secret of hvo into openstack. A release in
+# openstack would put the cluster-admin kubeconfig of sandbox-compute into
+# the namespace the operators read, so an ExternalSecret copies the auth
+# Secret into flux-system instead. tests/unit/modules.bats compares the
+# source and the valuesFrom with upstream's files.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - source.yaml
+  - auth.yaml
+  - release.yaml
