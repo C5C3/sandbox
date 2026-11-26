@@ -827,3 +827,35 @@ EOF
 		'["CustomResourceDefinition","clientprofiles.csi.ceph.io"]' ]
 }
 
+@test "the stage storage-rook-operator applies the source and the release on sandbox-management after rook-crds and waits for the release" {
+	local stage=$SANDBOX_ROOT/clusters/storage/rook-operator/stage.yaml
+	[ "$(yq -o=json -I=0 '[.spec.path, .spec.interval, .spec.retryInterval, .spec.timeout, (.spec | has("kubeConfig")), (.spec | has("postBuild"))]' "$stage")" = \
+		'["./storage/rook-operator","10m","1m","10m",false,false]' ]
+	[ "$(yq -o=json -I=0 '.spec.healthCheckExprs' "$stage")" = \
+		"$(yq -o=json -I=0 '.spec.healthCheckExprs' "$SANDBOX_ROOT/clusters/compute/controllers/stage.yaml")" ]
+	[ "$(yq -o=json -I=0 '.resources' "$SANDBOX_ROOT/storage/rook-operator/kustomization.yaml")" = '["source.yaml","release.yaml"]' ]
+}
+
+@test "the source and the release of rook-operator are upstream's, under names of their own, with allowLoopDevices and the kubeconfig of storage" {
+	local dir=$SANDBOX_ROOT/storage/rook-operator upstream=$SANDBOX_ROOT/vendor/cobaltcore/deploy/overlays/metal-stack/ceph
+	local fields='[.spec.chart.spec.chart, .spec.chart.spec.version, .spec.install, .spec.upgrade]'
+	[ "$(yq -o=json -I=0 '[.kind, .metadata.namespace, .metadata.name, .spec]' "$dir/source.yaml")" = \
+		"$(yq -o=json -I=0 '[.kind, .metadata.namespace, "storage-" + .metadata.name, .spec]' "$upstream/source.yaml")" ]
+	[ "$(yq -o=json -I=0 "$fields" "$dir/release.yaml")" = "$(yq -o=json -I=0 "$fields" "$upstream/release.yaml")" ]
+	[ "$(yq -o=json -I=0 '.spec.values' "$dir/release.yaml")" = "$(yq -o=json -I=0 '.spec.values + {"allowLoopDevices": true}' "$upstream/release.yaml")" ]
+	[ "$(yq -o=json -I=0 '[.kind, .metadata.namespace, .metadata.name, .spec.interval, .spec.releaseName, .spec.targetNamespace, .spec.storageNamespace, .spec.chart.spec.sourceRef, .spec.kubeConfig]' "$dir/release.yaml")" = \
+		'["HelmRelease","flux-system","storage-rook-ceph","30m","rook-ceph","rook-ceph","rook-ceph",{"kind":"HelmRepository","name":"storage-rook-release"},{"secretRef":{"name":"kubeconfig-storage"}}]' ]
+	# Upstream's release lives in rook-ceph and names its source in flux-system.
+	[ "$(yq -o=json -I=0 '[.metadata.namespace, .spec.chart.spec.sourceRef]' "$upstream/release.yaml")" = \
+		'["rook-ceph",{"kind":"HelmRepository","name":"rook-release","namespace":"flux-system"}]' ]
+}
+
+@test "a release of storage/rook-operator without kubeConfig breaks point 4" {
+	tree_copy
+	yq -i 'del(.spec.kubeConfig)' "$BATS_TEST_TMPDIR/tree/storage/rook-operator/release.yaml"
+	run stage_contract "$BATS_TEST_TMPDIR/tree" storage/rook-operator
+	echo "point $output"
+	[ "$status" -eq 1 ]
+	[ "$output" = 4 ]
+}
+

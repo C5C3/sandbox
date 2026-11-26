@@ -57,3 +57,10 @@ crds_url() {
 	[[ $commit =~ $SANDBOX_SHA_RE ]]
 	[ "$(crds_url k-orc)" = "https://raw.githubusercontent.com/k-orc/openstack-resource-controller/$commit/dist/install.yaml" ]
 }
+
+@test "the CRD stream of rook is that of the chart version of the release of rook-operator" {
+	local version
+	version=$(yq '.spec.chart.spec.version' "$SANDBOX_ROOT/storage/rook-operator/release.yaml")
+	[[ $version =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+	[ "$(crds_url rook)" = "https://raw.githubusercontent.com/rook/rook/$version/deploy/examples/crds.yaml" ]
+}
