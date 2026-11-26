@@ -1,0 +1,29 @@
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: compute-trust
+  namespace: flux-system
+spec:
+  # access creates the namespace openstack, pki the sandbox CA, which make up
+  # copies into the ConfigMap sandbox-trust.
+  dependsOn:
+    - name: compute-access
+    - name: management-pki
+  interval: 10m
+  retryInterval: 1m
+  timeout: 2m
+  path: ./compute/trust
+  prune: true
+  wait: true
+  sourceRef:
+    kind: OCIRepository
+    name: sandbox
+  kubeConfig:
+    secretRef:
+      name: kubeconfig-compute
+  # Until make up has written the ConfigMap, the build fails and the stage
+  # retries after retryInterval.
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: sandbox-trust

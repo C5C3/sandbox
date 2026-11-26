@@ -555,6 +555,22 @@ EOF
 		'["../../vendor/cobaltcore/deploy/overlays/metal-stack/hypervisor-fixtures"]' ]
 }
 
+@test "the stage compute-trust applies the module trust on sandbox-compute after access and pki and substitutes from the ConfigMap sandbox-trust alone" {
+	local stage=$SANDBOX_ROOT/clusters/compute/trust/stage.yaml
+	run stage_contract "$SANDBOX_ROOT" compute/trust
+	echo "point $output"
+	[ "$status" -eq 0 ]
+	[ "$(yq -o=json -I=0 '[.spec.dependsOn, .spec.path, .spec.interval, .spec.retryInterval, .spec.timeout, .spec.kubeConfig]' "$stage")" = \
+		'[[{"name":"compute-access"},{"name":"management-pki"}],"./compute/trust","10m","1m","2m",{"secretRef":{"name":"kubeconfig-compute"}}]' ]
+	[ "$(yq -o=json -I=0 '.spec.postBuild' "$stage")" = '{"substituteFrom":[{"kind":"ConfigMap","name":"sandbox-trust"}]}' ]
+}
+
+@test "the module trust puts the sandbox CA into the Secrets nova-metadata-ca and sandbox-ca in openstack" {
+	[ "$(yq -o=json -I=0 '.resources' "$SANDBOX_ROOT/compute/trust/kustomization.yaml")" = '["secrets.yaml"]' ]
+	[ "$(yq ea -o=json -I=0 '[[.apiVersion, .kind, .metadata.namespace, .metadata.name, .data]]' "$SANDBOX_ROOT/compute/trust/secrets.yaml")" = \
+		'[["v1","Secret","openstack","nova-metadata-ca",{"ca.crt":"${SANDBOX_CA_B64}"}],["v1","Secret","openstack","sandbox-ca",{"ca.crt":"${SANDBOX_CA_B64}"}]]' ]
+}
+
 @test "the c5c3-operator depends on no release that controllers suspends" {
 	local pattern names name
 	pattern=$(yq '.patches[] | select(.patch | test("/spec/suspend")) | .target.name' \

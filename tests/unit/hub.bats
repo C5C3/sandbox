@@ -771,7 +771,7 @@ controlplane_ready() {
 	[ "$output" = "error: cannot list the nodes of kind cluster sandbox-storage" ]
 }
 
-@test "hub_sync writes no Secret for management, registers after the roots, prepares the nodes before the wait, and counts the module stages of the attached clusters" {
+@test "hub_sync writes no Secret for management, registers after the roots, prepares the nodes and copies the CA before the wait, and counts the module stages of the attached clusters" {
 	scaffold_attached
 	attached_roles() { echo "management storage"; }
 	ensure_flux() { echo ensure_flux >>"$BATS_TEST_TMPDIR/steps"; }
@@ -781,12 +781,14 @@ controlplane_ready() {
 	ensure_root() { echo "ensure_root $1" >>"$BATS_TEST_TMPDIR/steps"; }
 	ensure_registrations() { echo ensure_registrations >>"$BATS_TEST_TMPDIR/steps"; }
 	ensure_node_prep() { echo ensure_node_prep >>"$BATS_TEST_TMPDIR/steps"; }
+	ensure_trust() { echo ensure_trust >>"$BATS_TEST_TMPDIR/steps"; }
 	wait_stages() { echo wait_stages >>"$BATS_TEST_TMPDIR/steps"; }
 	run hub_sync
 	[ "$status" -eq 0 ]
 	# The registration follows the last root, whose stage of access fills the
-	# token it reads. The node preparation runs while Flux applies the stages,
-	# and both come before the wait for the stages.
+	# token it reads. The node preparation and the copy of the CA run while
+	# Flux applies the stages, and all three come before the wait for the
+	# stages.
 	[ "$(<"$BATS_TEST_TMPDIR/steps")" = "ensure_flux
 ensure_cluster_vars
 ensure_kubeconfig_secret storage
@@ -795,6 +797,7 @@ ensure_root management
 ensure_root storage
 ensure_registrations
 ensure_node_prep
+ensure_trust
 wait_stages" ]
 	[[ ${lines[-1]} == *": 2 stages Ready on 2 clusters at latest@sha256:new" ]]
 }
