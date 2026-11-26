@@ -444,10 +444,10 @@ EOF
 	done
 }
 
-@test "the stages of openbao, objectstore, platform, sizing, cinder-nfs, fake-compute, hypervisor-fixtures and of access, controllers and node-prep on compute substitute no variables" {
+@test "the stages of openbao, objectstore, platform, sizing, cinder-nfs, fake-compute, hypervisor-fixtures and of access, controllers, node-prep and libvirt on compute substitute no variables" {
 	local stage
 	for stage in management/{openbao,objectstore,platform,sizing,cinder-nfs,fake-compute,hypervisor-fixtures} \
-		compute/{access,controllers,node-prep}; do
+		compute/{access,controllers,node-prep,libvirt}; do
 		echo "$stage"
 		[ "$(yq '.spec | has("postBuild")' "$SANDBOX_ROOT/clusters/$stage/stage.yaml")" = false ]
 	done
@@ -506,6 +506,25 @@ EOF
 	[ "$(yq -o=json -I=0 '[.resources, has("patches")]' "$SANDBOX_ROOT/compute/node-prep/kustomization.yaml")" = \
 		'[["../../vendor/cobaltcore/deploy/overlays/metal-stack/migration-ports"],false]' ]
 	[ -f "$SANDBOX_ROOT/vendor/cobaltcore/deploy/overlays/metal-stack/migration-ports/kustomization.yaml" ]
+}
+
+@test "the module libvirt applies the four vendored files, merges host-prepare.sh into libvirt-lab, and its stage waits for access, controllers and node-prep, not for the pods" {
+	local dir=$SANDBOX_ROOT/compute/libvirt stage=$SANDBOX_ROOT/clusters/compute/libvirt/stage.yaml file
+	[ "$(yq -o=json -I=0 '.resources' "$dir/kustomization.yaml")" = \
+		'["../../vendor/cobaltcore/deploy/bases/tls/cluster-issuer.yaml","../../vendor/cobaltcore/deploy/overlays/metal-stack/hypervisor/libvirt-ca.yaml","../../vendor/cobaltcore/deploy/overlays/metal-stack/hypervisor/libvirt-configmap.yaml","../../vendor/cobaltcore/deploy/overlays/metal-stack/hypervisor/libvirt-daemonset.yaml"]' ]
+	for file in $(yq '.resources[]' "$dir/kustomization.yaml"); do
+		[ -f "$dir/$file" ]
+	done
+	[ "$(yq -o=json -I=0 '[.configMapGenerator, has("patches")]' "$dir/kustomization.yaml")" = \
+		'[[{"name":"libvirt-lab","namespace":"openstack","behavior":"merge","files":["host-prepare.sh"]}],false]' ]
+	# The ConfigMap the generator merges into, and the key it replaces.
+	[ "$(yq -o=json -I=0 '[.kind, .metadata.name, .metadata.namespace, (.data | keys)]' \
+		"$SANDBOX_ROOT/vendor/cobaltcore/deploy/overlays/metal-stack/hypervisor/libvirt-configmap.yaml")" = \
+		'["ConfigMap","libvirt-lab","openstack",["host-prepare.sh","libvirtd.sh","ceph-secret.sh","libvirtd.conf","qemu.conf"]]' ]
+	[ "$(yq -o=json -I=0 '[.spec.dependsOn, .spec.path, .spec.interval, .spec.retryInterval, .spec.timeout, .spec.kubeConfig]' "$stage")" = \
+		'[[{"name":"compute-access"},{"name":"compute-controllers"},{"name":"compute-node-prep"}],"./compute/libvirt","10m","1m","5m",{"secretRef":{"name":"kubeconfig-compute"}}]' ]
+	[ "$(yq -o=json -I=0 '.spec.healthCheckExprs' "$stage")" = \
+		'[{"apiVersion":"apps/v1","kind":"DaemonSet","current":"status.observedGeneration == metadata.generation"}]' ]
 }
 
 @test "the stage of hypervisor-fixtures applies upstream's lab fixtures after controlplane and waits for the seven K-ORC kinds to be Available" {
