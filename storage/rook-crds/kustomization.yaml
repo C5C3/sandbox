@@ -1,0 +1,11 @@
+# The module rook-crds on sandbox-storage: upstream's Namespace rook-ceph and
+# the CRD clientprofiles.csi.ceph.io, unchanged. Upstream's ceph overlay
+# holds them beside the HelmRepository and the HelmRelease, which live on
+# the hub here, and one stage applies to one cluster. The Rook operator
+# watches ClientProfile and exits after about two minutes without the CRD,
+# so this stage runs before the release of rook-operator (ADR-0035).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../vendor/cobaltcore/deploy/overlays/metal-stack/ceph/namespace.yaml
+  - ../../vendor/cobaltcore/deploy/overlays/metal-stack/ceph/csi-clientprofile-crd.yaml

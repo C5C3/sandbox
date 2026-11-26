@@ -1,9 +1,9 @@
 #!/usr/bin/env bats
 # The tree Flux reads: the stage contract of every module of a cluster, the
 # kustomization of each cluster, and no literal address in a manifest. The
-# modules of compute/ copy objects of upstream under names of their own, and
-# the tests compare each copy with upstream's file, so this file needs the
-# checkout of make vendor.
+# modules of compute/ and storage/ copy objects of upstream under names of
+# their own, and the tests compare each copy with upstream's file, so this
+# file needs the checkout of make vendor.
 
 setup() {
 	load helpers
@@ -74,12 +74,13 @@ component_patch() {
 	I=$2 yq '.patches[env(I)].patch' "$SANDBOX_ROOT/controlplane/components/$1/kustomization.yaml" | yq -o=json -I=0 '.'
 }
 
-# tree_copy: copies clusters/, infrastructure/ and compute/ into
+# tree_copy: copies clusters/, infrastructure/, compute/ and storage/ into
 # $BATS_TEST_TMPDIR/tree.
 tree_copy() {
 	rm -rf -- "$BATS_TEST_TMPDIR/tree"
 	mkdir -- "$BATS_TEST_TMPDIR/tree"
-	cp -R -- "$SANDBOX_ROOT/clusters" "$SANDBOX_ROOT/infrastructure" "$SANDBOX_ROOT/compute" "$BATS_TEST_TMPDIR/tree/"
+	cp -R -- "$SANDBOX_ROOT/clusters" "$SANDBOX_ROOT/infrastructure" "$SANDBOX_ROOT/compute" "$SANDBOX_ROOT/storage" \
+		"$BATS_TEST_TMPDIR/tree/"
 }
 
 @test "every module of a cluster with a stage meets the stage contract" {
@@ -797,3 +798,32 @@ EOF
 	[ "$(yq ea -o=json -I=0 '[select(.kind == "KeystoneApplicationCredential") | .spec | has("rotation")]' "$file")" = '[false]' ]
 	[ "$(yq ea -o=json -I=0 '[select(.kind == "MariaDBDatabase" or .kind == "RabbitMQVhost") | .spec | has("deletionPolicy")]' "$file")" = '[false,false]' ]
 }
+
+@test "the stages storage-block-devices and storage-rook-crds apply their modules on sandbox-storage without a dependency" {
+	local module
+	for module in block-devices rook-crds; do
+		echo "$module"
+		[ "$(yq -o=json -I=0 '[.spec.path, .spec.interval, .spec.retryInterval, .spec.timeout, .spec.kubeConfig, (.spec | has("dependsOn"))]' \
+			"$SANDBOX_ROOT/clusters/storage/$module/stage.yaml")" = \
+			"[\"./storage/$module\",\"10m\",\"1m\",\"2m\",{\"secretRef\":{\"name\":\"kubeconfig-storage\"}},false]" ]
+	done
+}
+
+@test "the module block-devices holds the StorageClass sandbox-block alone, without a provisioner" {
+	[ "$(yq -o=json -I=0 '.resources' "$SANDBOX_ROOT/storage/block-devices/kustomization.yaml")" = '["storageclass.yaml"]' ]
+	[ "$(yq ea -o=json -I=0 '[[.apiVersion, .kind, .metadata.name, .provisioner, .volumeBindingMode, .reclaimPolicy]]' "$SANDBOX_ROOT/storage/block-devices/storageclass.yaml")" = \
+		'[["storage.k8s.io/v1","StorageClass","sandbox-block","kubernetes.io/no-provisioner","WaitForFirstConsumer","Retain"]]' ]
+}
+
+@test "the module rook-crds applies upstream's Namespace and ClientProfile CRD, unchanged, and nothing else" {
+	local file
+	[ "$(yq -o=json -I=0 '[.resources, has("patches"), has("components")]' "$SANDBOX_ROOT/storage/rook-crds/kustomization.yaml")" = \
+		'[["../../vendor/cobaltcore/deploy/overlays/metal-stack/ceph/namespace.yaml","../../vendor/cobaltcore/deploy/overlays/metal-stack/ceph/csi-clientprofile-crd.yaml"],false,false]' ]
+	for file in $(yq '.resources[]' "$SANDBOX_ROOT/storage/rook-crds/kustomization.yaml"); do
+		[ -f "$SANDBOX_ROOT/storage/rook-crds/$file" ]
+	done
+	[ "$(yq -o=json -I=0 '[.kind, .metadata.name]' "$SANDBOX_ROOT/vendor/cobaltcore/deploy/overlays/metal-stack/ceph/namespace.yaml")" = '["Namespace","rook-ceph"]' ]
+	[ "$(yq -o=json -I=0 '[.kind, .metadata.name]' "$SANDBOX_ROOT/vendor/cobaltcore/deploy/overlays/metal-stack/ceph/csi-clientprofile-crd.yaml")" = \
+		'["CustomResourceDefinition","clientprofiles.csi.ceph.io"]' ]
+}
+

@@ -1,0 +1,11 @@
+# The volumes of this class are static: make up creates them, nothing
+# provisions one. WaitForFirstConsumer binds a claim when the OSD prepare
+# Job that uses it is scheduled, and Retain keeps a volume and its file when
+# the claim goes; make down removes both.
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: sandbox-block
+provisioner: kubernetes.io/no-provisioner
+volumeBindingMode: WaitForFirstConsumer
+reclaimPolicy: Retain

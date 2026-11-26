@@ -1,0 +1,10 @@
+# The module block-devices on sandbox-storage: the StorageClass
+# sandbox-block, through which the claims of the device set of ceph-cluster
+# bind to the static PersistentVolumes of the loop devices. make up creates
+# the sparse files, the loop devices and one PersistentVolume per device,
+# exactly switches.osd-count of them (scripts/lib/storage.sh, ADR-0034),
+# because no manifest can attach a loop device and the count is a switch.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - storageclass.yaml
