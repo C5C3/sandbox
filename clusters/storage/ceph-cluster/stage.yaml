@@ -1,0 +1,41 @@
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: storage-ceph-cluster
+  namespace: flux-system
+spec:
+  # rook-operator installs the CRDs and the operator, block-devices the
+  # StorageClass of the claims.
+  dependsOn:
+    - name: storage-rook-operator
+    - name: storage-block-devices
+  interval: 10m
+  retryInterval: 1m
+  # The first run pulls the Ceph image and brings up monitor, manager and
+  # OSDs.
+  timeout: 30m
+  path: ./storage/ceph-cluster
+  prune: true
+  wait: true
+  sourceRef:
+    kind: OCIRepository
+    name: sandbox
+  kubeConfig:
+    secretRef:
+      name: kubeconfig-storage
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: cluster-vars
+  # An object whose status Rook has not written yet counts as not current.
+  # The stage does not count OSDs.
+  healthCheckExprs:
+    - apiVersion: ceph.rook.io/v1
+      kind: CephCluster
+      current: status.phase == 'Ready' && status.ceph.health == 'HEALTH_OK'
+    - apiVersion: ceph.rook.io/v1
+      kind: CephBlockPool
+      current: status.phase == 'Ready'
+    - apiVersion: ceph.rook.io/v1
+      kind: CephClient
+      current: status.phase == 'Ready'
