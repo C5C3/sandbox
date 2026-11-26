@@ -444,10 +444,10 @@ EOF
 	done
 }
 
-@test "the stages of openbao, objectstore, platform, sizing, cinder-nfs, fake-compute, hypervisor-fixtures and of access, controllers, node-prep and libvirt on compute substitute no variables" {
+@test "the stages of openbao, objectstore, platform, sizing, cinder-nfs, fake-compute, hypervisor-fixtures and of access, controllers, node-prep, libvirt and kvm-node-agent on compute substitute no variables" {
 	local stage
 	for stage in management/{openbao,objectstore,platform,sizing,cinder-nfs,fake-compute,hypervisor-fixtures} \
-		compute/{access,controllers,node-prep,libvirt}; do
+		compute/{access,controllers,node-prep,libvirt,kvm-node-agent}; do
 		echo "$stage"
 		[ "$(yq '.spec | has("postBuild")' "$SANDBOX_ROOT/clusters/$stage/stage.yaml")" = false ]
 	done
@@ -525,6 +525,22 @@ EOF
 		'[[{"name":"compute-access"},{"name":"compute-controllers"},{"name":"compute-node-prep"}],"./compute/libvirt","10m","1m","5m",{"secretRef":{"name":"kubeconfig-compute"}}]' ]
 	[ "$(yq -o=json -I=0 '.spec.healthCheckExprs' "$stage")" = \
 		'[{"apiVersion":"apps/v1","kind":"DaemonSet","current":"status.observedGeneration == metadata.generation"}]' ]
+}
+
+@test "the module kvm-node-agent releases upstream's chart with upstream's values from the hub without waiting for its pods, after the stage of libvirt" {
+	local dir=$SANDBOX_ROOT/compute/kvm-node-agent upstream=$SANDBOX_ROOT/vendor/cobaltcore/deploy/overlays/metal-stack/hypervisor
+	local stage=$SANDBOX_ROOT/clusters/compute/kvm-node-agent/stage.yaml
+	[ "$(yq -o=json -I=0 '.resources' "$dir/kustomization.yaml")" = '["source.yaml","release.yaml"]' ]
+	[ "$(yq -o=json -I=0 '[.kind, .metadata.name, .metadata.namespace, .spec]' "$dir/source.yaml")" = \
+		"$(yq ea -o=json -I=0 'select(.metadata.name == "kvm-node-agent") | [.kind, .metadata.name, .metadata.namespace, .spec]' "$upstream/sources.yaml")" ]
+	[ "$(yq -o=json -I=0 '[.spec.interval, .spec.values, .spec.postRenderers]' "$dir/release.yaml")" = \
+		"$(yq -o=json -I=0 '[.spec.interval, .spec.values, .spec.postRenderers]' "$upstream/kna-release.yaml")" ]
+	[ "$(yq -o=json -I=0 '[.metadata.name, .metadata.namespace, .spec.releaseName, .spec.targetNamespace, .spec.storageNamespace, .spec.chartRef, .spec.kubeConfig, .spec.install, .spec.upgrade]' "$dir/release.yaml")" = \
+		'["compute-kvm-node-agent","flux-system","kvm-node-agent","hypervisor-system","hypervisor-system",{"kind":"OCIRepository","name":"kvm-node-agent"},{"secretRef":{"name":"kubeconfig-compute"}},{"crds":"CreateReplace","disableWait":true},{"crds":"CreateReplace","disableWait":true}]' ]
+	[ "$(yq -o=json -I=0 '[.spec.dependsOn, .spec.path, .spec.interval, .spec.retryInterval, .spec.timeout, (.spec | has("kubeConfig"))]' "$stage")" = \
+		'[[{"name":"compute-libvirt"}],"./compute/kvm-node-agent","10m","1m","5m",false]' ]
+	[ "$(yq -o=json -I=0 '.spec.healthCheckExprs' "$stage")" = \
+		"$(yq -o=json -I=0 '[.spec.healthCheckExprs[] | select(.kind == "HelmRelease")]' "$SANDBOX_ROOT/clusters/compute/access/stage.yaml")" ]
 }
 
 @test "the stage of hypervisor-fixtures applies upstream's lab fixtures after controlplane and waits for the seven K-ORC kinds to be Available" {

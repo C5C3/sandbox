@@ -1,0 +1,17 @@
+# The OCIRepository kvm-node-agent of
+# vendor/cobaltcore/deploy/overlays/metal-stack/hypervisor/sources.yaml,
+# unchanged: the chart of the pinned kna commit, by tag and digest.
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: OCIRepository
+metadata:
+  name: kvm-node-agent
+  namespace: flux-system
+spec:
+  interval: 1h
+  url: oci://ghcr.io/cobaltcore-dev/charts/kvm-node-agent
+  layerSelector:
+    mediaType: application/vnd.cncf.helm.chart.content.v1.tar+gzip
+    operation: copy
+  ref:
+    tag: "0.2.0_sha-1e4e4b8"
+    digest: "sha256:e9f33187ebb037a1a615e271b4d9bef04bd439182fa5461021ed414d4c70f10f"

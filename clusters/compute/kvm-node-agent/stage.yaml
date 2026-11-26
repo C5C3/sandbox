@@ -1,0 +1,27 @@
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: compute-kvm-node-agent
+  namespace: flux-system
+spec:
+  # The pod of libvirt creates /run/libvirt on the node, which the agent
+  # mounts with type Directory.
+  dependsOn:
+    - name: compute-libvirt
+  interval: 10m
+  retryInterval: 1m
+  timeout: 5m
+  # The source and the release land on sandbox-management, where Flux runs;
+  # the HelmRelease reaches sandbox-compute through spec.kubeConfig of its
+  # own, so the stage names none.
+  path: ./compute/kvm-node-agent
+  prune: true
+  wait: true
+  sourceRef:
+    kind: OCIRepository
+    name: sandbox
+  # kstatus reads no Ready condition of a HelmRelease.
+  healthCheckExprs:
+    - apiVersion: helm.toolkit.fluxcd.io/v2
+      kind: HelmRelease
+      current: status.conditions.exists(c, c.type == 'Ready' && c.status == 'True' && c.observedGeneration == metadata.generation)
