@@ -35,9 +35,13 @@ secret() {
 # docker and kind answering for a sandbox-management on the sandbox network,
 # and a kubectl that appends its arguments to kubectl.log in the test's
 # directory and answers from the files of hub/ there, a missing file as a
-# missing object: the four reads of scripts/lib/access.sh, and for
-# nova-server the reads of the Deployment controlplane-fake-compute and its
-# pods and the exec of discover_hosts. The calls of the order checks go to
+# missing object: the four reads of scripts/lib/access.sh, for nova-server
+# the reads of the Deployment controlplane-fake-compute and its pods and the
+# exec of discover_hosts, and for the compute checks the reads of the CRD of
+# NovaCompute, of the NovaComputes, OVNChassis and metadata agents of
+# openstack, and of the Hypervisor <node> on sandbox-compute from the files
+# novacompute-crd, novacomputes.json, ovnchassis.json, metadataagents.json
+# and hypervisor.<node>. The calls of the order checks go to
 # fake_hub, under the names orders.<namespace>, secret.<namespace>.<name>,
 # apply, appcred, patch, delete.<name> and children.<name>; a patch appends
 # its merge patch to patch.log. The hub has the CRD, a ControlPlane with the
@@ -73,6 +77,11 @@ access_host() {
 		*" -n openstack exec deploy/controlplane-nova-conductor -c conductor -- nova-manage --config-dir /etc/nova/nova.conf.d cell_v2 discover_hosts")
 			file=discover-hosts
 			;;
+		*" get crd novacomputes.nova.openstack.c5c3.io --ignore-not-found -o json") file=novacompute-crd ;;
+		*" -n openstack get novacomputes.nova.openstack.c5c3.io -o json") file=novacomputes.json ;;
+		*" -n openstack get ovnchassis.ovn.openstack.c5c3.io -o json") file=ovnchassis.json ;;
+		*" -n openstack get neutronmetadataagents.neutron.openstack.c5c3.io -o json") file=metadataagents.json ;;
+		*" get hypervisors.kvm.cloud.sap "*" --ignore-not-found -o json") file=hypervisor.$5 ;;
 		# The arguments after --kubeconfig <file>: -n <namespace> <verb> ...,
 		# or get <resources> -A -l <selector> for the children.
 		*" get keystoneusers.c5c3.io,keystoneprojects.c5c3.io,keystoneroleassignments.c5c3.io,keystonecatalogentries.c5c3.io,keystoneapplicationcredentials.c5c3.io,mariadbdatabases.c5c3.io,rabbitmqvhosts.c5c3.io -o json")
@@ -318,8 +327,14 @@ fake_delete() {
 # STUB_SILENT prints nothing. A token issue with OS_AUTH_TYPE
 # v3applicationcredential goes to stub_appcred_token, and user list, project
 # list and service list print KEYSTONE_USERS, KEYSTONE_PROJECTS and
-# KEYSTONE_SERVICES, which default to the rows the orders leave. The names
-# do not start with OS_, which verify.sh unsets.
+# KEYSTONE_SERVICES, which default to the rows the orders leave. For the
+# compute checks it prints network agent list with agents.json, the
+# aggregate sandbox with aggregate.json, the MTU of
+# sandbox-verify-compute-net with COMPUTE_MTU, the status and the host of
+# sandbox-verify-compute-server with COMPUTE_SERVER_STATUS and
+# COMPUTE_SERVER_HOST, its console log with console.log, and its noVNC URL
+# with the token CONSOLE_TOKEN. The names do not start with OS_, which
+# verify.sh unsets.
 openstack_logs() {
 	openstack() {
 		local arg prev=
@@ -373,8 +388,21 @@ IPV4_ADDRESS}"
 		"project list -f value -c Name") printf '%s\n' ${KEYSTONE_PROJECTS:-admin service workflow-project} ;;
 		"service list -f value -c Type") printf '%s\n' ${KEYSTONE_SERVICES:-identity image dns} ;;
 		"server show sandbox-verify-server -f value -c status") echo "${SERVER_STATUS:-ACTIVE}" ;;
-		"server show sandbox-verify-server -f json -c fault")
+		"server show "*" -f json -c fault")
 			jq -n --arg message "${FAULT:-}" '{fault: {code: 500, created: "2026-11-25T10:00:00Z", message: $message}}'
+			;;
+		"network agent list -f json") cat -- "$BATS_TEST_TMPDIR/agents.json" ;;
+		"aggregate show sandbox -f json -c hosts") cat -- "$BATS_TEST_TMPDIR/aggregate.json" ;;
+		"network show id-sandbox-verify-compute-net -f value -c mtu") echo "${COMPUTE_MTU:-1442}" ;;
+		"image show cirros-kvm -f value -c id") echo 5a9c1d2e-cirros ;;
+		"flavor show 1 -f value -c id") echo 1 ;;
+		"server show sandbox-verify-compute-server -f json -c status -c OS-EXT-SRV-ATTR:host")
+			jq -n --arg status "${COMPUTE_SERVER_STATUS:-ACTIVE}" --arg host "${COMPUTE_SERVER_HOST:-sandbox-compute-worker}" \
+				'{status: $status, "OS-EXT-SRV-ATTR:host": $host}'
+			;;
+		"console log show sandbox-verify-compute-server") cat -- "$BATS_TEST_TMPDIR/console.log" ;;
+		"console url show --novnc sandbox-verify-compute-server -f value -c url")
+			echo "https://nova-console.172-30-255-10.nip.io/vnc_lite.html?path=%3Ftoken%3D$CONSOLE_TOKEN"
 			;;
 		"image create "*)
 			for arg; do
@@ -520,8 +548,9 @@ EOF
 # does: a call without data writes login.html to the file of --output, and
 # a call with data prints, as --write-out '%{http_code} %{url_effective}'
 # does, the status HORIZON_STATUS, 200 by default, and the URL of the path
-# HORIZON_PATH, /project/ by default. With CURL_ERROR set it prints it on
-# stderr and fails as curl does.
+# HORIZON_PATH, /project/ by default. A call for a URL of nova-console prints
+# the status CONSOLE_STATUS, 200 by default. With CURL_ERROR set it prints it
+# on stderr and fails as curl does.
 curl_logs() {
 	curl() {
 		local arg prev= output= data=
@@ -547,7 +576,9 @@ curl_logs() {
 			printf '%s\n' "$CURL_ERROR" >&2
 			return 60
 		fi
-		if [ -z "$data" ]; then
+		if [[ ${!#} == https://nova-console.* ]]; then
+			printf '%s' "${CONSOLE_STATUS:-200}"
+		elif [ -z "$data" ]; then
 			cat -- "$BATS_TEST_TMPDIR/login.html" >"$output"
 		else
 			echo '<html><title>Instance Overview - OpenStack Dashboard</title></html>' >"$output"
@@ -599,6 +630,91 @@ orders_cloud() {
 	hub_edit '.spec.infrastructure.messaging = {clusterRef: {name: "openstack-rabbitmq"}}
 		| .spec.namespaceAssignments = [{namespace: "workflow", allowedRoles: ["member"], allowCatalogEntries: true}]'
 	fake_apply <"$SANDBOX_ROOT/orders/workflow/orders.yaml"
+}
+
+# The console token of the noVNC URL of sandbox-verify-compute-server.
+CONSOLE_TOKEN=7c1e5a0f-console-token-of-sandbox-verify
+
+# compute_parts: adds to the hub and the cloud of the test the compute pool
+# of the module compute-pool on sandbox-compute, which kind lists beside
+# sandbox-management with a kubeconfig file: the CRD of NovaCompute, the
+# pool lab Ready with the node sandbox-compute-worker Active, up and enabled
+# in the zone sandbox, the OVNChassis lab-chassis and the
+# NeutronMetadataAgent lab-metadata-agent Ready, the Hypervisor of the node
+# onboarded, the two agents alive on it, the aggregate sandbox with the node,
+# the console proxy of Nova at nova-console.172-30-255-10.nip.io and the
+# console log in which cirros read its instance id. openssl appends its
+# arguments to openssl.log in the test's directory, copies its stdin to
+# openssl.stdin and answers the WebSocket upgrade with the status line
+# WS_STATUS, 101 by default, and a server frame with RFB_GREETING, an RFB
+# greeting by default.
+compute_parts() {
+	: >"$BATS_TEST_TMPDIR/.sandbox/kubeconfig/compute.yaml"
+	echo '{"kind": "CustomResourceDefinition", "metadata": {"name": "novacomputes.nova.openstack.c5c3.io"}}' >"$BATS_TEST_TMPDIR/hub/novacompute-crd"
+	jq -n '{apiVersion: "v1", kind: "List", items: [{apiVersion: "nova.openstack.c5c3.io/v1alpha1", kind: "NovaCompute",
+		metadata: {name: "lab", namespace: "openstack"}, spec: {targetClusterRef: {name: "sandbox-compute"}},
+		status: {conditions: [{type: "Ready", status: "True", reason: "AllReady", message: "All eight sub-conditions are True"}],
+			nodes: [{name: "sandbox-compute-worker", phase: "Active", zone: "sandbox", serviceState: "up", serviceStatus: "enabled"}]}}]}' \
+		>"$BATS_TEST_TMPDIR/hub/novacomputes.json"
+	jq -n '{apiVersion: "v1", kind: "List", items: [{apiVersion: "ovn.openstack.c5c3.io/v1alpha1", kind: "OVNChassis",
+		metadata: {name: "lab-chassis", namespace: "openstack"}, spec: {targetClusterRef: {name: "sandbox-compute"}},
+		status: {conditions: [{type: "Ready", status: "True", reason: "Ready", message: "chassis ready"}]}}]}' \
+		>"$BATS_TEST_TMPDIR/hub/ovnchassis.json"
+	jq -n '{apiVersion: "v1", kind: "List", items: [{apiVersion: "neutron.openstack.c5c3.io/v1alpha1", kind: "NeutronMetadataAgent",
+		metadata: {name: "lab-metadata-agent", namespace: "openstack"}, spec: {targetClusterRef: {name: "sandbox-compute"}},
+		status: {conditions: [{type: "Ready", status: "True", reason: "Ready", message: "agent ready"}]}}]}' \
+		>"$BATS_TEST_TMPDIR/hub/metadataagents.json"
+	hypervisor_reason Succeeded
+	jq -n '[{ID: "a1", "Agent Type": "OVN Controller agent", Host: "sandbox-compute-worker", "Availability Zone": "", Alive: true, State: true, Binary: "ovn-controller"},
+		{ID: "a2", "Agent Type": "OVN Metadata agent", Host: "sandbox-compute-worker", "Availability Zone": "", Alive: true, State: true, Binary: "neutron-ovn-metadata-agent"}]' \
+		>"$BATS_TEST_TMPDIR/agents.json"
+	echo '{"hosts": ["sandbox-compute-worker"]}' >"$BATS_TEST_TMPDIR/aggregate.json"
+	printf '%s\r\n' '=== cirros: current=0.6.2 uptime=5.21 ===' 'checking http://169.254.169.254/2009-04-04/instance-id' \
+		'successful after 1/20 tries: up 6.32. iid=i-00000001' >"$BATS_TEST_TMPDIR/console.log"
+	hub_edit '.spec.services.nova.consoleProxy = {gateway: {parentRef: {name: "openstack-gw"}, hostname: "nova-console.172-30-255-10.nip.io"}}'
+	kind() {
+		case $* in
+		"get clusters") printf '%s\n' sandbox-management ${COMPUTE_CLUSTER_KIND-sandbox-compute} ;;
+		"get nodes --name sandbox-management") echo sandbox-management-control-plane ;;
+		"get nodes --name sandbox-compute") printf '%s\n' sandbox-compute-control-plane sandbox-compute-worker ;;
+		*) return 1 ;;
+		esac
+	}
+	openssl() {
+		printf '%s\n' "$*" >>"$BATS_TEST_TMPDIR/openssl.log"
+		cat >"$BATS_TEST_TMPDIR/openssl.stdin"
+		printf '%s\r\n' "${WS_STATUS:-HTTP/1.1 101 Switching Protocols}" 'Upgrade: websocket' 'Connection: Upgrade' \
+			'Sec-WebSocket-Protocol: binary' ''
+		printf '\202\014%s' "${RFB_GREETING-RFB 003.008
+}"
+	}
+	export CONSOLE_TOKEN
+	export -f kind openssl
+}
+
+# compute_cloud: healthy_cloud with compute_parts.
+compute_cloud() {
+	healthy_cloud
+	compute_parts
+}
+
+# hypervisor_reason <reason>: writes the Hypervisor of sandbox-compute-worker
+# with the reason of its condition Onboarding.
+hypervisor_reason() {
+	jq -n --arg reason "$1" '{apiVersion: "kvm.cloud.sap/v1", kind: "Hypervisor", metadata: {name: "sandbox-compute-worker"},
+		status: {conditions: [{type: "Onboarding", status: "False", reason: $reason, message: "onboarding"}]}}' \
+		>"$BATS_TEST_TMPDIR/hub/hypervisor.sandbox-compute-worker"
+}
+
+# hub_file_edit <file> <jq filter>: changes the file of hub/ with the filter.
+hub_file_edit() {
+	jq "$2" "$BATS_TEST_TMPDIR/hub/$1" >"$BATS_TEST_TMPDIR/hub/$1.new"
+	mv -- "$BATS_TEST_TMPDIR/hub/$1.new" "$BATS_TEST_TMPDIR/hub/$1"
+}
+
+# compute_lines: prints the lines of $output of the eight compute checks.
+compute_lines() {
+	grep -E '^(ok|FAIL) compute-' <<<"$output" || :
 }
 
 # orders_edit <file> <jq filter>: changes orders.json, secrets.json or
@@ -1376,6 +1492,288 @@ https://barbican.172-30-255-10.nip.io/v1/secrets/0ld2'
 	[ "${#lines[@]}" -eq 17 ]
 	[ "${lines[16]}" = "verify: 16 of 16 checks passed" ]
 	[ -n "$(logged '* delete *')" ]
+}
+
+@test "verify.sh runs no compute check without the CRD of NovaCompute, without a pool, or for a pool that names no target cluster" {
+	local case
+	for case in no-crd no-pool no-target other-target; do
+		rm -rf -- "$BATS_TEST_TMPDIR/hub" "$BATS_TEST_TMPDIR"/{kubectl,openstack}.log
+		compute_cloud
+		case $case in
+		no-crd) rm -- "$BATS_TEST_TMPDIR/hub/novacompute-crd" ;;
+		no-pool) hub_file_edit novacomputes.json '.items = []' ;;
+		no-target) hub_file_edit novacomputes.json 'del(.items[0].spec.targetClusterRef)' ;;
+		other-target) hub_file_edit novacomputes.json '.items[0].spec.targetClusterRef.name = "elsewhere"' ;;
+		esac
+		run "$BATS_TEST_TMPDIR/scripts/verify.sh"
+		echo "$case: $output"
+		[ "$status" -eq 0 ]
+		[ -z "$(compute_lines)" ]
+		[ "${lines[-1]}" = "verify: 16 of 16 checks passed" ]
+		[ -z "$(logged '*sandbox-verify-compute*')" ]
+		[ -z "$(logged 'network agent list *')" ]
+	done
+}
+
+@test "verify.sh passes the eight compute checks in the order of the table, after the checks of the services and before those of the orders" {
+	orders_cloud
+	compute_parts
+	run "$BATS_TEST_TMPDIR/scripts/verify.sh"
+	echo "$output"
+	[ "$status" -eq 0 ]
+	[ "$(check_ids)" = keystone-token,keystone-catalog,glance-catalog,glance-image,placement-catalog,placement-classes,barbican-catalog,barbican-secret,neutron-catalog,neutron-network,cinder-catalog,cinder-volume,nova-catalog,nova-services,nova-server,horizon-login,compute-pool,compute-chassis,compute-metadata-agent,compute-hypervisor,compute-network,compute-server,compute-metadata,compute-console,orders-ready,orders-secrets,orders-converge,orders-rotation,orders-teardown ]
+	[ "$(compute_lines)" = "ok compute-pool: the pool lab is Ready, sandbox-compute-worker Active, up and enabled
+ok compute-chassis: the OVNChassis lab-chassis is Ready, with an alive ovn-controller agent on sandbox-compute-worker
+ok compute-metadata-agent: the NeutronMetadataAgent lab-metadata-agent is Ready, with an alive neutron-ovn-metadata-agent agent on sandbox-compute-worker
+ok compute-hypervisor: sandbox-compute-worker in sandbox onboarded, each in the aggregate of its zone
+ok compute-network: the network sandbox-verify-compute-net with the subnet sandbox-verify-compute-subnet on 198.51.100.0/24 has the MTU 1442
+ok compute-server: the server sandbox-verify-compute-server is ACTIVE on sandbox-compute-worker
+ok compute-metadata: cirros on sandbox-verify-compute-server read the instance id i-00000001 from the metadata service
+ok compute-console: the console page answers 200 on https://nova-console.172-30-255-10.nip.io, and a WebSocket with the token of the noVNC URL relays the RFB greeting of the server's VNC" ]
+	[ "${lines[-1]}" = "verify: 29 of 29 checks passed" ]
+	# The Hypervisor is read on sandbox-compute, and the server boots in the
+	# zone and on the host of the node.
+	grep -qxF -- "--kubeconfig $BATS_TEST_TMPDIR/.sandbox/kubeconfig/compute.yaml get hypervisors.kvm.cloud.sap sandbox-compute-worker --ignore-not-found -o json" \
+		"$BATS_TEST_TMPDIR/kubectl.log"
+	[ -n "$(logged 'server create --image cirros-kvm --flavor 1 --network id-sandbox-verify-compute-net --availability-zone sandbox:sandbox-compute-worker -f value -c id sandbox-verify-compute-server')" ]
+	[ -n "$(logged 'subnet create --network id-sandbox-verify-compute-net --subnet-range 198.51.100.0/24 -f value -c id sandbox-verify-compute-subnet')" ]
+	[ "$(grep -cxF 'network agent list -f json' "$BATS_TEST_TMPDIR/openstack.log")" -eq 1 ]
+	# curl reads the page with the sandbox CA, openssl dials the proxy and
+	# verifies it with the same CA.
+	[ "$(curl_call 3 | grep -A1 -xF -- --cacert | tail -n 1)" = "$BATS_TEST_TMPDIR/.sandbox/sandbox-ca.pem" ]
+	[ "$(curl_call 3 | tail -n 1)" = https://nova-console.172-30-255-10.nip.io/vnc_lite.html ]
+	[ "$(<"$BATS_TEST_TMPDIR/openssl.log")" = "s_client -quiet -no_ign_eof -verify_return_error -CAfile $BATS_TEST_TMPDIR/.sandbox/sandbox-ca.pem -connect nova-console.172-30-255-10.nip.io:443 -servername nova-console.172-30-255-10.nip.io" ]
+	[ "$(head -n 1 "$BATS_TEST_TMPDIR/openssl.stdin")" = "GET /?token=$CONSOLE_TOKEN HTTP/1.1"$'\r' ]
+	[ "$(tr -d '\r' <"$BATS_TEST_TMPDIR/openssl.stdin" | sed 1d)" = "Host: nova-console.172-30-255-10.nip.io
+Upgrade: websocket
+Connection: Upgrade
+Sec-WebSocket-Version: 13
+Sec-WebSocket-Key: c2FuZGJveC12ZXJpZnkxMg==
+Sec-WebSocket-Protocol: binary" ]
+}
+
+@test "verify.sh fails compute-pool with the message of Ready for a pool that is not Ready, and with the node and its state for a node whose service is down" {
+	compute_cloud
+	hub_file_edit novacomputes.json '.items[0].status.conditions[0] = {type: "Ready", status: "False", reason: "NotAllReady", message: "AggregatesReady=False (NodesWithoutZone)"}'
+	verify_fails "FAIL compute-pool: the pool lab is not Ready: AggregatesReady=False (NodesWithoutZone)" 23 24
+	[ "$(compute_lines | wc -l)" -eq 8 ]
+
+	compute_cloud
+	hub_file_edit novacomputes.json '.items[0].status.nodes[0].serviceState = "down"'
+	verify_fails "FAIL compute-pool: the node sandbox-compute-worker of the pool lab is Active, its service down and enabled" 23 24
+	[ "$(compute_lines | wc -l)" -eq 8 ]
+}
+
+@test "verify.sh fails compute-chassis and compute-metadata-agent with the node that has no alive agent of their binary, and for an object that is not Ready" {
+	compute_cloud
+	jq '(.[] | select(.Binary == "ovn-controller") | .Alive) = false' "$BATS_TEST_TMPDIR/agents.json" >"$BATS_TEST_TMPDIR/a.json"
+	mv -- "$BATS_TEST_TMPDIR/a.json" "$BATS_TEST_TMPDIR/agents.json"
+	verify_fails "FAIL compute-chassis: no alive ovn-controller agent on sandbox-compute-worker" 23 24
+
+	compute_cloud
+	jq 'map(select(.Binary != "neutron-ovn-metadata-agent"))' "$BATS_TEST_TMPDIR/agents.json" >"$BATS_TEST_TMPDIR/a.json"
+	mv -- "$BATS_TEST_TMPDIR/a.json" "$BATS_TEST_TMPDIR/agents.json"
+	verify_fails "FAIL compute-metadata-agent: no alive neutron-ovn-metadata-agent agent on sandbox-compute-worker" 23 24
+
+	# An alive agent on another node is no agent of the node.
+	compute_cloud
+	jq '(.[] | .Host) = "sandbox-compute-control-plane"' "$BATS_TEST_TMPDIR/agents.json" >"$BATS_TEST_TMPDIR/a.json"
+	mv -- "$BATS_TEST_TMPDIR/a.json" "$BATS_TEST_TMPDIR/agents.json"
+	verify_fails "FAIL compute-chassis: no alive ovn-controller agent on sandbox-compute-worker" 22 24
+	grep -qxF "FAIL compute-metadata-agent: no alive neutron-ovn-metadata-agent agent on sandbox-compute-worker" <<<"$output"
+
+	compute_cloud
+	hub_file_edit ovnchassis.json '.items[0].status.conditions[0] = {type: "Ready", status: "False", reason: "CentralNotReady", message: "CentralReady=False (CentralNotExternallyReachable)"}'
+	verify_fails "FAIL compute-chassis: the OVNChassis lab-chassis is not Ready: CentralReady=False (CentralNotExternallyReachable)" 23 24
+
+	compute_cloud
+	hub_file_edit metadataagents.json '.items = []'
+	verify_fails "FAIL compute-metadata-agent: no NeutronMetadataAgent in openstack names sandbox-compute" 23 24
+	[ "$(compute_lines | wc -l)" -eq 8 ]
+}
+
+@test "verify.sh skips the checks of the nodes and the server, naming compute-pool, for a pool without a node" {
+	compute_cloud
+	hub_file_edit novacomputes.json '.items[0].status.nodes = []'
+	verify_fails "FAIL compute-pool: the pool lab has no node" 17 24
+	[ "$(compute_lines)" = "FAIL compute-pool: the pool lab has no node
+FAIL compute-chassis: skipped, compute-pool failed
+FAIL compute-metadata-agent: skipped, compute-pool failed
+FAIL compute-hypervisor: skipped, compute-pool failed
+ok compute-network: the network sandbox-verify-compute-net with the subnet sandbox-verify-compute-subnet on 198.51.100.0/24 has the MTU 1442
+FAIL compute-server: skipped, compute-pool failed
+FAIL compute-metadata: skipped, compute-pool failed
+FAIL compute-console: skipped, compute-pool failed" ]
+	[ -z "$(logged 'network agent list *')" ]
+}
+
+@test "verify.sh fails compute-hypervisor for a Hypervisor that stays in another reason for 600 s, without sandbox-compute, and for an aggregate without the node" {
+	compute_cloud
+	hypervisor_reason Handover
+	verify_fails "FAIL compute-hypervisor: the Hypervisor sandbox-compute-worker reports Onboarding Handover after 600 s, expected Succeeded" 23 24
+	[ "$(grep -cxF 2 "$BATS_TEST_TMPDIR/sleep.log")" -eq 300 ]
+
+	compute_cloud
+	rm -- "$BATS_TEST_TMPDIR/hub/hypervisor.sandbox-compute-worker"
+	verify_fails "FAIL compute-hypervisor: the Hypervisor sandbox-compute-worker reports Onboarding none after 600 s, expected Succeeded" 23 24
+
+	compute_cloud
+	export COMPUTE_CLUSTER_KIND=
+	verify_fails "FAIL compute-hypervisor: sandbox-compute does not exist" 23 24
+	unset COMPUTE_CLUSTER_KIND
+
+	compute_cloud
+	echo '{"hosts": []}' >"$BATS_TEST_TMPDIR/aggregate.json"
+	verify_fails "FAIL compute-hypervisor: the aggregate sandbox does not list sandbox-compute-worker as a host" 23 24
+	[ "$(compute_lines | wc -l)" -eq 8 ]
+}
+
+@test "verify.sh fails compute-network for another MTU, and skips the three checks after it, naming compute-network" {
+	compute_cloud
+	export COMPUTE_MTU=1500
+	verify_fails "FAIL compute-network: the network sandbox-verify-compute-net has the MTU 1500, expected 1442" 20 24
+	[ "$(compute_lines | tail -n 3)" = "FAIL compute-server: skipped, compute-network failed
+FAIL compute-metadata: skipped, compute-network failed
+FAIL compute-console: skipped, compute-network failed" ]
+	[ -z "$(logged 'server create *')" ]
+}
+
+@test "verify.sh fails compute-server with the fault of a server in ERROR, for one still building after 600 s or on another host, and with the module hypervisor-fixtures for a missing image or flavor" {
+	compute_cloud
+	export COMPUTE_SERVER_STATUS=ERROR FAULT='No valid host was found. There are not enough hosts available.'
+	verify_fails "FAIL compute-server: the server sandbox-verify-compute-server is 'ERROR', expected ACTIVE: No valid host was found. There are not enough hosts available." 21 24
+	[ "$(compute_lines | tail -n 2)" = "FAIL compute-metadata: skipped, compute-server failed
+FAIL compute-console: skipped, compute-server failed" ]
+	# The CLI waits for no status; the check reads it.
+	[ -z "$(logged 'server create * --wait *')" ]
+
+	compute_cloud
+	rm -f -- "$BATS_TEST_TMPDIR/sleep.log"
+	export COMPUTE_SERVER_STATUS=BUILD
+	verify_fails "FAIL compute-server: the server sandbox-verify-compute-server is 'BUILD' after 600 s, expected ACTIVE" 21 24
+	[ "$(grep -cxF 2 "$BATS_TEST_TMPDIR/sleep.log")" -eq 300 ]
+
+	compute_cloud
+	export COMPUTE_SERVER_STATUS=ACTIVE COMPUTE_SERVER_HOST=sandbox-compute-worker2
+	verify_fails "FAIL compute-server: the server sandbox-verify-compute-server is ACTIVE on 'sandbox-compute-worker2', expected sandbox-compute-worker" 21 24
+	unset COMPUTE_SERVER_HOST
+
+	compute_cloud
+	rm -- "$BATS_TEST_TMPDIR/openstack.log"
+	export COMPUTE_SERVER_STATUS=ACTIVE STUB_FAILS='image show cirros-kvm *' STUB_ERROR='No Image found for cirros-kvm'
+	verify_fails "FAIL compute-server: the image cirros-kvm, which the module hypervisor-fixtures creates: No Image found for cirros-kvm" 21 24
+	[ -z "$(logged 'server create *')" ]
+
+	compute_cloud
+	export STUB_FAILS='flavor show 1 *' STUB_ERROR='No Flavor found for 1'
+	verify_fails "FAIL compute-server: the flavor 1, which the module hypervisor-fixtures creates: No Flavor found for 1" 21 24
+	[ "$(compute_lines | wc -l)" -eq 8 ]
+}
+
+@test "verify.sh fails compute-metadata at once when cirros failed to read its instance id, and after 300 s without either line" {
+	compute_cloud
+	printf '%s\r\n' 'checking http://169.254.169.254/2009-04-04/instance-id' \
+		'failed 20/20: up 182.10. request failed' 'failed to read iid from metadata. tried 20' >"$BATS_TEST_TMPDIR/console.log"
+	verify_fails "FAIL compute-metadata: cirros on sandbox-verify-compute-server failed to read iid from metadata" 23 24
+	[ ! -e "$BATS_TEST_TMPDIR/sleep.log" ] || [ "$(grep -cxF 2 "$BATS_TEST_TMPDIR/sleep.log")" -eq 0 ]
+
+	compute_cloud
+	echo 'Booting from ROM...' >"$BATS_TEST_TMPDIR/console.log"
+	verify_fails "FAIL compute-metadata: the console log of sandbox-verify-compute-server shows no instance id after 300 s" 23 24
+	[ "$(grep -cxF 2 "$BATS_TEST_TMPDIR/sleep.log")" -eq 150 ]
+}
+
+@test "verify.sh fails compute-console without openssl in PATH" {
+	local tool
+	compute_cloud
+	controlplane_services nova keystone
+	hub_edit '.spec.services.nova.consoleProxy = {gateway: {hostname: "nova-console.172-30-255-10.nip.io"}}'
+	unset -f openssl
+	mkdir -- "$BATS_TEST_TMPDIR/bin"
+	for tool in dirname mktemp rm grep cat jq mkdir mv tail head tr stat truncate; do
+		ln -s -- "$(command -v "$tool")" "$BATS_TEST_TMPDIR/bin/$tool"
+	done
+	run env PATH="$BATS_TEST_TMPDIR/bin" "$BASH" "$BATS_TEST_TMPDIR/scripts/verify.sh"
+	echo "$output"
+	[ "$status" -eq 1 ]
+	[ "$(compute_lines | tail -n 1)" = "FAIL compute-console: openssl not found in PATH" ]
+	[ "${lines[-1]}" = "verify: 12 of 13 checks passed" ]
+}
+
+@test "verify.sh fails compute-console for an answer without 101 and for one without the RFB greeting" {
+	compute_cloud
+	export WS_STATUS='HTTP/1.1 400 Bad Request'
+	verify_fails "FAIL compute-console: the console proxy answered the WebSocket upgrade without 101: HTTP/1.1 400 Bad Request" 23 24
+
+	compute_cloud
+	export WS_STATUS='HTTP/1.1 101 Switching Protocols' RFB_GREETING=
+	verify_fails "FAIL compute-console: the WebSocket to the console proxy relayed no RFB 003. greeting of the server's VNC" 23 24
+
+	compute_cloud
+	export CONSOLE_STATUS=404
+	verify_fails "FAIL compute-console: the console page https://nova-console.172-30-255-10.nip.io/vnc_lite.html answered 404, expected 200" 23 24
+	[ "$(compute_lines | wc -l)" -eq 8 ]
+}
+
+@test "verify.sh fails compute-pool with the last line of kubectl and skips the other seven when it cannot read the pools, and names the first line of openstack's error" {
+	compute_cloud
+	export KUBECTL_FAILS=novacomputes.json
+	verify_fails "FAIL compute-pool: cannot read the NovaComputes of openstack: The connection to the server 127.0.0.1:40001 was refused - did you specify the right host or port?" 16 24
+	[ "$(compute_lines | sed 1d)" = "FAIL compute-chassis: skipped, compute-pool failed
+FAIL compute-metadata-agent: skipped, compute-pool failed
+FAIL compute-hypervisor: skipped, compute-pool failed
+FAIL compute-network: skipped, compute-pool failed
+FAIL compute-server: skipped, compute-pool failed
+FAIL compute-metadata: skipped, compute-pool failed
+FAIL compute-console: skipped, compute-pool failed" ]
+	[ -z "$(logged '*sandbox-verify-compute*')" ]
+	unset KUBECTL_FAILS
+
+	compute_cloud
+	export KUBECTL_FAILS=novacompute-crd
+	verify_fails "FAIL compute-pool: cannot read the NovaComputes of openstack: The connection to the server 127.0.0.1:40001 was refused - did you specify the right host or port?" 16 24
+	unset KUBECTL_FAILS
+
+	compute_cloud
+	export STUB_FAILS='network agent list *' STUB_ERROR='Unable to establish connection to https://neutron.172-30-255-10.nip.io/v2.0/agents
+Connection refused'
+	verify_fails "FAIL compute-chassis: Unable to establish connection to https://neutron.172-30-255-10.nip.io/v2.0/agents" 22 24
+	grep -qxF "FAIL compute-metadata-agent: Unable to establish connection to https://neutron.172-30-255-10.nip.io/v2.0/agents" <<<"$output"
+	[ "$(compute_lines | wc -l)" -eq 8 ]
+}
+
+@test "verify.sh deletes the server, the subnet and the network of an earlier run before it creates, and what it created after a failed check" {
+	compute_cloud
+	run "$BATS_TEST_TMPDIR/scripts/verify.sh"
+	[ "$status" -eq 0 ]
+	# No check polls on a healthy cloud; the one pause of 5 s holds the
+	# WebSocket open.
+	[ "$(<"$BATS_TEST_TMPDIR/sleep.log")" = 5 ]
+	runs_before 'server delete --wait sandbox-verify-compute-server' 'network create * sandbox-verify-compute-net'
+	runs_before 'subnet delete sandbox-verify-compute-subnet' 'network create * sandbox-verify-compute-net'
+	runs_before 'network delete sandbox-verify-compute-net' 'network create * sandbox-verify-compute-net'
+	runs_before 'console url show *' 'server delete --wait sandbox-verify-compute-server'
+
+	compute_cloud
+	rm -- "$BATS_TEST_TMPDIR/openstack.log"
+	export COMPUTE_SERVER_STATUS=ERROR
+	verify_fails "FAIL compute-server: the server sandbox-verify-compute-server is 'ERROR', expected ACTIVE: " 21 24
+	runs_before 'server create * sandbox-verify-compute-server' 'server delete --wait sandbox-verify-compute-server'
+	# The last delete of the server comes before the first delete of the
+	# subnet by its id, which only the cleanup after the checks runs.
+	[ "$(logged 'server delete --wait sandbox-verify-compute-server' | tail -n 1)" -lt "$(logged 'subnet delete id-sandbox-verify-compute-subnet' | head -n 1)" ]
+	runs_before 'subnet delete id-sandbox-verify-compute-subnet' 'network delete id-sandbox-verify-compute-net'
+}
+
+@test "verify.sh passes the console token to no command as an argument and prints it on no line" {
+	compute_cloud
+	run "$BATS_TEST_TMPDIR/scripts/verify.sh"
+	[ "$status" -eq 0 ]
+	[[ $output != *"$CONSOLE_TOKEN"* ]]
+	run ! grep -rlF -- "$CONSOLE_TOKEN" "$BATS_TEST_TMPDIR/openstack.log" "$BATS_TEST_TMPDIR/kubectl.log" \
+		"$BATS_TEST_TMPDIR/curl.log" "$BATS_TEST_TMPDIR/openssl.log"
+	# It reaches openssl on stdin.
+	grep -qF -- "$CONSOLE_TOKEN" "$BATS_TEST_TMPDIR/openssl.stdin"
 }
 
 @test "verify.sh runs no order check for a ControlPlane without a namespace assigned on the management cluster" {
