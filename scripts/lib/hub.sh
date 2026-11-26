@@ -191,22 +191,37 @@ attached_roles() {
 	printf '%s\n' "$attached"
 }
 
+# host_virt_type: prints kvm when /dev/kvm is a character device on the
+# host, and qemu otherwise. A kind node sees /dev/kvm exactly when the host
+# has it.
+host_virt_type() {
+	if [ -c /dev/kvm ]; then
+		echo kvm
+	else
+		echo qemu
+	fi
+}
+
 # cluster_vars: prints the ConfigMap flux-system/cluster-vars. Its data holds
 # every scalar leaf of config_merged that is neither null nor empty, as a
 # string named by the path joined with _, in upper case, with - replaced by
-# _: network.subnet becomes NETWORK_SUBNET. The label
-# reconcile.fluxcd.io/watch makes Flux reconcile the stages that read it as
-# soon as a value changes.
+# _: network.subnet becomes NETWORK_SUBNET. It also holds one variable no key
+# of the configuration carries, COMPUTE_VIRT_TYPE, the output of
+# host_virt_type, which the checks below treat like a key under the path
+# "the host's /dev/kvm". The label reconcile.fluxcd.io/watch makes Flux
+# reconcile the stages that read it as soon as a value changes.
 cluster_vars() {
-	local merged entries bad same
+	local merged entries bad same virt
 	merged=$(config_merged) || exit 1
-	entries=$(yq -o=json '.' - <<<"$merged" | jq -c '
+	virt=$(host_virt_type)
+	entries=$(yq -o=json '.' - <<<"$merged" | jq -c --arg virt "$virt" --arg kvm "the host's /dev/kvm" '
 		[paths(type != "object" and type != "array") as $p
 		 | getpath($p) as $value
 		 | select($value != null and $value != "")
 		 | {path: ($p | map(tostring) | join(".")),
 		    name: ($p | map(tostring) | join("_") | ascii_upcase | gsub("-"; "_")),
-		    value: ($value | tostring)}]')
+		    value: ($value | tostring)}]
+		+ [{path: $kvm, name: "COMPUTE_VIRT_TYPE", value: $virt}]')
 	bad=$(jq -r 'map(select(.name | test("^[A-Z_][A-Z0-9_]*$") | not))[0] // empty | "\(.path)\t\(.name)"' <<<"$entries")
 	[ -z "$bad" ] ||
 		die "config: ${bad%%$'\t'*} cannot be a Flux variable, ${bad#*$'\t'} does not match ^[A-Z_][A-Z0-9_]*\$"

@@ -315,16 +315,31 @@ scaffold_attached() {
 	export SANDBOX_REVISION=latest@sha256:new SANDBOX_STAGE_TIMEOUT=2
 }
 
-@test "cluster_vars prints every key of the configuration as a string in cluster-vars" {
+@test "cluster_vars prints every key of the configuration as a string in cluster-vars, and COMPUTE_VIRT_TYPE kvm on a host with /dev/kvm" {
 	local pin
 	# scripts/pin.sh moves the pin, so the test reads it.
 	pin=$(yq '.upstream.cobaltcore' "$SANDBOX_ROOT/config.yaml")
+	host_virt_type() { echo kvm; }
 	run cluster_vars
 	[ "$status" -eq 0 ]
 	[ "$(yq '[.apiVersion, .kind, .metadata.name, .metadata.namespace] | join(" ")' - <<<"$output")" = "v1 ConfigMap cluster-vars flux-system" ]
 	[ "$(yq -o=json -I=0 '.metadata.labels' - <<<"$output")" = '{"reconcile.fluxcd.io/watch":"Enabled"}' ]
-	[ "$(yq -o=json -I=0 '.data' - <<<"$output")" = '{"NETWORK_SUBNET":"172.30.0.0/16","ADDRESSES_GATEWAY":"172.30.255.10","ADDRESSES_POOL":"172.30.255.0/24","ADDRESSES_DNS":"172.30.255.53","ADDRESSES_RABBITMQ":"172.30.255.11","REGISTRY_IMAGE":"registry:3","SWITCHES_HYPERVISOR_NODES":"1","SWITCHES_RESOLVER_FALLBACK":"false","SWITCHES_GLANCE":"false","SWITCHES_BARBICAN":"false","SWITCHES_HORIZON":"false","SWITCHES_FAKE_COMPUTE":"false","UPSTREAM_COBALTCORE":"'"$pin"'","FLUX_OPERATOR":"0.63.1"}' ]
+	[ "$(yq -o=json -I=0 '.data' - <<<"$output")" = '{"NETWORK_SUBNET":"172.30.0.0/16","ADDRESSES_GATEWAY":"172.30.255.10","ADDRESSES_POOL":"172.30.255.0/24","ADDRESSES_DNS":"172.30.255.53","ADDRESSES_RABBITMQ":"172.30.255.11","REGISTRY_IMAGE":"registry:3","SWITCHES_HYPERVISOR_NODES":"1","SWITCHES_RESOLVER_FALLBACK":"false","SWITCHES_GLANCE":"false","SWITCHES_BARBICAN":"false","SWITCHES_HORIZON":"false","SWITCHES_FAKE_COMPUTE":"false","UPSTREAM_COBALTCORE":"'"$pin"'","FLUX_OPERATOR":"0.63.1","COMPUTE_VIRT_TYPE":"kvm"}' ]
 	[ "$(yq '[.data[] | tag] | unique | join(" ")' - <<<"$output")" = '!!str' ]
+}
+
+@test "cluster_vars carries COMPUTE_VIRT_TYPE qemu on a host without /dev/kvm" {
+	host_virt_type() { echo qemu; }
+	run cluster_vars
+	[ "$status" -eq 0 ]
+	[ "$(yq -o=json '.data.COMPUTE_VIRT_TYPE' - <<<"$output")" = '"qemu"' ]
+}
+
+@test "cluster_vars fails for a key of the configuration that becomes COMPUTE_VIRT_TYPE" {
+	config_with '.compute["virt-type"] = "qemu"'
+	run cluster_vars
+	[ "$status" -eq 1 ]
+	[ "$output" = "error: config: compute.virt-type and the host's /dev/kvm become the same Flux variable COMPUTE_VIRT_TYPE" ]
 }
 
 @test "cluster_vars leaves out null and empty keys and keeps false" {
