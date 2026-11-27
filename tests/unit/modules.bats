@@ -878,9 +878,9 @@ EOF
 	[ "$(yq ea -o=json -I=0 '[select(.kind == "MariaDBDatabase" or .kind == "RabbitMQVhost") | .spec | has("deletionPolicy")]' "$file")" = '[false,false]' ]
 }
 
-@test "the four stages of sandbox-storage meet the stage contract, rook-operator after rook-crds and ceph-cluster after rook-operator and block-devices" {
+@test "the six stages of sandbox-storage meet the stage contract, rook-operator after rook-crds, ceph-cluster after rook-operator and block-devices, controllers without a dependency, and key-push after ceph-cluster, controllers and openbao-remote-auth" {
 	local module
-	for module in block-devices rook-crds rook-operator ceph-cluster; do
+	for module in block-devices rook-crds rook-operator ceph-cluster controllers key-push; do
 		run stage_contract "$SANDBOX_ROOT" "storage/$module"
 		echo "storage/$module: point $output"
 		[ "$status" -eq 0 ]
@@ -888,6 +888,9 @@ EOF
 	[ "$(yq -o=json -I=0 '.spec.dependsOn' "$SANDBOX_ROOT/clusters/storage/rook-operator/stage.yaml")" = '[{"name":"storage-rook-crds"}]' ]
 	[ "$(yq -o=json -I=0 '.spec.dependsOn' "$SANDBOX_ROOT/clusters/storage/ceph-cluster/stage.yaml")" = \
 		'[{"name":"storage-rook-operator"},{"name":"storage-block-devices"}]' ]
+	[ "$(yq '.spec | has("dependsOn")' "$SANDBOX_ROOT/clusters/storage/controllers/stage.yaml")" = false ]
+	[ "$(yq -o=json -I=0 '.spec.dependsOn' "$SANDBOX_ROOT/clusters/storage/key-push/stage.yaml")" = \
+		'[{"name":"storage-ceph-cluster"},{"name":"storage-controllers"},{"name":"management-openbao-remote-auth"}]' ]
 }
 
 @test "the stages storage-block-devices and storage-rook-crds apply their modules on sandbox-storage without a dependency" {
@@ -984,6 +987,41 @@ EOF
 	echo "point $output"
 	[ "$status" -eq 1 ]
 	[ "$output" = 4 ]
+}
+
+@test "the module key-push applies upstream's keys-push.yaml without its Certificate, its SecretStore on the published OpenBao and kubernetes/storage, the client certificate from the hub and the auth-delegator binding" {
+	local dir=$SANDBOX_ROOT/storage/key-push file
+	[ "$(yq -o=json -I=0 '.resources' "$dir/kustomization.yaml")" = \
+		'["../../vendor/cobaltcore/deploy/overlays/metal-stack/ceph/cluster/keys-push.yaml","client-tls.yaml","auth-delegator.yaml"]' ]
+	for file in $(yq '.resources[]' "$dir/kustomization.yaml"); do
+		[ -f "$dir/$file" ]
+	done
+	[ "$(yq '.patches | length' "$dir/kustomization.yaml")" = 2 ]
+	[ "$(yq '.patches[0].patch' "$dir/kustomization.yaml" | yq -o=json -I=0 '.')" = \
+		'{"apiVersion":"cert-manager.io/v1","kind":"Certificate","metadata":{"name":"ceph-keys-push-client-tls","namespace":"rook-ceph"},"$patch":"delete"}' ]
+	[ "$(yq -o=json -I=0 '.patches[1].target' "$dir/kustomization.yaml")" = \
+		'{"group":"external-secrets.io","version":"v1","kind":"SecretStore","name":"openbao-ceph-store","namespace":"rook-ceph"}' ]
+	[ "$(yq '.patches[1].patch' "$dir/kustomization.yaml" | yq -o=json -I=0 '.')" = \
+		'[{"op":"replace","path":"/spec/provider/vault/server","value":"https://openbao.${ADDRESSES_OPENBAO//./-}.nip.io:8200"},{"op":"replace","path":"/spec/provider/vault/auth/kubernetes/mountPath","value":"kubernetes/storage"}]' ]
+	[ "$(yq -o=json -I=0 '[.kind, .type, .metadata, .data]' "$dir/client-tls.yaml")" = \
+		'["Secret","kubernetes.io/tls",{"name":"ceph-keys-push-client-tls","namespace":"rook-ceph"},{"tls.crt":"${OPENBAO_CLIENT_CRT_B64}","tls.key":"${OPENBAO_CLIENT_KEY_B64}","ca.crt":"${OPENBAO_CA_B64}"}]' ]
+	[ "$(yq -o=json -I=0 '[.kind, .metadata.name, .roleRef, .subjects]' "$dir/auth-delegator.yaml")" = \
+		'["ClusterRoleBinding","ceph-keys-push-auth-delegator",{"apiGroup":"rbac.authorization.k8s.io","kind":"ClusterRole","name":"system:auth-delegator"},[{"kind":"ServiceAccount","name":"ceph-keys-push","namespace":"rook-ceph"}]]' ]
+	# Upstream's file holds the Certificate the patch deletes, under the name
+	# the SecretStore reads, and the ServiceAccount the binding names.
+	[ "$(yq ea -o=json -I=0 '[select(.kind == "Certificate" or .kind == "ServiceAccount") | .kind + "/" + .metadata.name]' \
+		"$SANDBOX_ROOT/vendor/cobaltcore/deploy/overlays/metal-stack/ceph/cluster/keys-push.yaml")" = \
+		'["ServiceAccount/ceph-keys-push","Certificate/ceph-keys-push-client-tls"]' ]
+}
+
+@test "the stage storage-key-push applies the module on sandbox-storage, substitutes cluster-vars and the Secret openbao-client-storage, and waits for the SecretStore and the PushSecrets" {
+	local stage=$SANDBOX_ROOT/clusters/storage/key-push/stage.yaml ready
+	[ "$(yq -o=json -I=0 '[.spec.path, .spec.interval, .spec.retryInterval, .spec.timeout, .spec.kubeConfig, .spec.postBuild]' "$stage")" = \
+		'["./storage/key-push","10m","1m","5m",{"secretRef":{"name":"kubeconfig-storage"}},{"substituteFrom":[{"kind":"ConfigMap","name":"cluster-vars"},{"kind":"Secret","name":"openbao-client-storage"}]}]' ]
+	ready="status.conditions.exists(c, c.type == 'Ready' && c.status == 'True')"
+	[ "$(yq -o=json -I=0 '.spec.healthCheckExprs' "$stage")" = \
+		"$(jq -n -c --arg ready "$ready" '[{apiVersion: "external-secrets.io/v1", kind: "SecretStore", current: $ready},
+			{apiVersion: "external-secrets.io/v1alpha1", kind: "PushSecret", current: $ready}]')" ]
 }
 
 @test "the module ceph-cluster applies upstream's cluster, pools, clients and toolbox without the key hand-off, and the pool .mgr" {

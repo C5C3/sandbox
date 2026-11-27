@@ -1,0 +1,45 @@
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: storage-key-push
+  namespace: flux-system
+spec:
+  # ceph-cluster creates the CephClients, for which Rook writes the Secrets
+  # rook-ceph-client-<name> the PushSecrets read; controllers installs
+  # External Secrets; openbao-remote-auth publishes OpenBao, writes the role
+  # push-ceph-keys and issues the client certificate.
+  dependsOn:
+    - name: storage-ceph-cluster
+    - name: storage-controllers
+    - name: management-openbao-remote-auth
+  interval: 10m
+  retryInterval: 1m
+  timeout: 5m
+  path: ./storage/key-push
+  prune: true
+  wait: true
+  sourceRef:
+    kind: OCIRepository
+    name: sandbox
+  kubeConfig:
+    secretRef:
+      name: kubeconfig-storage
+  # cluster-vars holds ADDRESSES_OPENBAO, the Secret openbao-client-storage
+  # the client certificate, which make up copies from the hub. Until make up
+  # has written the Secret, the build fails and the stage retries after
+  # retryInterval.
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: cluster-vars
+      - kind: Secret
+        name: openbao-client-storage
+  # kstatus reads no Ready condition of External Secrets, whose conditions
+  # carry no observedGeneration.
+  healthCheckExprs:
+    - apiVersion: external-secrets.io/v1
+      kind: SecretStore
+      current: status.conditions.exists(c, c.type == 'Ready' && c.status == 'True')
+    - apiVersion: external-secrets.io/v1alpha1
+      kind: PushSecret
+      current: status.conditions.exists(c, c.type == 'Ready' && c.status == 'True')
