@@ -12,10 +12,10 @@ The idea for this sandbox and its implementation come out of the
 [IPCEI-CIS Hackathon Potsdam](https://apeirora.eu/content/news/apeirora-ipcei-cis-hackathon/)
 of the IPCEI-CIS and NeoNephos community, November 24 to 26, 2026.
 
-> **Status: milestones 0 to 2 and 4 built.** The scaffold of milestone 0,
-> the control plane of milestone 1, the orders of milestone 2 and the
-> hypervisor of milestone 4 are implemented, and milestones 3 and 5 to 7
-> are specification.
+> **Status: milestones 0 to 4 built.** The scaffold of milestone 0, the
+> control plane of milestone 1, the orders of milestone 2, Ceph, the key
+> hand-off and Cinder on RBD of milestone 3 and the hypervisor of
+> milestone 4 are implemented, and milestones 5 to 7 are specification.
 > This README describes what is to be built, which upstream material it builds
 > on, and which points have to be proven first. It was written against
 > `C5C3/cobaltcore` at `15a0323e` and `C5C3/playground` at `d2e6b596`
@@ -297,7 +297,7 @@ cluster uses the same ones, see
 | 5 | `ovn-controller`, metadata agent on compute | Southbound node ports on management | Chassis registration, port lookups | Client certificate the ovn-operator copies as `<chassis>-ovn-client` |
 | 6 | Metadata agent on compute | `nova-metadata.<suffix>`, port 443 | Instance metadata | Shared secret the ControlPlane copies, CA bundle the sandbox places |
 | 7 | Console proxy on management | VNC on the compute nodes' addresses | noVNC consoles | Node addresses on the Docker network |
-| 8 | `cinder-volume`, `cinder-backup` on management | Ceph monitors and OSDs on storage | Volumes and backups | Monitor address, pool, user and key Secret in the `CinderBackend` entry |
+| 8 | `cinder-volume`, `cinder-backup` on management | Ceph monitors and OSDs on storage | Volumes and backups | The entry `ceph1` of `backends` and the target `cephbk` of `backupBackend` in the `ControlPlane`, which upstream projects into a `CinderBackend` and a `CinderBackupBackend`: the monitor `sandbox-storage-control-plane:3300`, the network `network.subnet`, the pool, the user and the key Secret of the key hand-off. See [Cinder on RBD](#cinder-on-rbd) |
 | 9 | QEMU on compute | Ceph monitors and OSDs on storage | Attached RBD volumes | libvirt secret defined from the `cinder` key |
 | 10 | External Secrets on storage | OpenBao on management, `openbao.<a-b-c-d>.nip.io:8200` | Push the client keys | Client certificate `openbao-client-storage` for OpenBao's mutual TLS, copied from the hub; auth mount `kubernetes/storage`, role `push-ceph-keys` for `rook-ceph/ceph-keys-push`, policy `push-ceph-keys` |
 | 11 | External Secrets on compute | OpenBao on management, `openbao.<a-b-c-d>.nip.io:8200` | Read the `cinder` key for libvirt | Client certificate `openbao-client-compute` for OpenBao's mutual TLS, copied from the hub; auth mount `kubernetes/hypervisor`, role `read-ceph-client-cinder` for `openstack/ceph-keys-read`, the sandbox policy `read-ceph-client-cinder`, which reads `ceph/client-cinder` alone |
@@ -1071,6 +1071,117 @@ Five states need to be known:
   OpenBao (`deletionPolicy: None` of the PushSecrets), and the CephClients
   stay with the module `ceph-cluster`.
 
+### Cinder on RBD
+
+Cinder on the management cluster stores its volumes in the Ceph of
+`sandbox-storage`, over path 8 of
+[Interfaces between the clusters](#interfaces-between-the-clusters), with
+the client keys of [The key hand-off](#the-key-hand-off). The profile
+`storage` runs it with Keystone on the TLS bus. Two modules without a stage
+carry it:
+
+- `cinder-rbd` appends upstream's RBD volume backend `ceph1` to the
+  `backends` of the `ControlPlane`, and makes the stage
+  `management-controlplane` depend on `management-ceph-keys`, so the
+  `ControlPlane` names `ceph1` only once both key Secrets in `openstack`
+  are Ready. It needs `cinder` and `ceph-keys` beside it, which nothing
+  checks, as `glance` needs `objectstore`.
+- `cinder-backup` sets the backup target `cephbk` of upstream on the pool
+  `backups`, as the user `cinder-backup` with the key Secret
+  `ceph-client-cinder-backup`. The switch `cinder-backup` adds it, and it
+  needs `cinder` and `cinder-rbd` beside it, which `make up` checks.
+
+Both are upstream's entries of
+`vendor/cobaltcore/deploy/overlays/metal-stack/controlplane/controlplane-lab.yaml`
+with two fields replaced. `monitors` is `sandbox-storage-control-plane:3300`:
+the monitor answers on the address of the storage node on the Docker
+network, host networking of the module `ceph-cluster`, and a pod on the
+management cluster reaches it by the node's container name, where upstream
+names the Service of the monitor in its own cluster. `networks` is
+`network.subnet` of the configuration, the Docker network where monitor and
+OSDs answer, where upstream names the pod and service networks of its
+shoot; the stage of `controlplane` substitutes it from `cluster-vars`. The
+pools, the users and the key Secrets stay as upstream has them, and so does
+the `secretUUID` of `ceph1`, the libvirt secret a hypervisor defines
+([#18](https://github.com/C5C3/sandbox/issues/18)), which nothing on the
+management cluster reads. The monitor is the one place an entry names its
+storage cluster: a backend on another Ceph is another module that appends
+another entry.
+
+```yaml
+backends:
+  - name: ceph1
+    type: RBD
+    rbd:
+      pool: volumes
+      user: cinder
+      monitors: [sandbox-storage-control-plane:3300]
+      networks: ["${NETWORK_SUBNET}"]
+      keySecretRef: {name: ceph-client-cinder}
+      secretUUID: 090e4a3c-6c20-4e74-82dc-1a70382babe8
+backupBackend:
+  name: cephbk
+  type: RBD
+  rbd:
+    pool: backups
+    user: cinder-backup
+    monitors: [sandbox-storage-control-plane:3300]
+    networks: ["${NETWORK_SUBNET}"]
+    keySecretRef: {name: ceph-client-cinder-backup}
+```
+
+The backends of Cinder are appended entries
+([ADR-0042](docs/adr/0042-append-each-volume-backend-of-cinder-as-a-flux-patch-of-the-stage-of-controlplane.md)).
+`components/cinder` sets `backends` to the empty list, and each backend
+module, `cinder-nfs` and `cinder-rbd`, appends its entry with a Flux patch
+of the stage of `controlplane`, which Flux applies after every Component of
+the stage. A profile with both modules gets both entries; the profile
+`controlplane` lists `cinder-nfs` alone and runs `nfs1` as before.
+
+`cinder-backup` is off in `storage`, as the switch table says; `parity`
+turns it on. A copy of the configuration turns it on for `storage`:
+
+```bash
+yq '.switches["cinder-backup"] = true' config.yaml >config-backup.yaml
+make up PROFILE=storage CONFIG=config-backup.yaml
+```
+
+`make verify` checks the backend with `rbd-backend` and `rbd-volume`, and
+the backup target with `rbd-backup`, `rbd-restore` and `rbd-rotation`, see
+[Planned command surface](#planned-command-surface)
+([ADR-0043](docs/adr/0043-check-cinder-on-rbd-in-make-verify-with-scratch-volumes-and-a-rotation-of-the-cinder-backup-key.md)).
+`rbd-rotation` raises `keyGeneration` of the `CephClient` `cinder-backup`
+by one on every run. `tests/host/storage.bats` runs the profile, then with
+`cinder-backup` on, then without it again.
+
+Six states need to be known:
+
+- **The keys have not arrived.** The stage `management-controlplane` waits
+  for `management-ceph-keys`, which waits for the Ceph of the storage
+  cluster and the push of its keys; `make status` shows which stage is not
+  Ready. The first `make up PROFILE=storage` pulls Rook and Ceph and brings
+  Ceph up before the `ControlPlane` is applied, so it needs
+  `SANDBOX_STAGE_TIMEOUT=3600`.
+- **`cinder-rbd` without `cinder`.** The build of `management-controlplane`
+  fails on the missing path `/spec/services/cinder/backends`. Add `cinder`
+  to the profile.
+- **`cinder` without a backend module, or `cinder-rbd` taken off while
+  `cinder` stays.** The API server refuses the empty `backends`, and the
+  stage `management-controlplane` reports the refusal. Add a backend
+  module, or `make down`.
+- **`cinder` and `cinder-rbd` taken off together.** Upstream keeps the
+  projected Cinder unless the `ControlPlane` carries
+  `c5c3.io/allow-cinder-deletion: "true"`, which the sandbox does not set.
+  `make down` is the way out.
+- **`cinder-backup` turned off.** Upstream prunes the `CinderBackupBackend`,
+  and the Cinder drops the Deployment `controlplane-cinder-backup`. The
+  images in the pool `backups` stay.
+- **Every `make verify` with `cephbk` rotates the key.** It raises
+  `keyGeneration` of `cinder-backup` by one, and Flux leaves it there
+  ([ADR-0040](docs/adr/0040-rotate-a-ceph-client-key-by-its-key-generation-with-flux-creating-the-clients-once.md)).
+  A run that fails after the patch leaves the raised generation, and the
+  next run rotates once more.
+
 ## Modules
 
 A module of a cluster is the directory `clusters/<role>/<module>/` with two
@@ -1128,15 +1239,16 @@ The table is the planned set; M marks the milestone that builds it.
 | `placement` | No stage. The Placement service, its operator resumed | `controlplane` | 1 |
 | `barbican` | No stage. The Key Manager service on an OpenBao of its own, its operator resumed. Added by the switch `barbican` | `controlplane` | 1 |
 | `neutron` | No stage. The network service, the `OVNCentral` `controlplane-ovn`, the ovn-operator and its operator resumed | `controlplane` | 1 |
-| `cinder` | No stage. The block-storage service, its operator resumed. Needs a module with a volume backend | `controlplane`, `cinder-nfs` | 1 |
+| `cinder` | No stage. The block-storage service with an empty list of volume backends, its operator resumed. Needs a backend module, `cinder-nfs` or `cinder-rbd`, which appends its entry | `controlplane`; needs a backend module beside it | 1 |
 | `nova` | No stage. The compute service, its operator resumed. Admission needs `glance`, `placement` and `neutron` beside it | `controlplane` | 1 |
 | `horizon` | No stage. The dashboard and the ExternalSecret of its secret key, its operator resumed. Added by the switch `horizon` | `controlplane` | 1 |
-| `cinder-nfs` | Upstream's kind NFS export and `csi-driver-nfs`, and the volume backend `nfs1` of Cinder ([ADR-0024](docs/adr/0024-run-cinder-on-upstreams-nfs-export-in-the-profile-controlplane.md)) | `controllers` | 1 |
+| `cinder-nfs` | Upstream's kind NFS export and `csi-driver-nfs`, and the volume backend `nfs1` of Cinder, which a Flux patch of the stage of `controlplane` appends, with the dependency on this stage ([ADR-0024](docs/adr/0024-run-cinder-on-upstreams-nfs-export-in-the-profile-controlplane.md), [ADR-0042](docs/adr/0042-append-each-volume-backend-of-cinder-as-a-flux-patch-of-the-stage-of-controlplane.md)) | `controllers`; needs `cinder` beside it | 1 |
 | `fake-compute` | The upstream fake compute, for a control plane without hypervisors. Added by the switch `fake-compute` | `controlplane`, and `nova` beside it | 1 |
 | `orders` | The namespace `workflow` of one owner, its assignment on the `ControlPlane` with the role `member` and catalog entries, and the seven example orders of Part 1 of the upstream Quick Start (Orders). See [Orders](#orders) | `controlplane` | 2 |
 | `openbao-remote-auth` | OpenBao on `addresses.openbao` as the Service `shared-services/openbao-published`; the client certificates `openbao-client-storage` and `openbao-client-compute` from `openbao-ca-issuer`; the Job `openbao-remote-auth`, which writes the policy `read-ceph-client-cinder`, enables `kubernetes/storage` and `kubernetes/hypervisor`, writes the roles `push-ceph-keys` and `read-ceph-client-cinder` on them and their `config` from the ConfigMap `flux-system/openbao-remote-auth`. See [The key hand-off](#the-key-hand-off) | `openbao`, `loadbalancer` | 3 |
 | `ceph-keys` | Upstream's `keys-pull.yaml`, unchanged: the ExternalSecrets `ceph-client-cinder` and `ceph-client-cinder-backup` in `openstack`, with `userKey` alone, through a SecretStore on `kubernetes/management` as `read-ceph-keys` | `openbao-remote-auth` | 3 |
-| `cinder-rbd` | The `cinder` block of the ControlPlane with the backend `ceph1`. The backup target `cephbk` is a switch | `ceph-keys`, `controlplane` | 3 |
+| `cinder-rbd` | No stage. The volume backend `ceph1` of Cinder on the pool `volumes` of `sandbox-storage`, which a Flux patch of the stage of `controlplane` appends, with the dependency of that stage on `ceph-keys`. See [Cinder on RBD](#cinder-on-rbd) | `controlplane`; needs `cinder` and `ceph-keys` beside it | 3 |
+| `cinder-backup` | No stage. The backup target `cephbk` of Cinder on the pool `backups` of `sandbox-storage` and with it the Deployment `controlplane-cinder-backup`, through `components/cinder-backup`. Added by the switch `cinder-backup` | `controlplane`; needs `cinder` and `cinder-rbd` beside it | 3 |
 | `remote-compute` | No stage. `remoteCompute` with the transport URL Secret of `messaging-tls`, `hypervisorOperator`, and `metadataGateway` and `consoleProxy` at `nova-metadata.<suffix>` and `nova-console.<suffix>` on the ControlPlane; `externallyReachable` on both databases of the OVN central, through a Flux patch of the stage of `controlplane` | `controlplane`; needs `messaging-tls`, `glance`, `placement`, `neutron` and `nova` beside it | 4 |
 | `hypervisor-fixtures` | The K-ORC fixtures hvo looks up, from upstream's lab overlay: domain `cc3test` with project `test`, the imports of the domain `Default`, the user `hypervisor-operator` and the role `admin`, the assignment of `admin` on `test`, flavor `1`, image `cirros-kvm` | `controlplane`; needs `remote-compute`, `glance` and `nova` beside it | 4 |
 | `compute-pool` | The `OVNChassis` `lab-chassis`, the `NeutronMetadataAgent` `lab-metadata-agent` at 768Mi and the `NovaCompute` `lab` on the virt type of the host, each with `targetClusterRef` `sandbox-compute`. See [The compute pool](#the-compute-pool) | `controlplane`, `trust` on compute; needs `remote-compute`, the registration of the compute cluster and `hypervisor-operator` on compute beside it | 4 |
@@ -1233,7 +1345,15 @@ module `controlplane`, the services `placement`, `neutron`, `cinder` and
 `nova`, `cinder-nfs`, the volume backend of Cinder, and `orders`, and turns
 on the switches `glance`, `barbican`, `horizon` and `fake-compute`: 20
 modules, 13 of them with a stage, on the management cluster alone and on
-the managed bus.
+the managed bus. `storage` runs the modules of `identity` without `orders`,
+with `cinder` and `cinder-rbd`, Cinder on the RBD backend `ceph1`, and
+`openbao-remote-auth` and `ceph-keys`, the key hand-off, on the management
+cluster, and `block-devices`, `rook-crds`, `rook-operator`,
+`ceph-cluster`, `controllers` and `key-push` on the storage cluster: 20
+modules, 18 of them with a stage, without a switch. Keystone and Cinder
+run on the TLS bus, without Glance and so without `objectstore`, and
+without the orders; the switch `cinder-backup` adds the backup target
+`cephbk`.
 
 | Profile | Clusters | What runs | Evaluates |
 | --- | --- | --- | --- |
@@ -1241,7 +1361,7 @@ the managed bus.
 | `platform` | management | The modules of `gateway` and `openbao`, `objectstore`, `platform` and `sizing`, the service operators suspended | OpenBao, External Secrets, Garage and the c5c3-operator before any service |
 | `identity` | management | Keystone on the TLS bus and the orders of `workflow` | The operator model, OpenBao and ESO, K-ORC, credential rotation, six of the seven order kinds |
 | `controlplane` | management | The modules of `platform` and `controlplane`, `placement`, `neutron`, `cinder`, `cinder-nfs`, `nova` and `orders`, with the switches `glance`, `barbican`, `horizon` and `fake-compute`: all eight services, fake compute, Cinder on NFS, managed message bus, the orders of `workflow` | Parity with the Quick Start (ControlPlane); all seven order kinds |
-| `storage` | management, storage | Keystone, Cinder with the volume backend on Ceph | RBD backend, key hand-off and rotation, without hypervisors |
+| `storage` | management, storage | Keystone and Cinder on the TLS bus with the volume backend `ceph1` on the Ceph of the storage cluster, the key hand-off; with the switch `cinder-backup` the backup target `cephbk` | RBD backend and key hand-off, with `cinder-backup` backup, restore and the rotation of its key under a running backup service, without hypervisors |
 | `full` | management, storage, compute | Keystone, Glance, Placement, Neutron, Nova, Cinder on Ceph, one hypervisor node, TLS message bus | Servers on KVM with RBD volumes across three clusters |
 | `parity` | management, storage, compute | `full` plus Barbican, Horizon, `cinder-backup`, a second hypervisor node, three OSDs | Parity with the Quick Start (metal-stack), the acceptance test of goal 1 |
 
@@ -1259,7 +1379,7 @@ switches on top of the profiles:
 | Switch | Adds | Default |
 | --- | --- | --- |
 | `horizon`, `barbican`, `glance` | The module of the service: its block of the `ControlPlane` and its operator. Each needs `controlplane`, and `glance` also `objectstore` | off; on in `controlplane` |
-| `cinder-backup` | The backup target `cephbk` and the `cinder-backup` Deployment | on in `parity` |
+| `cinder-backup` | The module `cinder-backup`: the backup target `cephbk` on the pool `backups` and the Deployment `controlplane-cinder-backup`. Needs `cinder` and `cinder-rbd` | off; on in `parity` |
 | `hypervisor-nodes` | Worker nodes of the compute cluster | 1; 2 in `parity` |
 | `osd-count`, `osd-size` | OSDs of the storage cluster and the size of their sparse files | 1 OSD of `10Gi`; 3 in `parity` |
 | `fake-compute` | The module `fake-compute`, a compute without a hypervisor. Needs `controlplane` and `nova` | off; on in `controlplane` |
@@ -1432,7 +1552,7 @@ make vendor                 # check out the paths of upstream at the pin into ve
 make validate               # render every root and stage against vendor/cobaltcore, check schemas and patches
 make test                   # the unit tests of the command layer
 make test-validate          # the tests of make validate on a fixture tree, with flux and kubeconform
-make test-host              # the lifecycle, the profiles gateway, platform, identity and controlplane, controlplane on the TLS bus, the compute cluster attached to the control plane, the hypervisor node, the compute pool, the storage cluster and the key hand-off against a real Docker, each creating and removing a sandbox
+make test-host              # the lifecycle, the profiles gateway, platform, identity and controlplane, controlplane on the TLS bus, the compute cluster attached to the control plane, the hypervisor node, the compute pool, the storage cluster, the key hand-off and the profile storage against a real Docker, each creating and removing a sandbox
 make down                   # delete clusters, registry, network, loop devices
 ```
 
@@ -1491,19 +1611,42 @@ Quick Start (ControlPlane):
 | Placement | `placement-catalog`, and `placement-classes` finds `VCPU`, `MEMORY_MB` and `DISK_GB` |
 | Barbican | `barbican-catalog`, and `barbican-secret` stores a payload and reads it back unchanged |
 | Neutron | `neutron-catalog`, and `neutron-network` creates a network with a subnet on `192.0.2.0/24` that is `ACTIVE` |
-| Cinder | `cinder-catalog`, and `cinder-volume` creates a 1 GiB volume that is `available` within 120 s |
+| Cinder | `cinder-catalog`, and `cinder-volume` waits up to 300 s for Cinder to list a pool and creates a 1 GiB volume that is `available` within 120 s |
 | Nova | `nova-catalog`, `nova-services` finds a `nova-scheduler` and a `nova-conductor` `up`, and, beside the Deployment `controlplane-fake-compute`, `nova-server` boots a server on the fake compute to `ACTIVE` |
 | Horizon | `horizon-login` logs in as `admin` through the login form with curl |
+| Cinder on RBD | `rbd-backend` finds within 300 s a pool of `@ceph1#` and the `cinder-volume` service on `controlplane-cinder@ceph1` `up`; `rbd-volume` creates a 1 GiB volume that is `available` within 120 s on `controlplane-cinder@ceph1#<pool>` and whose image in the pool `volumes` has 1 GiB in `rbd info`. With `cephbk`: `rbd-backup` writes 4 MiB into the image and backs the volume up within 600 s, with its image in the pool `backups`; `rbd-restore` restores the backup onto a second volume within 600 s and finds the first 4 MiB of both images the same; `rbd-rotation` raises `keyGeneration` of the `CephClient` `cinder-backup` by one, finds Ceph's new key in `openstack/ceph-client-cinder-backup` within 300 s and a rollout of `controlplane-cinder-backup` within 600 s, and backs the volume up again within 600 s |
 | Compute pool | `compute-pool` finds each `NovaCompute` that names `sandbox-compute` Ready and its nodes `Active`, `up` and `enabled`; `compute-chassis` and `compute-metadata-agent` find the `OVNChassis` and the `NeutronMetadataAgent` Ready and an alive agent of `ovn-controller` and `neutron-ovn-metadata-agent` on each node; `compute-hypervisor` finds the `Hypervisor` of each node on `sandbox-compute` onboarded within 600 s and the node in the aggregate of its zone; `compute-network` creates a network on `198.51.100.0/24` with the MTU 1442; `compute-server` boots a server from `cirros-kvm` and the flavor `1` to `ACTIVE` on the first node; `compute-metadata` finds in its console log, within 300 s, the instance id cirros read from the metadata service; `compute-console` opens the noVNC console of the server through the Gateway and receives the RFB greeting of its VNC |
 | Orders | `orders-ready` finds the orders of the assigned namespaces `Ready`, `orders-secrets` the Secret beside each that delivers one, `orders-converge` orders a scratch set, `orders-rotation` watches its application credential rotate, `orders-teardown` deletes the scratch set and finds nothing left |
 
-On `controlplane` that is 21 checks, on `identity` 7, and on the profile of
-the host test of the compute pool 18: the ten of Keystone, Glance,
-Placement, Neutron and Nova and the eight of the pool. The eight checks of
-the compute pool run after those of the services whenever a `NovaCompute`
-in `openstack` names the registration `sandbox-compute`, and are the checks
-of Part 2, Steps 1 to 6 of upstream's Quick Start (metal-stack) for one
-node
+On `controlplane` that is 21 checks, on `identity` 7, on `storage` 6 and 9
+with `cinder-backup`, and on the profile of the host test of the compute
+pool 18: the ten of Keystone, Glance, Placement, Neutron and Nova and the
+eight of the pool. The RBD checks run after those of the services and
+before those of the pool whenever the `ControlPlane` declares the backend
+`ceph1` of type `RBD`, the last three when it also declares the backup
+target `cephbk`, and are the checks of Part 1 Step 4 and Part 2 Steps 7, 10
+and 11 of upstream's Quick Start (metal-stack), less what needs a
+hypervisor
+([ADR-0043](docs/adr/0043-check-cinder-on-rbd-in-make-verify-with-scratch-volumes-and-a-rotation-of-the-cinder-backup-key.md)).
+They read `sandbox-storage` with its kubeconfig file and run `rbd` and
+`ceph` in the Rook toolbox there. A failed `rbd-volume` reports the three
+after it as skipped and a failed `rbd-backup` `rbd-restore`, so they are
+two or five. Their scratch objects are the volumes
+`sandbox-verify-rbd-volume` and `sandbox-verify-rbd-restored` and the
+backups `sandbox-verify-rbd-backup` and `sandbox-verify-rbd-rotated`, the
+backups deleted before the volumes. No key reaches an argument or a line:
+`rbd-rotation` compares the sha256 of `userKey` with that of
+`ceph auth get-key client.cinder-backup`, computed in the toolbox. Their
+waits are bounded at 3540 s in all: 300 s for the pool, 120 s for the
+volume, 600 s for the backup, 720 s for the restore and 1800 s for the
+rotation. On the host run of `tests/host/storage.bats` on 2026-11-27 the
+nine checks took 132 s and 171 s, each with its rotation, and the six
+checks of `storage` 76 s.
+
+The eight checks of the compute pool run after those of the services and
+the RBD checks whenever a `NovaCompute` in `openstack` names the
+registration `sandbox-compute`, and are the checks of Part 2, Steps 1 to 6
+of upstream's Quick Start (metal-stack) for one node
 ([ADR-0033](docs/adr/0033-check-the-compute-pool-in-make-verify-with-a-server-on-the-first-node.md)).
 A check whose input an earlier check failed to create reports
 `FAIL <check>: skipped, <earlier check> failed`, so they are always eight.
@@ -1528,12 +1671,20 @@ to `make verify`, not yet measured on a host; their waits are bounded at
 
 Each check creates its objects under
 names that start with `sandbox-verify`, deletes what an earlier run left
-of them first and what it created when it ends. No check passes
+of them first and what it created when it ends. `cinder-volume` and the
+RBD checks create their volumes with `cinder create` of
+`python-cinderclient`: `openstack volume create` builds a client of the
+image service even without `--image`, and fails with
+`public endpoint for image service not found` in a cloud without Glance,
+such as `storage`. `rbd-restore` restores with `cinder backup-restore`,
+because `openstack volume backup restore` of 6.6.0 fails on its own
+answer after it sent the restore. No check passes
 `--insecure` or `-k`, and curl reads the admin password from a file of mode
 600, never from an argument. Without a `ControlPlane`, `make verify` reports
-0 of 0 checks and exits 0. Both targets read the hub, and `compute-hypervisor`
-also `sandbox-compute` with its kubeconfig file, so they work with any
-`PROFILE` and `CONFIG`. `make verify`, like the `openstack` calls after
+0 of 0 checks and exits 0. Both targets read the hub, `compute-hypervisor`
+also `sandbox-compute` and the `rbd-` checks also `sandbox-storage`, each
+with its kubeconfig file, and `rbd-rotation` patches the `CephClient`
+`cinder-backup` there, so they work with any `PROFILE` and `CONFIG`. `make verify`, like the `openstack` calls after
 `make env`, needs the resolver of the host to answer the nip.io names.
 
 With `switches.resolver-fallback` on, `make up` prints the resolver settings
@@ -1569,7 +1720,7 @@ lists the checks it adds.
 | CPU | To be measured. *Upstream* budgets 4 vCPU for the control plane with all eight services. Working estimate for `full`: 8 cores |
 | Disk | To be measured. Every kind node keeps its own image store, so an image is stored once per node that runs it. Working estimate: 60 GB free for `full`, 100 GB for `parity`, including the sparse OSD files |
 | DNS | The resolver must answer `*.nip.io` names with private addresses. Resolvers with DNS rebinding protection drop such answers. For such a host, `switches.resolver-fallback` adds the module `resolver`: the CoreDNS of every cluster answers the names itself, and the CoreDNS of the management cluster answers them on `addresses.dns`, to which the host routes `nip.io` with the settings `make up` prints ([ADR-0018](docs/adr/0018-print-the-host-resolver-settings-of-the-nip-io-fallback.md)) |
-| Tools | `docker`, `kind`, `kubectl`, `helm`, `flux`, `git`, `yq` v4.40.1 or newer, `jq`, `make`, `bats` (bats-core 1.5.0 or newer, for `make test`, `make test-validate` and `make test-host`), `kubeconform`, `curl` and `tar` for `make validate`, `curl` and `openssl` for `make verify` and `make test-host`, and the OpenStack CLI with `osc-placement` and `python-barbicanclient` |
+| Tools | `docker`, `kind`, `kubectl`, `helm`, `flux`, `git`, `yq` v4.40.1 or newer, `jq`, `make`, `bats` (bats-core 1.5.0 or newer, for `make test`, `make test-validate` and `make test-host`), `kubeconform`, `curl` and `tar` for `make validate`, `curl` and `openssl` for `make verify` and `make test-host`, and the OpenStack CLI with `osc-placement` and `python-barbicanclient`, and the `cinder` CLI of `python-cinderclient`, which the OpenStack CLI depends on |
 | Network | Egress to `github.com` (upstream, the tools and schemas of `make validate`, the CRDs of the module `crds`), `raw.githubusercontent.com` (the Kubernetes schemas of `make validate`, the MetalLB manifest of the module `loadbalancer`), `ghcr.io` (among others the NFS server of `cinder-nfs`), `quay.io`, `docker.io`, `deb.debian.org` (the package `dbus` of the hypervisor nodes, for a profile with `node-prep`), `registry.k8s.io` (the images of `csi-driver-nfs`), the Helm repositories, `raw.githubusercontent.com` as the one of `csi-driver-nfs` and `charts.rook.io` as the one of the Rook chart among them, and the cirros download. The management cluster reads `github.com` and `raw.githubusercontent.com` at every reconcile of `crds` and `loadbalancer` ([ADR-0019](docs/adr/0019-read-third-party-manifests-as-pinned-remote-resources.md)) |
 
 `make up`, `make up-<cluster>` and `scripts/preflight.sh [<role>...]` check
@@ -1590,8 +1741,8 @@ its plugins are reported as warnings. The warning for the resolver names
 file without `addresses.pool`, `addresses.dns`, `addresses.rabbitmq`,
 `addresses.openbao`, `switches.resolver-fallback`, `switches.glance`,
 `switches.barbican`, `switches.horizon`, `switches.fake-compute`,
-`switches.osd-count` or `switches.osd-size` fails the check of the
-configuration.
+`switches.cinder-backup`, `switches.osd-count` or `switches.osd-size` fails
+the check of the configuration.
 
 Every kind node mounts `kind/containerd-nofile.conf`, which limits the open
 files of every pod to 1048576. kind runs containerd with
@@ -1719,6 +1870,26 @@ The storage cluster with Rook, one monitor, one manager, the toolbox and
 one OSD works in about 1.2 GiB against 2.2 GiB of requests, below the
 estimate of about 3 GiB in the table above. Each further OSD adds 1 GiB of
 requests and worked in about 120 MiB, with the pools idle.
+
+`make footprint` on `storage` with `cinder-backup` on, Keystone and Cinder
+with the backend `ceph1` and the backup target `cephbk` on the TLS bus,
+after `make verify` passed its 9 checks twice, on 2026-11-27, on the same
+host:
+
+```text
+CLUSTER              REQUESTS_MIB WORKING_SET_MIB
+sandbox-management           8162            6179
+sandbox-storage              2274            2030
+registry                        -              14
+total                       10436            8222
+```
+
+The management cluster works in about 6 GiB against 8 GiB of requests. The
+storage cluster works in about 2 GiB against the same 2.2 GiB of requests
+as in the scratch profile of `tests/host/storage-ceph.bats`, which ran
+neither External Secrets nor the key push and wrote no volume; the volumes
+and backups of `make verify` were deleted before the measurement. The
+verdict on point 10 is that of the profile `full` ([#19](https://github.com/C5C3/sandbox/issues/19)).
 
 ## Milestones
 

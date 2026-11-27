@@ -1,6 +1,6 @@
 # ADR-0024: Run Cinder on upstream's NFS export in the profile controlplane
 
-- Status: Proposed
+- Status: Superseded in part by [ADR-0042](0042-append-each-volume-backend-of-cinder-as-a-flux-patch-of-the-stage-of-controlplane.md): the backend nfs1 is appended by a Flux patch of the stage of controlplane
 - Date: 2026-11-25
 - Source: [#10](https://github.com/C5C3/sandbox/issues/10), decided by the repository owner on 2026-11-25
 

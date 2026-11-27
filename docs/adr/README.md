@@ -27,7 +27,7 @@ Each file in this directory records one decision with its context, the alternati
 | [ADR-0021](0021-install-the-c5c3-operator-without-the-keystone-operator.md) | Install the c5c3-operator without the keystone-operator | Accepted |
 | [ADR-0022](0022-let-a-module-patch-the-stages-of-other-modules.md) | Let a module patch the stages of other modules | Proposed |
 | [ADR-0023](0023-select-the-services-of-the-controlplane-as-modules-without-a-stage.md) | Select the services of the ControlPlane as modules without a stage | Proposed |
-| [ADR-0024](0024-run-cinder-on-upstreams-nfs-export-in-the-profile-controlplane.md) | Run Cinder on upstream's NFS export in the profile controlplane | Proposed |
+| [ADR-0024](0024-run-cinder-on-upstreams-nfs-export-in-the-profile-controlplane.md) | Run Cinder on upstream's NFS export in the profile controlplane | Superseded in part by [ADR-0042](0042-append-each-volume-backend-of-cinder-as-a-flux-patch-of-the-stage-of-controlplane.md): the backend nfs1 is appended by a Flux patch of the stage of controlplane |
 | [ADR-0025](0025-check-the-orders-with-scratch-orders-and-a-scheduled-rotation.md) | Check the orders with scratch orders and a scheduled rotation | Proposed |
 | [ADR-0026](0026-release-a-vendored-chart-through-an-artifactgenerator-on-the-hub.md) | Release a vendored chart through an ArtifactGenerator on the hub | Proposed |
 | [ADR-0027](0027-register-a-compute-cluster-through-the-command-layer.md) | Register a compute cluster through the command layer | Proposed |
@@ -45,6 +45,8 @@ Each file in this directory records one decision with its context, the alternati
 | [ADR-0039](0039-carry-the-openbao-client-certificates-to-the-remote-clusters-through-the-command-layer.md) | Carry the OpenBao client certificates to the remote clusters through the command layer | Proposed |
 | [ADR-0040](0040-rotate-a-ceph-client-key-by-its-key-generation-with-flux-creating-the-clients-once.md) | Rotate a Ceph client key by its key generation, with Flux creating the clients once | Proposed |
 | [ADR-0041](0041-prove-the-compute-half-of-point-3-with-a-scratch-externalsecret.md) | Prove the compute half of point 3 with a scratch ExternalSecret | Proposed |
+| [ADR-0042](0042-append-each-volume-backend-of-cinder-as-a-flux-patch-of-the-stage-of-controlplane.md) | Append each volume backend of Cinder as a Flux patch of the stage of controlplane | Proposed |
+| [ADR-0043](0043-check-cinder-on-rbd-in-make-verify-with-scratch-volumes-and-a-rotation-of-the-cinder-backup-key.md) | Check Cinder on RBD in make verify with scratch volumes and a rotation of the cinder-backup key | Proposed |
 
 ## Points to prove first
 
