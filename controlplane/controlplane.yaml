@@ -1,8 +1,9 @@
 # The ControlPlane controlplane in openstack, the base of the module
 # controlplane. One Component per service adds its block to spec.services
 # (components/keystone, glance, placement, barbican, neutron, cinder, nova
-# and horizon), components/cinder-nfs adds the volume backend of cinder, the
-# module messaging-tls adds the brownfield messaging block
+# and horizon), the backend module cinder-nfs appends the volume backend of
+# cinder with a Flux patch of the stage, the module messaging-tls adds the
+# brownfield messaging block
 # (components/messaging-tls), the module orders the namespace assignments
 # of its owners (components/orders), and the module remote-compute the
 # remote compute contract of Nova (components/remote-compute). Neutron,

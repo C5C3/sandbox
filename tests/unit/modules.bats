@@ -407,18 +407,30 @@ horizon horizon
 EOF
 }
 
-@test "glance and cinder-nfs append the dependency on the stage they need, and the other service modules none" {
+@test "glance appends the dependency on the stage of objectstore, and the other service modules none" {
 	local module dir=$SANDBOX_ROOT/clusters/management
 	[ "$(yq '.patches[0].patch' "$dir/glance/patches/kustomization.yaml" | yq -o=json -I=0 '.')" = \
 		'[{"op":"add","path":"/spec/components/-","value":"components/glance"},{"op":"add","path":"/spec/dependsOn/-","value":{"name":"management-objectstore"}}]' ]
-	[ "$(yq -o=json -I=0 '[.patches[].target.name]' "$dir/cinder-nfs/patches/kustomization.yaml")" = '["management-controlplane"]' ]
-	[ "$(yq '.patches[0].patch' "$dir/cinder-nfs/patches/kustomization.yaml" | yq -o=json -I=0 '.')" = \
-		'[{"op":"add","path":"/spec/components/-","value":"components/cinder-nfs"},{"op":"add","path":"/spec/dependsOn/-","value":{"name":"management-cinder-nfs"}}]' ]
-	[ -f "$SANDBOX_ROOT/controlplane/components/cinder-nfs/kustomization.yaml" ]
 	for module in placement barbican neutron cinder nova horizon; do
 		echo "$module"
 		[ "$(yq '.patches[0].patch' "$dir/$module/patches/kustomization.yaml" | yq '[.[] | select(.path == "/spec/dependsOn/-")] | length')" = 0 ]
 	done
+}
+
+# backend_ops <module>: prints the ops of the one patch of the patches
+# Component of the backend module as JSON on one line, with the patch of the
+# Flux patch the first op appends parsed into JSON.
+backend_ops() {
+	yq '.patches[0].patch' "$SANDBOX_ROOT/clusters/management/$1/patches/kustomization.yaml" |
+		yq -o=json -I=0 '.[0].value.patch |= (. | from_yaml)'
+}
+
+@test "cinder-nfs appends nfs1 to the backends with a Flux patch of the stage of controlplane, and the dependency on its own stage" {
+	local file=$SANDBOX_ROOT/clusters/management/cinder-nfs/patches/kustomization.yaml
+	[ "$(yq -o=json -I=0 '[.patches[].target.name]' "$file")" = '["management-controlplane"]' ]
+	[ "$(backend_ops cinder-nfs)" = \
+		'[{"op":"add","path":"/spec/patches/-","value":{"target":{"group":"c5c3.io","version":"v1alpha1","kind":"ControlPlane","name":"controlplane","namespace":"openstack"},"patch":[{"op":"add","path":"/spec/services/cinder/backends/-","value":{"name":"nfs1","type":"NFS","nfs":{"server":"nfs-server.openstack.svc.cluster.local","path":"/volumes"}}}]}},{"op":"add","path":"/spec/dependsOn/-","value":{"name":"management-cinder-nfs"}}]' ]
+	[ ! -e "$SANDBOX_ROOT/controlplane/components/cinder-nfs" ]
 }
 
 @test "the stage of cinder-nfs runs the NFS export after controllers, and the stage of fake-compute the fake compute after controlplane" {
@@ -433,9 +445,9 @@ EOF
 
 @test "each component of a service patches the ControlPlane controlplane with its block behind the Gateway openstack-gw" {
 	local component service file patch rest
-	for component in glance placement barbican neutron cinder nova horizon cinder-nfs; do
+	for component in glance placement barbican neutron cinder nova horizon; do
 		file=$SANDBOX_ROOT/controlplane/components/$component/kustomization.yaml
-		service=${component%-nfs}
+		service=$component
 		echo "$component"
 		[ "$(yq -o=json -I=0 '[.apiVersion, .kind]' "$file")" = '["kustomize.config.k8s.io/v1alpha1","Component"]' ]
 		[ "$(yq -o=json -I=0 '.patches[0].target' "$file")" = \
@@ -443,11 +455,6 @@ EOF
 		patch=$(component_patch "$component" 0)
 		[ "$(jq -c '[.apiVersion, .kind, .metadata.name, .metadata.namespace, (.spec.services | keys)]' <<<"$patch")" = \
 			"[\"c5c3.io/v1alpha1\",\"ControlPlane\",\"controlplane\",\"openstack\",[\"$service\"]]" ]
-		if [ "$component" = cinder-nfs ]; then
-			[ "$(jq -c '.spec.services.cinder' <<<"$patch")" = \
-				'{"backends":[{"name":"nfs1","type":"NFS","nfs":{"server":"nfs-server.openstack.svc.cluster.local","path":"/volumes"}}]}' ]
-			continue
-		fi
 		[ "$(jq -c ".spec.services.$service.gateway" <<<"$patch")" = \
 			"{\"parentRef\":{\"name\":\"openstack-gw\"},\"hostname\":\"$service.\${ADDRESSES_GATEWAY//./-}.nip.io\"}" ]
 		[ "$(jq ".spec.services.$service | has(\"publicEndpoint\")" <<<"$patch")" = false ]
@@ -456,27 +463,29 @@ EOF
 		glance) rest='{"backends":[{"name":"default","type":"S3","isDefault":true,"s3":{"endpoint":"http://garage.shared-services.svc.cluster.local:3900","bucket":"glance-images","region":"garage","credentialsSecretRef":{"name":"garage-s3-credentials"}}}]}' ;;
 		barbican) rest='{"secretStore":{"dedicated":{}}}' ;;
 		neutron) rest='{"ovn":{"centralRef":{"name":"controlplane-ovn"}}}' ;;
+		cinder) rest='{"backends":[]}' ;;
 		*) rest='{}' ;;
 		esac
 		[ "$(jq -c ".spec.services.$service | del(.gateway)" <<<"$patch")" = "$rest" ]
 	done
-	# A merge patch replaces a list, so cinder-nfs alone sets backends.
-	[ "$(component_patch cinder 0 | jq '.spec.services.cinder | has("backends")')" = false ]
+	# A merge patch replaces a list, so cinder sets the empty list, and each
+	# backend module appends its entry with a Flux patch.
+	[ "$(component_patch cinder 0 | jq -c '.spec.services.cinder.backends == []')" = true ]
 }
 
 @test "the three bus consumers declare messaging: {} in the patch of their block, and the other components no messaging" {
 	local component expected
-	for component in glance placement barbican neutron cinder nova horizon cinder-nfs; do
+	for component in glance placement barbican neutron cinder nova horizon; do
 		case $component in
 		neutron | cinder | nova) expected="[{\"messaging\":{}},[\"$component\"]]" ;;
-		*) expected="[null,[\"${component%-nfs}\"]]" ;;
+		*) expected="[null,[\"$component\"]]" ;;
 		esac
 		echo "$component"
 		[ "$(component_patch "$component" 0 | jq -c '[.spec.infrastructure, (.spec.services | keys)]')" = "$expected" ]
 	done
 }
 
-@test "the six database services add their TENANT_SERVICE_ variable to the container tenant of the Job, and horizon and cinder-nfs none" {
+@test "the six database services add their TENANT_SERVICE_ variable to the container tenant of the Job, and horizon none" {
 	local component file
 	[ "$(yq 'select(.kind == "Job") | .spec.template.spec.containers[0].name' "$SANDBOX_ROOT/controlplane/tenant.yaml")" = tenant ]
 	for component in glance placement barbican neutron cinder nova; do
@@ -488,7 +497,7 @@ EOF
 		[ "$(component_patch "$component" 1 | jq -c '[.apiVersion, .kind, .metadata.name, .metadata.namespace, .spec.template.spec.containers]')" = \
 			"[\"batch/v1\",\"Job\",\"controlplane-database-tenant\",\"openstack\",[{\"name\":\"tenant\",\"env\":[{\"name\":\"TENANT_SERVICE_${component^^}\",\"value\":\"$component\"}]}]]" ]
 	done
-	for component in horizon cinder-nfs; do
+	for component in horizon; do
 		echo "$component"
 		[ "$(yq '.patches | length' "$SANDBOX_ROOT/controlplane/components/$component/kustomization.yaml")" = 1 ]
 	done
@@ -501,7 +510,7 @@ EOF
 		'{"apiVersion":"ovn.openstack.c5c3.io/v1alpha1","kind":"OVNCentral","metadata":{"name":"controlplane-ovn","namespace":"openstack"},"spec":{"tls":{"issuerRef":{"name":"openstack-ovn-ca-issuer"}},"northbound":{"replicas":1},"southbound":{"replicas":1},"northd":{"deployment":{"replicas":1}}}}' ]
 	[ "$(yq -o=json -I=0 '.resources' "$dir/horizon/kustomization.yaml")" = \
 		'["../../../vendor/cobaltcore/deploy/bases/devstack/infrastructure/horizon-secret-key-externalsecret.yaml"]' ]
-	for component in glance placement barbican cinder nova cinder-nfs; do
+	for component in glance placement barbican cinder nova; do
 		[ "$(yq 'has("resources")' "$dir/$component/kustomization.yaml")" = false ]
 	done
 }
