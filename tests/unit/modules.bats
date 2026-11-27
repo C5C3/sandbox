@@ -438,13 +438,24 @@ EOF
 	[ "$(jq -r '.files | map(split("/")[-1]) | join(" ")' <<<"$generator")" = "tenant.sh common.sh setup-database-tenant.sh" ]
 }
 
-@test "the stages of messaging-tls, controlplane and ceph-cluster on storage substitute from cluster-vars" {
+@test "the stages of pki, messaging-tls, controlplane and ceph-cluster on storage substitute from cluster-vars" {
 	local stage
-	for stage in management/messaging-tls management/controlplane storage/ceph-cluster; do
+	for stage in management/pki management/messaging-tls management/controlplane storage/ceph-cluster; do
 		echo "$stage"
 		[ "$(yq -o=json -I=0 '.spec.postBuild' "$SANDBOX_ROOT/clusters/$stage/stage.yaml")" = \
 			'{"substituteFrom":[{"kind":"ConfigMap","name":"cluster-vars"}]}' ]
 	done
+}
+
+@test "the patch of infrastructure/pki adds the published name of OpenBao to the dnsNames of openbao-tls and changes nothing else" {
+	local file=$SANDBOX_ROOT/infrastructure/pki/kustomization.yaml
+	[ "$(yq -o=json -I=0 '[.patches[].target]' "$file")" = \
+		'[{"group":"cert-manager.io","version":"v1","kind":"Certificate","name":"openbao-tls","namespace":"shared-services"}]' ]
+	[ "$(yq '.patches[0].patch' "$file" | yq -o=json -I=0 '.')" = \
+		'[{"op":"add","path":"/spec/dnsNames/-","value":"openbao.${ADDRESSES_OPENBAO//./-}.nip.io"}]' ]
+	# Upstream's certificate holds the names the patch appends to.
+	[ "$(yq -o=json -I=0 '[.metadata.namespace, (.spec.dnsNames | length > 0)]' \
+		"$SANDBOX_ROOT/vendor/cobaltcore/deploy/bases/tls/openbao-tls-cert.yaml")" = '["shared-services",true]' ]
 }
 
 @test "the stages of openbao, objectstore, platform, sizing, cinder-nfs, fake-compute, hypervisor-fixtures, of access, controllers, node-prep, libvirt, kvm-node-agent and hypervisor-operator on compute and of block-devices, rook-crds and rook-operator on storage substitute no variables" {
