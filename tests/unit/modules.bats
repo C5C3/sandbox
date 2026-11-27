@@ -298,6 +298,23 @@ EOF
 }' ]
 }
 
+@test "the module ceph-keys applies upstream's keys-pull.yaml alone and unchanged, after openbao-remote-auth, and waits up to 30m for the store, the ExternalSecrets and the Certificate" {
+	local stage=$SANDBOX_ROOT/clusters/management/ceph-keys/stage.yaml ready
+	run stage_contract "$SANDBOX_ROOT" management/ceph-keys
+	echo "point $output"
+	[ "$status" -eq 0 ]
+	[ "$(yq -o=json -I=0 '[.resources, has("patches"), has("components"), has("configMapGenerator")]' "$SANDBOX_ROOT/infrastructure/ceph-keys/kustomization.yaml")" = \
+		'[["../../vendor/cobaltcore/deploy/overlays/metal-stack/ceph/cluster/keys-pull.yaml"],false,false,false]' ]
+	[ -f "$SANDBOX_ROOT/infrastructure/ceph-keys/../../vendor/cobaltcore/deploy/overlays/metal-stack/ceph/cluster/keys-pull.yaml" ]
+	[ "$(yq -o=json -I=0 '[.spec.dependsOn, .spec.path, .spec.interval, .spec.retryInterval, .spec.timeout, (.spec | has("postBuild"))]' "$stage")" = \
+		'[[{"name":"management-openbao-remote-auth"}],"./infrastructure/ceph-keys","10m","1m","30m",false]' ]
+	ready="status.conditions.exists(c, c.type == 'Ready' && c.status == 'True')"
+	[ "$(yq -o=json -I=0 '.spec.healthCheckExprs' "$stage")" = \
+		"$(jq -n -c --arg ready "$ready" --argjson certificate "$(yq -o=json -I=0 '.spec.healthCheckExprs[] | select(.kind == "Certificate")' "$SANDBOX_ROOT/clusters/management/pki/stage.yaml")" \
+			'[{apiVersion: "external-secrets.io/v1", kind: "SecretStore", current: $ready},
+			  {apiVersion: "external-secrets.io/v1", kind: "ExternalSecret", current: $ready}, $certificate]')" ]
+}
+
 @test "every rule of the two tenant Roles and of the Roles rabbitmq-transport and hypervisor-operator-auth names its objects" {
 	local file count roles='select(.kind == "Role")'
 	while read -r file count; do
@@ -524,9 +541,9 @@ EOF
 		"$SANDBOX_ROOT/vendor/cobaltcore/deploy/bases/tls/openbao-tls-cert.yaml")" = '["shared-services",true]' ]
 }
 
-@test "the stages of openbao, objectstore, platform, sizing, cinder-nfs, fake-compute, hypervisor-fixtures, of access, controllers, node-prep, libvirt, kvm-node-agent and hypervisor-operator on compute and of block-devices, rook-crds, rook-operator and controllers on storage substitute no variables" {
+@test "the stages of openbao, objectstore, platform, sizing, cinder-nfs, fake-compute, hypervisor-fixtures, ceph-keys, of access, controllers, node-prep, libvirt, kvm-node-agent and hypervisor-operator on compute and of block-devices, rook-crds, rook-operator and controllers on storage substitute no variables" {
 	local stage
-	for stage in management/{openbao,objectstore,platform,sizing,cinder-nfs,fake-compute,hypervisor-fixtures} \
+	for stage in management/{openbao,objectstore,platform,sizing,cinder-nfs,fake-compute,hypervisor-fixtures,ceph-keys} \
 		compute/{access,controllers,node-prep,libvirt,kvm-node-agent,hypervisor-operator} \
 		storage/{block-devices,rook-crds,rook-operator,controllers}; do
 		echo "$stage"
