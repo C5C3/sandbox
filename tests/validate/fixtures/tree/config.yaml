@@ -8,6 +8,7 @@ addresses:
   pool: 172.30.255.0/24
   dns: 172.30.255.53
   rabbitmq: 172.30.255.11
+  openbao: 172.30.255.12
 registry:
   image: registry:3
 switches:

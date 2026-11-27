@@ -1449,9 +1449,10 @@ and does not check these two.
 its plugins are reported as warnings. The warning for the resolver names
 `switches.resolver-fallback`, or says that the fallback is on. A configuration
 file without `addresses.pool`, `addresses.dns`, `addresses.rabbitmq`,
-`switches.resolver-fallback`, `switches.glance`, `switches.barbican`,
-`switches.horizon`, `switches.fake-compute`, `switches.osd-count` or
-`switches.osd-size` fails the check of the configuration.
+`addresses.openbao`, `switches.resolver-fallback`, `switches.glance`,
+`switches.barbican`, `switches.horizon`, `switches.fake-compute`,
+`switches.osd-count` or `switches.osd-size` fails the check of the
+configuration.
 
 Every kind node mounts `kind/containerd-nofile.conf`, which limits the open
 files of every pod to 1048576. kind runs containerd with

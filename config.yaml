@@ -12,6 +12,8 @@ addresses:
   dns: 172.30.255.53
   # Read by the module messaging-tls: the address of the AMQPS listener of the message bus, inside addresses.pool.
   rabbitmq: 172.30.255.11
+  # Read by the modules pki, openbao-remote-auth and key-push: the address of the published OpenBao, inside addresses.pool.
+  openbao: 172.30.255.12
 registry:
   # Read by scripts/up.sh: the image of the container sandbox-registry.
   image: registry:3

@@ -565,7 +565,7 @@ total 0 0" ]
 }
 
 @test "make up refuses a network with another subnet" {
-	run sb_make up CONFIG="$(config_copy '.network.subnet = "172.31.0.0/16" | .addresses.pool = "172.31.255.0/24" | .addresses.gateway = "172.31.255.10" | .addresses.dns = "172.31.255.53" | .addresses.rabbitmq = "172.31.255.11"')"
+	run sb_make up CONFIG="$(config_copy '.network.subnet = "172.31.0.0/16" | .addresses.pool = "172.31.255.0/24" | .addresses.gateway = "172.31.255.10" | .addresses.dns = "172.31.255.53" | .addresses.rabbitmq = "172.31.255.11" | .addresses.openbao = "172.31.255.12"')"
 	failed_with "Docker network cobaltcore-sandbox has subnet 172.30.0.0/16, the configuration says 172.31.0.0/16; run make down first"
 }
 
@@ -651,7 +651,7 @@ total 0 0" ]
 	local subnet base
 	subnet=$(docker network inspect -f '{{(index .IPAM.Config 0).Subnet}}' bridge)
 	base=${subnet%/*}; base=${base%.*}
-	run sb_make up CONFIG="$(config_copy ".network.subnet = \"$subnet\" | .addresses.pool = \"$subnet\" | .addresses.gateway = \"$base.10\" | .addresses.dns = \"$base.53\" | .addresses.rabbitmq = \"$base.11\"")"
+	run sb_make up CONFIG="$(config_copy ".network.subnet = \"$subnet\" | .addresses.pool = \"$subnet\" | .addresses.gateway = \"$base.10\" | .addresses.dns = \"$base.53\" | .addresses.rabbitmq = \"$base.11\" | .addresses.openbao = \"$base.12\"")"
 	failed_with "cannot create Docker network cobaltcore-sandbox with subnet $subnet: Error response from daemon:"
 	absent_network
 	absent_container sandbox-registry
