@@ -14,8 +14,11 @@
 #                stage.yaml or a patches/kustomization.yaml, and every stage
 #                of those roots, render with flux build kustomization
 #                --dry-run --strict-substitute; a stage reads the variables
-#                of cluster-vars, and SANDBOX_CA_B64 of sandbox-trust as the
-#                placeholder c2FuZGJveC1jYQ==; any other source of
+#                of cluster-vars, SANDBOX_CA_B64 of sandbox-trust as the
+#                placeholder c2FuZGJveC1jYQ==, and OPENBAO_CLIENT_CRT_B64,
+#                OPENBAO_CLIENT_KEY_B64 and OPENBAO_CA_B64 of the Secret
+#                openbao-client-storage or openbao-client-compute as the
+#                placeholder b3BlbmJhby1jbGllbnQ=; any other source of
 #                substituteFrom that is not optional fails
 #   schemas      the JSON schemas of the sources in scripts/crd-sources.yaml
 #                are downloaded, or converted from CRDs of the tree or of a
@@ -69,6 +72,10 @@ readonly DEAD_PATCH="its target matches no resource, or the resource already has
 # The value of SANDBOX_CA_B64 in the ConfigMap sandbox-trust, which make up
 # writes from the sandbox CA: base64 of "sandbox-ca".
 readonly TRUST_PLACEHOLDER=c2FuZGJveC1jYQ==
+# The value of the three keys of the Secrets openbao-client-storage and
+# openbao-client-compute, which make up writes from the client certificates
+# of OpenBao: base64 of "openbao-client".
+readonly CLIENT_PLACEHOLDER=b3BlbmJhby1jbGllbnQ=
 # A stage's name becomes part of a file name.
 readonly NAME_RE='^[a-z0-9]([-.a-z0-9]*[a-z0-9])?$'
 
@@ -156,7 +163,8 @@ check_vendor() {
 # the render of the root of the role, into $tmp/render/<role>/<name>.yaml and
 # records it in the stage_* arrays for the patch check.
 render_stage() {
-	local role=$1 doc=$2 name path resolved kind ref optional copy out vars=$tmp/novars.json trust=$tmp/novars.json ok=true
+	local role=$1 doc=$2 name path resolved kind ref optional copy out vars=$tmp/novars.json trust=$tmp/novars.json
+	local client=$tmp/novars.json ok=true
 	name=$(yq '.metadata.name' "$doc")
 	if [[ ! $name =~ $NAME_RE ]]; then
 		fail "stage $name: the name is not a Kubernetes name"
@@ -180,6 +188,8 @@ render_stage() {
 				vars=$tmp/vars.json
 			elif [ "$kind" = ConfigMap ] && [ "$ref" = sandbox-trust ]; then
 				trust=$tmp/trust.json
+			elif [ "$kind" = Secret ] && { [ "$ref" = openbao-client-storage ] || [ "$ref" = openbao-client-compute ]; }; then
+				client=$tmp/client.json
 			elif [ "$optional" != true ]; then
 				fail "stage $name: substituteFrom $kind $ref cannot be resolved offline"
 				ok=false
@@ -187,7 +197,7 @@ render_stage() {
 		done < <(yq '.spec.postBuild.substituteFrom // [] | .[] | [.kind // "", .name // "", (.optional // false)] | @tsv' "$doc")
 		$ok || return 0
 		# The stage's own values win over those of the ConfigMaps, as in Flux.
-		VARS=$vars TRUST=$trust yq '.spec.postBuild = {"substitute": (load(strenv(VARS)) * load(strenv(TRUST)) * (.spec.postBuild.substitute // {}))}' \
+		VARS=$vars TRUST=$trust CLIENT=$client yq '.spec.postBuild = {"substitute": (load(strenv(VARS)) * load(strenv(TRUST)) * load(strenv(CLIENT)) * (.spec.postBuild.substitute // {}))}' \
 			"$doc" >"$copy"
 	else
 		# Without postBuild, Flux substitutes nothing, and ${...} in vendored
@@ -210,6 +220,8 @@ check_render() {
 	mkdir -p -- "$tmp/profiles" "$tmp/roots" "$tmp/stages"
 	echo '{}' >"$tmp/novars.json"
 	jq -n --arg ca "$TRUST_PLACEHOLDER" '{SANDBOX_CA_B64: $ca}' >"$tmp/trust.json"
+	jq -n --arg value "$CLIENT_PLACEHOLDER" '{OPENBAO_CLIENT_CRT_B64: $value, OPENBAO_CLIENT_KEY_B64: $value, OPENBAO_CA_B64: $value}' \
+		>"$tmp/client.json"
 
 	# The profile all lists every module of the tree, with a stage or
 	# without one.
