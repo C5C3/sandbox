@@ -433,6 +433,31 @@ backend_ops() {
 	[ ! -e "$SANDBOX_ROOT/controlplane/components/cinder-nfs" ]
 }
 
+# The ControlPlane of upstream's lab overlay, which holds the entries ceph1
+# and cephbk.
+LAB=vendor/cobaltcore/deploy/overlays/metal-stack/controlplane/controlplane-lab.yaml
+
+@test "cinder-rbd appends one entry to the backends with a Flux patch of the stage of controlplane, and the dependency on the stage of ceph-keys" {
+	local file=$SANDBOX_ROOT/clusters/management/cinder-rbd/patches/kustomization.yaml
+	[ ! -e "$SANDBOX_ROOT/clusters/management/cinder-rbd/stage.yaml" ]
+	[ "$(yq -o=json -I=0 '[.patches[].target]' "$file")" = \
+		'[{"group":"kustomize.toolkit.fluxcd.io","kind":"Kustomization","name":"management-controlplane"}]' ]
+	[ "$(backend_ops cinder-rbd | jq -c '[.[] | [.op, .path]]')" = '[["add","/spec/patches/-"],["add","/spec/dependsOn/-"]]' ]
+	[ "$(backend_ops cinder-rbd | jq -c '.[0].value.target')" = \
+		'{"group":"c5c3.io","version":"v1alpha1","kind":"ControlPlane","name":"controlplane","namespace":"openstack"}' ]
+	[ "$(backend_ops cinder-rbd | jq -c '[.[0].value.patch[] | [.op, .path]]')" = '[["add","/spec/services/cinder/backends/-"]]' ]
+	[ "$(backend_ops cinder-rbd | jq -c '.[1].value')" = '{"name":"management-ceph-keys"}' ]
+}
+
+@test "the entry of cinder-rbd is upstream's ceph1 with the monitor of sandbox-storage and the subnet of the Docker network" {
+	local entry upstream
+	entry=$(backend_ops cinder-rbd | jq -c '.[0].value.patch[0].value')
+	upstream=$(yq -o=json -I=0 '.spec.services.cinder.backends[0]' "$SANDBOX_ROOT/$LAB")
+	[ "$(jq -r '.name' <<<"$upstream")" = ceph1 ]
+	[ "$(jq -c '.rbd | [.monitors, .networks]' <<<"$entry")" = '[["sandbox-storage-control-plane:3300"],["${NETWORK_SUBNET}"]]' ]
+	[ "$(jq -c '.rbd |= del(.monitors, .networks)' <<<"$entry")" = "$(jq -c '.rbd |= del(.monitors, .networks)' <<<"$upstream")" ]
+}
+
 @test "the stage of cinder-nfs runs the NFS export after controllers, and the stage of fake-compute the fake compute after controlplane" {
 	local dir=$SANDBOX_ROOT/clusters/management
 	[ "$(yq -o=json -I=0 '[.spec.dependsOn, .spec.path, .spec.timeout]' "$dir/cinder-nfs/stage.yaml")" = \
