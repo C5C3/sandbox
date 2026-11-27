@@ -1,0 +1,122 @@
+# The Job openbao-remote-auth runs remote-auth.sh beside this file with
+# upstream's shared-openbao/bootstrap/common.sh: it configures the shared
+# OpenBao for the storage and compute clusters with the root token that the
+# Job openbao-bootstrap of the module openbao keeps in the Secret
+# openbao-init-keys. kstatus waits for the Job to complete, so the stage
+# management-openbao-remote-auth is Ready only after it has run.
+#
+# kustomize.toolkit.fluxcd.io/force: enabled makes Flux create the Job again
+# when its spec changes: a change of the runner or the policy renames the
+# mounted ConfigMap, and a new API server or CA of a remote cluster changes
+# the environment. The Job has no ttlSecondsAfterFinished, because Flux
+# would create a deleted Job again at every reconcile.
+#
+# The Role lets the Job read the pod openbao-0 and exec into it, where
+# upstream's helpers run every bao command, and read the Secret
+# openbao-init-keys. Each rule names its object.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: openbao-remote-auth
+  namespace: shared-services
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: openbao-remote-auth
+  namespace: shared-services
+rules:
+  - apiGroups: [""]
+    resources: [pods]
+    resourceNames: [openbao-0]
+    verbs: [get]
+  - apiGroups: [""]
+    resources: [pods/exec]
+    resourceNames: [openbao-0]
+    verbs: [create]
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames: [openbao-init-keys]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: openbao-remote-auth
+  namespace: shared-services
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: openbao-remote-auth
+subjects:
+  - kind: ServiceAccount
+    name: openbao-remote-auth
+    namespace: shared-services
+---
+# The image, securityContext, resources and /tmp of the Job openbao-bootstrap
+# (infrastructure/openbao/bootstrap.yaml): the container reads the root
+# token, so the digest pins the image.
+#
+# The stage substitutes the four API variables from the ConfigMap
+# flux-system/openbao-remote-auth, which is optional, so each has the
+# default of an empty value. kustomize drops the quotes before the
+# substitution, so an empty value renders as null, which the API server
+# stores as an empty variable; the runner then leaves the config of that
+# mount as it is.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: openbao-remote-auth
+  namespace: shared-services
+  annotations:
+    kustomize.toolkit.fluxcd.io/force: enabled
+spec:
+  backoffLimit: 4
+  activeDeadlineSeconds: 900
+  template:
+    spec:
+      serviceAccountName: openbao-remote-auth
+      restartPolicy: Never
+      containers:
+        - name: remote-auth
+          image: alpine/k8s:1.37.2@sha256:7a82aeefea3d554a43a8676b137f2b88bae6c1fe11c13862b191b3a086cc28c0
+          command: [bash, /runner/remote-auth.sh]
+          env:
+            - name: HOME
+              value: /tmp
+            - name: STORAGE_API_SERVER
+              value: "${STORAGE_API_SERVER:=}"
+            - name: STORAGE_API_CA_B64
+              value: "${STORAGE_API_CA_B64:=}"
+            - name: COMPUTE_API_SERVER
+              value: "${COMPUTE_API_SERVER:=}"
+            - name: COMPUTE_API_CA_B64
+              value: "${COMPUTE_API_CA_B64:=}"
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            runAsGroup: 65534
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+            seccompProfile:
+              type: RuntimeDefault
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: runner
+              mountPath: /runner
+              readOnly: true
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: runner
+          configMap:
+            name: openbao-remote-auth-runner

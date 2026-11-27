@@ -1,0 +1,23 @@
+# OpenBao on addresses.openbao, for the External Secrets of the storage and
+# compute clusters, which dial https://openbao.<a-b-c-d>.nip.io:8200: the
+# name the module pki adds to openbao-tls, which nip.io resolves to this
+# address. The selector is that of the Service openbao of the chart
+# (openbao 0.30.6, templates/server-service.yaml), which stays as it is. A
+# sealed OpenBao is not ready, and the Service has no endpoint then.
+apiVersion: v1
+kind: Service
+metadata:
+  name: openbao-published
+  namespace: shared-services
+  annotations:
+    metallb.io/loadBalancerIPs: ${ADDRESSES_OPENBAO}
+spec:
+  type: LoadBalancer
+  ports:
+    - name: https
+      port: 8200
+      targetPort: 8200
+  selector:
+    app.kubernetes.io/name: openbao
+    app.kubernetes.io/instance: openbao
+    component: server
