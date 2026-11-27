@@ -1,0 +1,4 @@
+clusters: [management, storage]
+modules:
+  management: [crds, controllers, loadbalancer, pki, gateway, openbao, platform, sizing, messaging-tls, controlplane, cinder, cinder-rbd, openbao-remote-auth, ceph-keys]
+  storage: [block-devices, rook-crds, rook-operator, ceph-cluster, controllers, key-push]
