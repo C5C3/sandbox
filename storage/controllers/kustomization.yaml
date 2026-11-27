@@ -1,0 +1,17 @@
+# The module controllers on sandbox-storage: External Secrets, released from
+# the hub, for the PushSecrets of the module key-push. The storage cluster
+# runs no Flux, so the source and the release live in flux-system of
+# sandbox-management, and the release installs the chart on sandbox-storage
+# through the Secret kubeconfig-storage. They are copies of upstream's files
+# under names of their own, as in compute/controllers/.
+# tests/unit/modules.bats compares each copy with upstream's file, so a move
+# of the pin that changes one fails make test.
+#
+# The storage cluster runs no cert-manager: the chart's certController
+# serves the webhook of External Secrets without it, and the client
+# certificate of OpenBao comes from the hub (ADR-0039).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - sources.yaml
+  - releases.yaml
