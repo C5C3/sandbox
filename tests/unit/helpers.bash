@@ -19,6 +19,8 @@
 . "$BATS_TEST_DIRNAME/../../scripts/lib/nodes.sh"
 # shellcheck source=../../scripts/lib/trust.sh
 . "$BATS_TEST_DIRNAME/../../scripts/lib/trust.sh"
+# shellcheck source=../../scripts/lib/remote-auth.sh
+. "$BATS_TEST_DIRNAME/../../scripts/lib/remote-auth.sh"
 # shellcheck source=../../scripts/lib/vendor.sh
 . "$BATS_TEST_DIRNAME/../../scripts/lib/vendor.sh"
 
