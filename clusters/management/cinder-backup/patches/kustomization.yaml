@@ -3,7 +3,8 @@
 # It appends the Component components/cinder-backup to the stage of the
 # module controlplane. It adds no dependency: the one cinder-rbd adds,
 # management-ceph-keys, covers ceph-client-cinder-backup, which the same
-# stage writes. The module needs cinder and cinder-rbd beside it.
+# stage writes. The switch cinder-backup adds the module; it needs cinder
+# and cinder-rbd beside it, which make up checks.
 apiVersion: kustomize.config.k8s.io/v1alpha1
 kind: Component
 patches:

@@ -248,16 +248,17 @@ profile_fails_with() {
 }
 
 @test "the switches of a profile replace those of the configuration key by key" {
-	profile_with $'clusters: [management]\nswitches:\n  hypervisor-nodes: 2\n  osd-count: 3'
+	profile_with $'clusters: [management]\nswitches:\n  hypervisor-nodes: 2\n  osd-count: 3\n  cinder-backup: true'
 	profile_load
 	run config_merged
 	[ "$status" -eq 0 ]
-	[ "$(yq -o=json -I=0 '.switches' - <<<"$output")" = '{"hypervisor-nodes":2,"resolver-fallback":false,"glance":false,"barbican":false,"horizon":false,"fake-compute":false,"osd-count":3,"osd-size":"10Gi"}' ]
+	[ "$(yq -o=json -I=0 '.switches' - <<<"$output")" = '{"hypervisor-nodes":2,"resolver-fallback":false,"glance":false,"barbican":false,"horizon":false,"fake-compute":false,"cinder-backup":true,"osd-count":3,"osd-size":"10Gi"}' ]
 	[ "$(yq '.network.subnet' - <<<"$output")" = 172.30.0.0/16 ]
 
 	config_load
 	[ "$SANDBOX_HYPERVISOR_NODES" = 2 ]
 	[ "$SANDBOX_OSD_COUNT" = 3 ]
+	[ "$SANDBOX_SWITCH_CINDER_BACKUP" = true ]
 }
 
 @test "a profile without switches leaves the configuration's" {
@@ -273,7 +274,7 @@ profile_fails_with() {
 
 @test "a switch of a profile adds switches to a configuration without them" {
 	config_with 'del(.switches)'
-	profile_with $'clusters: [management]\nswitches:\n  hypervisor-nodes: 3\n  resolver-fallback: true\n  glance: true\n  barbican: false\n  horizon: true\n  fake-compute: false\n  osd-count: 2\n  osd-size: 20Gi'
+	profile_with $'clusters: [management]\nswitches:\n  hypervisor-nodes: 3\n  resolver-fallback: true\n  glance: true\n  barbican: false\n  horizon: true\n  fake-compute: false\n  cinder-backup: true\n  osd-count: 2\n  osd-size: 20Gi'
 	profile_load
 	config_load
 	[ "$SANDBOX_HYPERVISOR_NODES" = 3 ]
@@ -282,6 +283,7 @@ profile_fails_with() {
 	[ "$SANDBOX_SWITCH_BARBICAN" = false ]
 	[ "$SANDBOX_SWITCH_HORIZON" = true ]
 	[ "$SANDBOX_SWITCH_FAKE_COMPUTE" = false ]
+	[ "$SANDBOX_SWITCH_CINDER_BACKUP" = true ]
 	[ "$SANDBOX_OSD_COUNT" = 2 ]
 	[ "$SANDBOX_OSD_SIZE" = 20Gi ]
 }
@@ -340,25 +342,26 @@ modules_file() {
 	[ "$out" = "" ]
 }
 
-# switches_on: turns on the switches of the four service modules.
+# switches_on: turns on the switches of the five service modules.
 switches_on() {
-	export SANDBOX_SWITCH_GLANCE=true SANDBOX_SWITCH_BARBICAN=true SANDBOX_SWITCH_HORIZON=true SANDBOX_SWITCH_FAKE_COMPUTE=true
+	export SANDBOX_SWITCH_GLANCE=true SANDBOX_SWITCH_BARBICAN=true SANDBOX_SWITCH_HORIZON=true SANDBOX_SWITCH_FAKE_COMPUTE=true \
+		SANDBOX_SWITCH_CINDER_BACKUP=true
 }
 
-@test "with the four switches on cluster_modules adds their modules to management after the profile's and before resolver" {
+@test "with the five switches on cluster_modules adds their modules to management after the profile's and before resolver" {
 	switches_on
 	modules_file $'clusters: [management, storage, compute]\nmodules:\n  management: [b, a]\n  storage: [c]'
 	run cluster_modules management
 	[ "$status" -eq 0 ]
-	[ "$output" = $'b\na\nglance\nbarbican\nhorizon\nfake-compute' ]
+	[ "$output" = $'b\na\nglance\nbarbican\nhorizon\nfake-compute\ncinder-backup' ]
 
 	export SANDBOX_RESOLVER_FALLBACK=true
 	run cluster_modules management
 	[ "$status" -eq 0 ]
-	[ "$output" = $'b\na\nglance\nbarbican\nhorizon\nfake-compute\nresolver' ]
+	[ "$output" = $'b\na\nglance\nbarbican\nhorizon\nfake-compute\ncinder-backup\nresolver' ]
 }
 
-@test "the four switches add nothing to storage and compute" {
+@test "the five switches add nothing to storage and compute" {
 	switches_on
 	modules_file $'clusters: [management, storage, compute]\nmodules:\n  management: [b]\n  storage: [c]'
 	run cluster_modules storage
@@ -373,13 +376,13 @@ switches_on() {
 	local key variable
 	modules_file $'clusters: [management]\nmodules:\n  management: [b, a]'
 	for value in unset false; do
-		for key in GLANCE BARBICAN HORIZON FAKE_COMPUTE; do
+		for key in GLANCE BARBICAN HORIZON FAKE_COMPUTE CINDER_BACKUP; do
 			if [ "$value" = unset ]; then unset "SANDBOX_SWITCH_$key"; else export "SANDBOX_SWITCH_$key=$value"; fi
 		done
 		[ "$(cluster_modules management)" = $'b\na' ]
 	done
 
-	for key in glance barbican horizon fake-compute; do
+	for key in glance barbican horizon fake-compute cinder-backup; do
 		variable=SANDBOX_SWITCH_${key^^}
 		export "${variable//-/_}=true"
 		[ "$(cluster_modules management)" = $'b\na\n'"$key" ]
@@ -389,10 +392,10 @@ switches_on() {
 
 @test "cluster_modules adds no module of a switch twice when the profile lists it" {
 	switches_on
-	modules_file $'clusters: [management]\nmodules:\n  management: [horizon, a, glance]'
+	modules_file $'clusters: [management]\nmodules:\n  management: [horizon, a, glance, cinder-backup]'
 	run cluster_modules management
 	[ "$status" -eq 0 ]
-	[ "$output" = $'horizon\na\nglance\nbarbican\nfake-compute' ]
+	[ "$output" = $'horizon\na\nglance\ncinder-backup\nbarbican\nfake-compute' ]
 }
 
 @test "cluster_stages prints nothing for a role without modules" {

@@ -138,9 +138,10 @@ _cidr_contains() {
 # SANDBOX_RABBITMQ_ADDRESS, SANDBOX_OPENBAO_ADDRESS, SANDBOX_REGISTRY_IMAGE,
 # SANDBOX_HYPERVISOR_NODES, SANDBOX_RESOLVER_FALLBACK, SANDBOX_SWITCH_GLANCE,
 # SANDBOX_SWITCH_BARBICAN, SANDBOX_SWITCH_HORIZON,
-# SANDBOX_SWITCH_FAKE_COMPUTE, SANDBOX_OSD_COUNT, SANDBOX_OSD_SIZE,
-# SANDBOX_FLUX_OPERATOR_VERSION and SANDBOX_UPSTREAM_COMMIT. A missing key is
-# an error; no script carries a default for these seventeen. The pool lies
+# SANDBOX_SWITCH_FAKE_COMPUTE, SANDBOX_SWITCH_CINDER_BACKUP,
+# SANDBOX_OSD_COUNT, SANDBOX_OSD_SIZE, SANDBOX_FLUX_OPERATOR_VERSION and
+# SANDBOX_UPSTREAM_COMMIT. A missing key is an error; no script carries a
+# default for these eighteen. The pool lies
 # inside the subnet, and the Gateway, DNS, RabbitMQ and OpenBao addresses,
 # four different ones, inside the pool: MetalLB gives a Service no address
 # outside its pool.
@@ -160,7 +161,7 @@ config_load() {
 	# empty string.
 	fallback=$(yq '.switches["resolver-fallback"] | select(. != null)' - <<<"$merged")
 	[ -n "$fallback" ] || die "config: switches.resolver-fallback is not set"
-	for key in glance barbican horizon fake-compute; do
+	for key in glance barbican horizon fake-compute cinder-backup; do
 		value=$(KEY=$key yq '.switches[strenv(KEY)] | select(. != null)' - <<<"$merged")
 		[ -n "$value" ] || die "config: switches.$key is not set"
 		switches[$key]=$value
@@ -195,7 +196,7 @@ config_load() {
 		die "config: addresses.openbao '$openbao' is not an IPv4 address"
 	[[ $fallback == true || $fallback == false ]] ||
 		die "config: switches.resolver-fallback must be true or false, got '$fallback'"
-	for key in glance barbican horizon fake-compute; do
+	for key in glance barbican horizon fake-compute cinder-backup; do
 		value=${switches[$key]}
 		[[ $value == true || $value == false ]] ||
 			die "config: switches.$key must be true or false, got '$value'"
@@ -234,6 +235,7 @@ config_load() {
 	export SANDBOX_SWITCH_BARBICAN=${switches[barbican]}
 	export SANDBOX_SWITCH_HORIZON=${switches[horizon]}
 	export SANDBOX_SWITCH_FAKE_COMPUTE=${switches[fake-compute]}
+	export SANDBOX_SWITCH_CINDER_BACKUP=${switches[cinder-backup]}
 	export SANDBOX_OSD_COUNT=$osds
 	export SANDBOX_OSD_SIZE=$size
 	export SANDBOX_FLUX_OPERATOR_VERSION=$operator

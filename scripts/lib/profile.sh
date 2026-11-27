@@ -113,9 +113,10 @@ profile_modules() {
 
 # cluster_modules <role>: prints the modules the role's cluster runs, one per
 # line: those of profile_modules; for management then glance, barbican,
-# horizon and fake-compute, in this order, each when its variable
-# SANDBOX_SWITCH_GLANCE, SANDBOX_SWITCH_BARBICAN, SANDBOX_SWITCH_HORIZON or
-# SANDBOX_SWITCH_FAKE_COMPUTE is true and the profile does not list it; and
+# horizon, fake-compute and cinder-backup, in this order, each when its
+# variable SANDBOX_SWITCH_GLANCE, SANDBOX_SWITCH_BARBICAN,
+# SANDBOX_SWITCH_HORIZON, SANDBOX_SWITCH_FAKE_COMPUTE or
+# SANDBOX_SWITCH_CINDER_BACKUP is true and the profile does not list it; and
 # last resolver, when SANDBOX_RESOLVER_FALLBACK is true and the profile does
 # not list it. An unset variable counts as false. When profile_modules fails,
 # it prints nothing and returns its status.
@@ -126,7 +127,7 @@ cluster_modules() {
 		printf '%s\n' "$modules"
 	fi
 	if [ "$1" = management ]; then
-		for switch in glance barbican horizon fake-compute; do
+		for switch in glance barbican horizon fake-compute cinder-backup; do
 			variable=SANDBOX_SWITCH_${switch^^}
 			variable=${variable//-/_}
 			if [ "${!variable:-false}" = true ] && ! grep -qxF "$switch" <<<"$modules"; then
