@@ -335,6 +335,14 @@ fake_delete() {
 # COMPUTE_SERVER_HOST, its console log with console.log, and its noVNC URL
 # with the token CONSOLE_TOKEN. The names do not start with OS_, which
 # verify.sh unsets.
+#
+# A volume create fails as openstack 6.6.0 does when catalog.json holds no
+# image service. It also replaces cinder with a function that appends its
+# arguments after "cinder " to openstack.log and answers cinder create as
+# python-cinderclient does, with a table whose id is id-<name>, without the
+# row id when CINDER_NO_ID is set. A call whose line matches STUB_FAILS
+# prints a warning of cinderclient and ERROR: with STUB_ERROR on stderr and
+# fails.
 openstack_logs() {
 	openstack() {
 		local arg prev=
@@ -417,6 +425,13 @@ IPV4_ADDRESS}"
 			echo '--os-compute-api-version 2.37 or greater is required to support explicit auto-allocation of a network or to disable network allocation' >&2
 			return 1
 			;;
+		"volume create "*)
+			if ! jq -e 'any(.[]?; .Type == "image")' "$BATS_TEST_TMPDIR/catalog.json" >/dev/null; then
+				echo 'public endpoint for image service not found' >&2
+				return 1
+			fi
+			printf 'id-%s\n' "${!#}"
+			;;
 		*" create "*) printf 'id-%s\n' "${!#}" ;;
 		*" delete "*) : ;;
 		*)
@@ -425,7 +440,36 @@ IPV4_ADDRESS}"
 			;;
 		esac
 	}
-	export -f openstack stub_appcred_token
+	cinder() {
+		printf 'cinder %s\n' "$*" >>"$BATS_TEST_TMPDIR/openstack.log"
+		# shellcheck disable=SC2053 # STUB_FAILS is a pattern.
+		if [[ -n ${STUB_FAILS:-} && "cinder $*" == $STUB_FAILS ]]; then
+			echo 'WARNING:cinderclient.shell:API version 3.71 requested, ' >&2
+			printf 'ERROR: %s\n' "${STUB_ERROR:-Unable to establish connection to https://keystone.172-30-255-10.nip.io/v3/auth/tokens}" >&2
+			return 1
+		fi
+		case $* in
+		"create --name "*" 1")
+			printf '%s\n' '+--------------------------------+--------------------------------------+' \
+				'| Property                       | Value                                |' \
+				'+--------------------------------+--------------------------------------+' \
+				'| availability_zone              | nova                                 |'
+			if [ -z "${CINDER_NO_ID:-}" ]; then
+				printf '| id                             | %-36s |\n' "id-$3"
+			fi
+			printf '%s\n' "| name                           | $3 |" \
+				'| os-vol-tenant-attr:tenant_id   | 0a7c2e5f9b1d4c3e8f6a2b4d6c8e0f1a     |' \
+				'| size                           | 1                                    |' \
+				'| status                         | creating                             |' \
+				'+--------------------------------+--------------------------------------+'
+			;;
+		*)
+			echo "unexpected cinder $*" >&2
+			return 1
+			;;
+		esac
+	}
+	export -f openstack cinder stub_appcred_token
 }
 
 # stub_appcred_token: the answer of the openstack stub to a token issue by
@@ -1076,7 +1120,7 @@ verify: 16 of 16 checks passed" ]
 	[ -n "$(logged 'secret store --name sandbox-verify-secret --payload sandbox-verify-payload -f value -c Secret href')" ]
 	[ -n "$(logged 'network create -f value -c id sandbox-verify-net')" ]
 	[ -n "$(logged 'subnet create --network id-sandbox-verify-net --subnet-range 192.0.2.0/24 -f value -c id sandbox-verify-subnet')" ]
-	[ -n "$(logged 'volume create --size 1 -f value -c id sandbox-verify-volume')" ]
+	[ -n "$(logged 'cinder create --name sandbox-verify-volume 1')" ]
 	[ -n "$(logged 'flavor create --vcpus 1 --ram 128 --disk 1 -f value -c id sandbox-verify-flavor')" ]
 	[ -n "$(logged 'image create --disk-format raw --container-format bare --file */boot.raw -f value -c id sandbox-verify-boot')" ]
 	[ -n "$(logged '--os-compute-api-version 2.37 server create --image id-sandbox-verify-boot --flavor sandbox-verify-flavor --nic none --wait -f value -c id sandbox-verify-server')" ]
@@ -1227,7 +1271,7 @@ Max retries exceeded with url: /v2/images"
 		'network create *|neutron-network' \
 		'subnet create *|neutron-network' \
 		'network show *|neutron-network' \
-		'volume create *|cinder-volume' \
+		'cinder create *|cinder-volume' \
 		'volume show *|cinder-volume' \
 		'compute service list -f json|nova-services' \
 		'compute service list --service *|nova-server' \
@@ -1295,6 +1339,29 @@ Max retries exceeded with url: /v2/images"
 	verify_fails "FAIL cinder-volume: the volume sandbox-verify-volume is 'creating' after 120 s, expected available" 15
 	[ "$(grep -c '' "$BATS_TEST_TMPDIR/sleep.log")" -eq 60 ]
 	[ "$(logged 'volume show id-sandbox-verify-volume *' | grep -c '')" -eq 61 ]
+}
+
+@test "verify.sh passes cinder-volume on a cloud without the image service, where openstack volume create fails" {
+	healthy_cloud
+	controlplane_services cinder keystone
+	catalog_edit 'map(select(.Type != "image"))'
+	run "$BATS_TEST_TMPDIR/scripts/verify.sh"
+	echo "$output"
+	[ "$status" -eq 0 ]
+	[ "$(check_ids)" = keystone-token,keystone-catalog,cinder-catalog,cinder-volume ]
+	[ "${lines[-1]}" = "verify: 4 of 4 checks passed" ]
+	[ -z "$(logged 'volume create *')" ]
+	[ -n "$(logged 'volume show id-sandbox-verify-volume -f value -c status')" ]
+}
+
+@test "verify.sh fails cinder-volume with the ERROR line of cinder after its warnings, and when cinder create prints no id" {
+	healthy_cloud
+	export STUB_FAILS='cinder create *' STUB_ERROR=$'VolumeLimitExceeded: Maximum number of volumes allowed (10) exceeded (HTTP 413)\nsecond line'
+	verify_fails "FAIL cinder-volume: VolumeLimitExceeded: Maximum number of volumes allowed (10) exceeded (HTTP 413)" 15
+	unset STUB_FAILS STUB_ERROR
+
+	export CINDER_NO_ID=1
+	verify_fails "FAIL cinder-volume: cinder create printed no id for the volume sandbox-verify-volume" 15
 }
 
 @test "verify.sh fails nova-services when no nova-scheduler or no nova-conductor is up" {
@@ -1444,7 +1511,7 @@ https://barbican.172-30-255-10.nip.io/v1/secrets/0ld2'
 	runs_before 'secret delete https://barbican.172-30-255-10.nip.io/v1/secrets/0ld2' 'secret store *'
 	runs_before 'subnet delete sandbox-verify-subnet' 'network create *'
 	runs_before 'network delete sandbox-verify-net' 'network create *'
-	runs_before 'volume delete sandbox-verify-volume' 'volume create *'
+	runs_before 'volume delete sandbox-verify-volume' 'cinder create *'
 	runs_before 'server delete --wait sandbox-verify-server' 'flavor create *'
 	runs_before 'image delete sandbox-verify-boot' 'flavor create *'
 	runs_before 'flavor delete sandbox-verify-flavor' 'flavor create *'
@@ -1460,7 +1527,7 @@ https://barbican.172-30-255-10.nip.io/v1/secrets/0ld2'
 	runs_before 'secret store *' 'secret delete https://barbican.172-30-255-10.nip.io/v1/secrets/5e1c0ffe'
 	runs_before 'subnet create * sandbox-verify-subnet' 'subnet delete id-sandbox-verify-subnet'
 	runs_before 'subnet delete id-sandbox-verify-subnet' 'network delete id-sandbox-verify-net'
-	runs_before 'volume create * sandbox-verify-volume' 'volume delete id-sandbox-verify-volume'
+	runs_before 'cinder create --name sandbox-verify-volume 1' 'volume delete id-sandbox-verify-volume'
 	runs_before '* server create * sandbox-verify-server' 'server delete --wait sandbox-verify-server'
 	runs_before 'server delete --wait sandbox-verify-server' 'image delete id-sandbox-verify-boot'
 	runs_before 'image delete id-sandbox-verify-boot' 'flavor delete sandbox-verify-flavor'

@@ -135,6 +135,40 @@ os_quiet() {
 	openstack "$@" >/dev/null 2>&1 || :
 }
 
+# cinder_error <stdout>: prints the line of cinder's stderr, which errfile
+# holds, that starts with ERROR:, without that prefix, or else the line
+# os_error prints. cinder writes its warnings to stderr before the error.
+cinder_error() {
+	local line
+	line=$(grep -m 1 '^ERROR: ' "$errfile" || :)
+	if [ -n "$line" ]; then
+		printf '%s\n' "${line#ERROR: }"
+	else
+		os_error "$1"
+	fi
+}
+
+# volume_create <name>: creates a 1 GiB volume of the name and prints its
+# id. It runs cinder of python-cinderclient, which the OpenStack CLI depends
+# on: openstack volume create builds a client of the image service even
+# without --image, and fails with "public endpoint for image service not
+# found" in a cloud without Glance, such as the profile storage. When cinder
+# fails, it prints the line of cinder_error and returns 1.
+volume_create() {
+	local out id
+	if ! out=$(cinder create --name "$1" 1 2>"$errfile"); then
+		cinder_error "$out"
+		return 1
+	fi
+	# The row | id | <id> | of the table of cinder create.
+	id=$(awk -F '|' '$2 ~ /^ *id *$/ { gsub(/ /, "", $3); print $3; exit }' <<<"$out")
+	if [ -z "$id" ]; then
+		echo "cinder create printed no id for the volume $1"
+		return 1
+	fi
+	printf '%s\n' "$id"
+}
+
 # poll <want> <times> <command>...: runs the command, and again after each of
 # up to <times> pauses of 2 s, until the first line of its output is <want>.
 # It keeps that line in polled and returns 0 when it is <want>, 1 when it is
@@ -346,10 +380,10 @@ check_cinder() {
 	check_catalog cinder block-storage
 
 	os_quiet volume delete sandbox-verify-volume
-	if ! out=$(openstack volume create --size 1 -f value -c id sandbox-verify-volume 2>"$errfile"); then
-		report FAIL cinder-volume "$(os_error "$out")"
+	if ! out=$(volume_create sandbox-verify-volume); then
+		report FAIL cinder-volume "$out"
 	else
-		volume=$(_first_line "$out")
+		volume=$out
 		poll available 60 openstack volume show "$volume" -f value -c status || rc=$?
 		case $rc in
 		0) report ok cinder-volume "the 1 GiB volume sandbox-verify-volume is available" ;;
