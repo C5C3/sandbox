@@ -1,34 +1,12 @@
-# The c5c3-operator: upstream's release on one replica and without its
-# dependency on the keystone-operator. Its hard dependency K-ORC is a Flux
+# The c5c3-operator: upstream's release on one replica. Upstream names no
+# service operator in its dependsOn, so the suspended keystone-operator does
+# not hold it back (ADR-0021). Its hard dependency K-ORC is a Flux
 # Kustomization of controllers, so the stage waits for management-controllers.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
   - ../../vendor/cobaltcore/deploy/bases/controlplane-operator
 patches:
-  # The keystone-operator stays suspended unless the module controlplane
-  # resumes it, and the helm-controller writes no status for a suspended
-  # release, so that dependency would never be ready in gateway or platform.
-  # The operator watches the Keystone kinds only once the cluster serves
-  # them. The other three dependencies stay, in upstream's order. Once
-  # upstream drops the dependency (C5C3/cobaltcore#1876), make validate
-  # reports this patch as dead, and it is deleted.
-  - target:
-      group: helm.toolkit.fluxcd.io
-      version: v2
-      kind: HelmRelease
-      name: c5c3-operator
-      namespace: c5c3-system
-    patch: |
-      - op: replace
-        path: /spec/dependsOn
-        value:
-          - name: external-secrets
-            namespace: external-secrets
-          - name: mariadb-operator
-            namespace: mariadb-system
-          - name: memcached-operator
-            namespace: memcached-system
   # One replica, as
   # vendor/cobaltcore/deploy/bases/devstack/base/kustomization.yaml:311-329
   # sets on one node.
