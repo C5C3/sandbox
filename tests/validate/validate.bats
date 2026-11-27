@@ -132,7 +132,8 @@ failed() {
 	[[ $output == *"validate: error: render: stage management-base: substituteFrom ConfigMap other-vars cannot be resolved offline"* ]]
 }
 
-@test "a Secret in substituteFrom fails unless it is optional" {
+@test "a Secret in substituteFrom fails unless it is optional or one of the OpenBao client Secrets, which render with their placeholder" {
+	local name
 	yq -i '.spec.postBuild.substituteFrom += [{"kind": "Secret", "name": "extra"}]' "$STAGE"
 	validate
 	failed render
@@ -141,6 +142,28 @@ failed() {
 	yq -i '.spec.postBuild.substituteFrom[1].optional = true' "$STAGE"
 	validate
 	[ "$status" -eq 0 ]
+
+	# The replacement turns exactly the placeholder into the integer the
+	# level of the Widget needs; any other value stays a string, which
+	# kubeconform refuses.
+	sed -i 's/level: 2/level: ${OPENBAO_CLIENT_CRT_B64\/b3BlbmJhby1jbGllbnQ=\/2}/' "$BASE/widget.yaml"
+	echo '  client: ${OPENBAO_CLIENT_KEY_B64}${OPENBAO_CA_B64}' >>"$TREE/infrastructure/base/settings.yaml"
+	for name in openbao-client-storage openbao-client-compute; do
+		N=$name yq -i '.spec.postBuild.substituteFrom[1] = {"kind": "Secret", "name": strenv(N)}' "$STAGE"
+		validate
+		echo "$name: $output"
+		[ "$status" -eq 0 ]
+	done
+	sed -i 's/b3BlbmJhby1jbGllbnQ=/c2FuZGJveC1jYQ==/' "$BASE/widget.yaml"
+	validate
+	failed kubeconform
+	[[ $output == *"Widget demo is invalid"*"/spec/nested/inner/level': got string, want integer"* ]]
+
+	git -C "$TREE/vendor/cobaltcore" checkout --quiet -- .
+	yq -i '.spec.postBuild.substituteFrom[1].name = "openbao-client-other"' "$STAGE"
+	validate
+	failed render
+	[[ $output == *"validate: error: render: stage management-base: substituteFrom Secret openbao-client-other cannot be resolved offline"* ]]
 }
 
 @test "an unknown field of a Kubernetes kind and of a CRD fails kubeconform" {
