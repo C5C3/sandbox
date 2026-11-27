@@ -1,7 +1,26 @@
 # The upstream base tls (the ClusterIssuer selfsigned-cluster-issuer and the
 # CAs and certificates of OpenBao, the databases and OVN) and the sandbox CA.
+#
+# The stage substitutes cluster-vars for the one name the patch adds to the
+# server certificate of OpenBao: openbao.<a-b-c-d>.nip.io of
+# addresses.openbao, where the module openbao-remote-auth publishes OpenBao
+# for the storage and compute clusters, named after
+# infrastructure/messaging-tls/certificate.yaml. The name is there for every
+# profile, because OpenBao reads its certificate only at its start, and a
+# restart of its pod seals it (ADR-0037).
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
   - ../../vendor/cobaltcore/deploy/bases/tls
   - sandbox-ca.yaml
+patches:
+  - target:
+      group: cert-manager.io
+      version: v1
+      kind: Certificate
+      name: openbao-tls
+      namespace: shared-services
+    patch: |
+      - op: add
+        path: /spec/dnsNames/-
+        value: "openbao.${ADDRESSES_OPENBAO//./-}.nip.io"

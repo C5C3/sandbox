@@ -15,6 +15,11 @@ spec:
   sourceRef:
     kind: OCIRepository
     name: sandbox
+  # ADDRESSES_OPENBAO names the published OpenBao in its certificate.
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: cluster-vars
   # kstatus counts a Certificate and a ClusterIssuer as ready once they exist.
   healthCheckExprs:
     - apiVersion: cert-manager.io/v1
