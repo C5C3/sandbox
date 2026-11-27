@@ -33,7 +33,24 @@
 #                                 openstack/controlplane-fake-compute exists
 #   horizon    horizon-login      admin logs in to the dashboard with curl
 #
-# After them, when a NovaCompute in openstack names the registration
+# After them, when spec.services.cinder.backends names ceph1 of type RBD,
+# come the checks of scripts/lib/rbd.sh, the last three only when
+# spec.services.cinder.backupBackend is named cephbk:
+#
+#   rbd-backend   the backend ceph1 reports a pool within 300 s, and
+#                 cinder-volume on controlplane-cinder@ceph1 is up
+#   rbd-volume    the 1 GiB volume sandbox-verify-rbd-volume is available
+#                 on ceph1 within 120 s, with its image on sandbox-storage
+#   rbd-backup    the backup sandbox-verify-rbd-backup of it is available
+#                 within 600 s, with its image in the pool backups
+#   rbd-restore   the backup restored onto sandbox-verify-rbd-restored
+#                 within 600 s gives the same first 4 MiB
+#   rbd-rotation  keyGeneration of the CephClient cinder-backup rises by one,
+#                 the new key reaches openstack within 300 s and rolls
+#                 controlplane-cinder-backup within 600 s, and the backup
+#                 sandbox-verify-rbd-rotated is available within 600 s
+#
+# Then, when a NovaCompute in openstack names the registration
 # sandbox-compute, come the eight checks of scripts/lib/compute.sh:
 #
 #   compute-pool            the pools are Ready, their nodes Active, up and
@@ -52,7 +69,7 @@
 #   compute-console         the noVNC console relays the RFB greeting of the
 #                           server
 #
-# Then, when spec.namespaceAssignments assigns a namespace on the management
+# Last, when spec.namespaceAssignments assigns a namespace on the management
 # cluster, come the five checks of scripts/lib/orders.sh:
 #
 #   orders-ready      the orders of the assigned namespaces are Ready
@@ -66,8 +83,10 @@
 # A key outside the table adds no check. It prints one line per check,
 # ok <id>: <detail> or FAIL <id>: <first line of the error>, then
 # verify: <passed> of <total> checks passed, and exits 1 when a check failed.
-# Without a ControlPlane it runs no check and exits 0. It reads the hub, and
-# compute-hypervisor also sandbox-compute, no configuration and no profile.
+# Without a ControlPlane it runs no check and exits 0. It reads the hub,
+# compute-hypervisor also sandbox-compute, and the rbd- checks also
+# sandbox-storage, where rbd-rotation patches a CephClient; it reads no
+# configuration and no profile.
 # No call passes --insecure or -k: the CLI trusts the CA of the sandbox
 # through OS_CACERT, curl through --cacert, and openssl through -CAfile. A
 # check deletes what an earlier run left of its sandbox-verify
@@ -84,6 +103,8 @@ set -euo pipefail
 . "$SANDBOX_ROOT/scripts/lib/access.sh"
 # shellcheck source=lib/compute.sh
 . "$SANDBOX_ROOT/scripts/lib/compute.sh"
+# shellcheck source=lib/rbd.sh
+. "$SANDBOX_ROOT/scripts/lib/rbd.sh"
 # shellcheck source=lib/orders.sh
 . "$SANDBOX_ROOT/scripts/lib/orders.sh"
 
@@ -627,6 +648,7 @@ for service in keystone glance placement barbican neutron cinder nova horizon; d
 		"check_$service"
 	fi
 done
+check_rbd
 check_compute
 check_orders
 
