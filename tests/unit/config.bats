@@ -12,6 +12,7 @@ setup() {
 	[ "$SANDBOX_ADDRESS_POOL" = 172.30.255.0/24 ]
 	[ "$SANDBOX_DNS_ADDRESS" = 172.30.255.53 ]
 	[ "$SANDBOX_RABBITMQ_ADDRESS" = 172.30.255.11 ]
+	[ "$SANDBOX_OPENBAO_ADDRESS" = 172.30.255.12 ]
 	[ "$SANDBOX_REGISTRY_IMAGE" = registry:3 ]
 	[ "$SANDBOX_HYPERVISOR_NODES" = 1 ]
 	[ "$SANDBOX_RESOLVER_FALLBACK" = false ]
@@ -36,7 +37,7 @@ setup() {
 
 @test "config_load fails for each key that is absent" {
 	for key in network.subnet addresses.gateway registry.image switches.hypervisor-nodes flux.operator upstream.cobaltcore \
-		addresses.pool addresses.dns addresses.rabbitmq switches.resolver-fallback \
+		addresses.pool addresses.dns addresses.rabbitmq addresses.openbao switches.resolver-fallback \
 		switches.glance switches.barbican switches.horizon switches.fake-compute switches.osd-count switches.osd-size; do
 		config_with "del(.${key%%.*}[\"${key#*.}\"])"
 		run config_load
@@ -79,8 +80,8 @@ setup() {
 	[ "$SANDBOX_OSD_SIZE" = 20Gi ]
 }
 
-@test "config_load treats a null pool, DNS address, RabbitMQ address or switch as not set" {
-	for key in addresses.pool addresses.dns addresses.rabbitmq switches.resolver-fallback \
+@test "config_load treats a null pool, DNS address, RabbitMQ address, OpenBao address or switch as not set" {
+	for key in addresses.pool addresses.dns addresses.rabbitmq addresses.openbao switches.resolver-fallback \
 		switches.glance switches.barbican switches.horizon switches.fake-compute; do
 		config_with ".${key%%.*}[\"${key#*.}\"] = null"
 		run config_load
@@ -264,6 +265,43 @@ setup() {
 	run config_load
 	[ "$status" -eq 1 ]
 	[ "$output" = "error: config: addresses.rabbitmq and addresses.dns are both 172.30.255.53" ]
+}
+
+@test "config_load treats an empty OpenBao address as not set" {
+	config_with '.addresses.openbao = ""'
+	run config_load
+	[ "$status" -eq 1 ]
+	[ "$output" = "error: config: addresses.openbao is not set" ]
+}
+
+@test "config_load rejects an OpenBao address that is not an IPv4 address" {
+	for openbao in 172.30.255 172.30.255.256 172.30.255.12/32 172.30.255.012; do
+		config_with ".addresses.openbao = \"$openbao\""
+		run config_load
+		[ "$status" -eq 1 ]
+		[ "$output" = "error: config: addresses.openbao '$openbao' is not an IPv4 address" ]
+	done
+}
+
+@test "config_load rejects an OpenBao address outside the pool" {
+	config_with '.addresses.openbao = "172.30.254.12"'
+	run config_load
+	[ "$status" -eq 1 ]
+	[ "$output" = "error: config: addresses.openbao 172.30.254.12 is not inside addresses.pool 172.30.255.0/24" ]
+}
+
+@test "config_load rejects an OpenBao address that is the Gateway, the DNS or the RabbitMQ address" {
+	local key value
+	while read -r key value; do
+		config_with ".addresses.openbao = \"$value\""
+		run config_load
+		[ "$status" -eq 1 ]
+		[ "$output" = "error: config: addresses.openbao and addresses.$key are both $value" ]
+	done <<'EOF'
+gateway 172.30.255.10
+dns 172.30.255.53
+rabbitmq 172.30.255.11
+EOF
 }
 
 @test "config_load accepts a pool that is the whole subnet" {
