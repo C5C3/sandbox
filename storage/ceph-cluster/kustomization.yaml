@@ -1,7 +1,8 @@
 # The module ceph-cluster on sandbox-storage: upstream's CephCluster, pools,
 # clients and toolbox, patched for one host, and the pool .mgr of
 # mgr-pool.yaml. keys-push.yaml and keys-pull.yaml of upstream's directory
-# are the key hand-off, which this module does not carry.
+# are the key hand-off, which the modules key-push on sandbox-storage and
+# ceph-keys on sandbox-management carry.
 #
 # The stage substitutes cluster-vars: SWITCHES_OSD_COUNT and
 # SWITCHES_OSD_SIZE come from the switches, STORAGE_POOL_SIZE is 1 for one
@@ -61,3 +62,12 @@ patches:
         path: /metadata/annotations
         value:
           kustomize.toolkit.fluxcd.io/substitute: disabled
+  - target: {kind: CephClient, name: cinder|cinder-backup}
+    # Flux creates the two clients once and then leaves them alone, so a
+    # raised spec.security.cephx.keyGeneration stays, Rook rotates the key,
+    # and the key hand-off carries it to openstack (ADR-0040).
+    patch: |
+      - op: add
+        path: /metadata/annotations
+        value:
+          kustomize.toolkit.fluxcd.io/ssa: IfNotPresent

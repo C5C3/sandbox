@@ -1055,16 +1055,21 @@ EOF
 		'[["ceph.rook.io/v1","CephBlockPool","rook-ceph","builtin-mgr",{"name":".mgr","failureDomain":"osd","enableCrushUpdates":true,"replicated":{"size":"${STORAGE_POOL_SIZE}","requireSafeReplicaSize":false}}]]' ]
 }
 
-@test "the patches of ceph-cluster put the CephCluster on host networking and the loop devices, the pools on failure domain osd, and keep the toolbox from the substitution" {
+@test "the patches of ceph-cluster put the CephCluster on host networking and the loop devices, the pools on failure domain osd, keep the toolbox from the substitution, and let Flux create the clients once" {
 	local file=$SANDBOX_ROOT/storage/ceph-cluster/kustomization.yaml
 	[ "$(yq -o=json -I=0 '[.patches[].target]' "$file")" = \
-		'[{"kind":"CephCluster","name":"rook-ceph"},{"kind":"CephBlockPool","name":"volumes|backups"},{"kind":"Deployment","name":"rook-ceph-tools"}]' ]
+		'[{"kind":"CephCluster","name":"rook-ceph"},{"kind":"CephBlockPool","name":"volumes|backups"},{"kind":"Deployment","name":"rook-ceph-tools"},{"kind":"CephClient","name":"cinder|cinder-backup"}]' ]
 	[ "$(yq '.patches[0].patch' "$file" | yq -o=json -I=0 '.')" = \
 		'[{"op":"add","path":"/spec/network/provider","value":"host"},{"op":"replace","path":"/spec/cephConfig/global/osd_pool_default_size","value":"1"},{"op":"add","path":"/spec/cephConfig/global/mon_warn_on_pool_no_redundancy","value":"false"},{"op":"add","path":"/spec/cephConfig/global/mon_data_avail_warn","value":"10"},{"op":"add","path":"/spec/healthCheck/muteHealthWarning/BLUESTORE_SLOW_OP_ALERT","value":{"policy":"mute"}},{"op":"replace","path":"/spec/resources/mon/requests/memory","value":"512Mi"},{"op":"replace","path":"/spec/resources/mgr/requests/memory","value":"256Mi"},{"op":"replace","path":"/spec/storage/storageClassDeviceSets/0/name","value":"loop"},{"op":"replace","path":"/spec/storage/storageClassDeviceSets/0/count","value":"${SWITCHES_OSD_COUNT}"},{"op":"replace","path":"/spec/storage/storageClassDeviceSets/0/resources/requests/memory","value":"1Gi"},{"op":"add","path":"/spec/storage/storageClassDeviceSets/0/volumeClaimTemplates/0/spec/storageClassName","value":"sandbox-block"},{"op":"replace","path":"/spec/storage/storageClassDeviceSets/0/volumeClaimTemplates/0/spec/resources/requests/storage","value":"${SWITCHES_OSD_SIZE}"}]' ]
 	[ "$(yq '.patches[1].patch' "$file" | yq -o=json -I=0 '.')" = \
 		'[{"op":"replace","path":"/spec/failureDomain","value":"osd"},{"op":"replace","path":"/spec/replicated/size","value":"${STORAGE_POOL_SIZE}"},{"op":"replace","path":"/spec/replicated/requireSafeReplicaSize","value":false}]' ]
 	[ "$(yq '.patches[2].patch' "$file" | yq -o=json -I=0 '.')" = \
 		'[{"op":"add","path":"/metadata/annotations","value":{"kustomize.toolkit.fluxcd.io/substitute":"disabled"}}]' ]
+	[ "$(yq '.patches[3].patch' "$file" | yq -o=json -I=0 '.')" = \
+		'[{"op":"add","path":"/metadata/annotations","value":{"kustomize.toolkit.fluxcd.io/ssa":"IfNotPresent"}}]' ]
+	# Upstream's clients carry no annotation the patch would replace.
+	[ "$(yq ea -o=json -I=0 '[select(.kind == "CephClient") | [.metadata.name, (.metadata | has("annotations"))]]' \
+		"$SANDBOX_ROOT/vendor/cobaltcore/deploy/overlays/metal-stack/ceph/cluster/clients.yaml")" = '[["cinder",false],["cinder-backup",false]]' ]
 }
 
 @test "the stage storage-ceph-cluster applies the module on sandbox-storage after rook-operator and block-devices and waits for a healthy cluster, its pools and its clients" {
