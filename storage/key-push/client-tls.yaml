@@ -1,0 +1,15 @@
+# The client certificate of the storage cluster for OpenBao, under the name
+# of upstream's Certificate, which the SecretStore openbao-ceph-store names
+# for the client pair and for ca.crt, the openbao-ca that signs OpenBao's
+# server certificate. The three values are base64 of the PEM, as make up
+# copies them from shared-services/openbao-client-storage on the hub.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ceph-keys-push-client-tls
+  namespace: rook-ceph
+type: kubernetes.io/tls
+data:
+  tls.crt: ${OPENBAO_CLIENT_CRT_B64}
+  tls.key: ${OPENBAO_CLIENT_KEY_B64}
+  ca.crt: ${OPENBAO_CA_B64}

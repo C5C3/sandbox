@@ -1,0 +1,44 @@
+# The module key-push on sandbox-storage: the storage half of the key
+# hand-off. Upstream's keys-push.yaml writes the keys of the CephClients
+# cinder and cinder-backup into the shared OpenBao with two PushSecrets, at
+# kv-v2/data/ceph/client-cinder and kv-v2/data/ceph/client-cinder-backup.
+# Upstream runs its Ceph inside the management cluster; here the Ceph runs
+# on sandbox-storage, so the module changes three things:
+#
+#   - The client certificate for OpenBao's mutual TLS comes from the hub, in
+#     client-tls.yaml, because the storage cluster runs no cert-manager and
+#     cannot reach openbao-ca-issuer. The stage substitutes it from the
+#     Secret flux-system/openbao-client-storage (ADR-0039); upstream's
+#     Certificate goes.
+#   - The SecretStore dials OpenBao under its published name,
+#     openbao.<a-b-c-d>.nip.io:8200, and logs in on kubernetes/storage, where
+#     the module openbao-remote-auth writes the role push-ceph-keys.
+#   - The ServiceAccount ceph-keys-push holds system:auth-delegator, because
+#     OpenBao reviews its token with that token itself (ADR-0038).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../vendor/cobaltcore/deploy/overlays/metal-stack/ceph/cluster/keys-push.yaml
+  - client-tls.yaml
+  - auth-delegator.yaml
+patches:
+  - patch: |
+      apiVersion: cert-manager.io/v1
+      kind: Certificate
+      metadata:
+        name: ceph-keys-push-client-tls
+        namespace: rook-ceph
+      $patch: delete
+  - target:
+      group: external-secrets.io
+      version: v1
+      kind: SecretStore
+      name: openbao-ceph-store
+      namespace: rook-ceph
+    patch: |
+      - op: replace
+        path: /spec/provider/vault/server
+        value: "https://openbao.${ADDRESSES_OPENBAO//./-}.nip.io:8200"
+      - op: replace
+        path: /spec/provider/vault/auth/kubernetes/mountPath
+        value: kubernetes/storage
