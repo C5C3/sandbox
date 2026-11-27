@@ -1,0 +1,39 @@
+# The backup target cephbk of Cinder: upstream's entry of
+# vendor/cobaltcore/deploy/overlays/metal-stack/controlplane/controlplane-lab.yaml
+# with the monitor and the network of the backend ceph1 of the module
+# cinder-rbd, sandbox-storage-control-plane:3300 and network.subnet of the
+# configuration, which the stage substitutes from cluster-vars. pool backups,
+# user cinder-backup and keySecretRef ceph-client-cinder-backup, the Secret of
+# the module ceph-keys, stay as upstream has them. Taking the Component off
+# prunes the CinderBackupBackend, and the Cinder drops its backup Deployment;
+# the images in the pool backups stay.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+patches:
+  - target:
+      group: c5c3.io
+      version: v1alpha1
+      kind: ControlPlane
+      name: controlplane
+      namespace: openstack
+    patch: |
+      apiVersion: c5c3.io/v1alpha1
+      kind: ControlPlane
+      metadata:
+        name: controlplane
+        namespace: openstack
+      spec:
+        services:
+          cinder:
+            backupBackend:
+              name: cephbk
+              type: RBD
+              rbd:
+                pool: backups
+                user: cinder-backup
+                monitors:
+                  - sandbox-storage-control-plane:3300
+                networks:
+                  - "${NETWORK_SUBNET}"
+                keySecretRef:
+                  name: ceph-client-cinder-backup

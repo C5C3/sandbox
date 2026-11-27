@@ -16,9 +16,10 @@ spec:
   # append theirs: components/glance, placement, barbican, neutron, cinder,
   # nova and horizon from the service modules of the same names, glance
   # with the dependency on objectstore, components/messaging-tls with the
-  # dependency on the stage of its module, components/orders, the namespace
-  # assignments, without one, and components/remote-compute, the remote
-  # compute contract of Nova.
+  # dependency on the stage of its module, components/cinder-backup, the
+  # backup target of cinder, components/orders, the namespace assignments,
+  # without one, and components/remote-compute, the remote compute contract
+  # of Nova.
   components:
     - components/keystone
   # The patches Components of other modules append to this list, and Flux
