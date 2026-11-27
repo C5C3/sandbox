@@ -4,7 +4,8 @@
 # the functions that read the profile, scripts/lib/vendor.sh for
 # push_artifact, scripts/lib/register.sh for ensure_registrations,
 # scripts/lib/nodes.sh for ensure_node_prep, scripts/lib/trust.sh for
-# ensure_trust, and scripts/lib/storage.sh for ensure_block_devices.
+# ensure_trust, scripts/lib/remote-auth.sh for ensure_remote_auth, and
+# scripts/lib/storage.sh for ensure_block_devices.
 #
 # The command layer applies the FluxInstance, the source, cluster-vars, the
 # kubeconfig Secrets and one root Kustomization per cluster. Each apply is a
@@ -410,14 +411,20 @@ resolver_hint() {
 # registration of one that no longer lists it (ensure_registrations),
 # prepares the worker nodes of sandbox-compute (ensure_node_prep), copies the
 # sandbox CA into the ConfigMap flux-system/sandbox-trust when a cluster
-# lists trust (ensure_trust), then waits for their stages and logs how many
-# stages, those of cluster_stages, are Ready. The registration comes before
-# the wait: the stage <role>-access fills the token it needs, and a stage
-# that needs the registration would otherwise be waited for before it
-# exists. The node preparation runs while Flux applies the stages, whose
-# pods wait for the bus and the labels, and so does the copy of the CA,
-# which the stage management-pki creates and the stage compute-trust
-# substitutes, retrying until the ConfigMap exists. It
+# lists trust (ensure_trust), carries the API servers and CAs of the remote
+# clusters into the ConfigMap flux-system/openbao-remote-auth and copies
+# their OpenBao client certificates into flux-system when management lists
+# openbao-remote-auth, or removes those copies (ensure_remote_auth), then
+# waits for their stages and logs how many stages, those of
+# cluster_stages, are Ready. The registration comes before the wait: the
+# stage <role>-access fills the token it needs, and a stage that needs the
+# registration would otherwise be waited for before it exists. The node
+# preparation runs while Flux applies the stages, whose pods wait for the
+# bus and the labels, and so does the copy of the CA, which the stage
+# management-pki creates and the stage compute-trust substitutes, retrying
+# until the ConfigMap exists, and so does the copy of the client
+# certificates, which the stage management-openbao-remote-auth issues and
+# the stage storage-key-push substitutes. It
 # stops before the first step when a stage depends on a stage of a cluster
 # that is not attached, because no root would create that stage. Every step
 # is safe to repeat; a failed step stops the run and leaves what the steps
@@ -453,6 +460,7 @@ hub_sync() {
 	ensure_registrations
 	ensure_node_prep
 	ensure_trust
+	ensure_remote_auth
 	wait_stages
 	for role in $attached; do
 		modules=$(cluster_stages "$role") || exit 1

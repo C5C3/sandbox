@@ -12,8 +12,13 @@
 # cluster whose modules list access with the CobaltCore operators, or removes
 # the registration of one that no longer lists it, gives the worker nodes
 # of sandbox-compute a system bus and the labels of upstream's lab when its
-# modules list node-prep, or removes those labels, and copies the sandbox CA
-# into the ConfigMap flux-system/sandbox-trust when a cluster lists trust.
+# modules list node-prep, or removes those labels, copies the sandbox CA
+# into the ConfigMap flux-system/sandbox-trust when a cluster lists trust,
+# and, when the management cluster lists openbao-remote-auth, carries the
+# API servers and CAs of the storage and compute clusters into the
+# ConfigMap flux-system/openbao-remote-auth and their OpenBao client
+# certificates into flux-system/openbao-client-<role>, or removes those
+# copies.
 # With switches.resolver-fallback on, it then prints the host's resolver
 # settings.
 #
@@ -38,6 +43,8 @@ set -euo pipefail
 . "$SANDBOX_ROOT/scripts/lib/nodes.sh"
 # shellcheck source=lib/trust.sh
 . "$SANDBOX_ROOT/scripts/lib/trust.sh"
+# shellcheck source=lib/remote-auth.sh
+. "$SANDBOX_ROOT/scripts/lib/remote-auth.sh"
 # shellcheck source=lib/vendor.sh
 . "$SANDBOX_ROOT/scripts/lib/vendor.sh"
 

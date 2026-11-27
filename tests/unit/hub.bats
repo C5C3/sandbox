@@ -687,6 +687,8 @@ controlplane_ready() {
 	ensure_cluster_vars() { :; }
 	ensure_source() { :; }
 	ensure_root() { :; }
+	# Without openbao-remote-auth it would delete the copies by label.
+	ensure_remote_auth() { :; }
 	wait_stages() { :; }
 	run hub_sync
 	[ "$status" -eq 0 ]
@@ -792,7 +794,7 @@ controlplane_ready() {
 	[ "$output" = "error: cannot list the nodes of kind cluster sandbox-storage" ]
 }
 
-@test "hub_sync prepares the block devices between Flux and cluster-vars, writes no Secret for management, registers after the roots, prepares the nodes and copies the CA before the wait, and counts the module stages of the attached clusters" {
+@test "hub_sync prepares the block devices between Flux and cluster-vars, writes no Secret for management, registers after the roots, prepares the nodes, copies the CA and the OpenBao client certificates before the wait, and counts the module stages of the attached clusters" {
 	scaffold_attached
 	attached_roles() { echo "management storage"; }
 	ensure_flux() { echo ensure_flux >>"$BATS_TEST_TMPDIR/steps"; }
@@ -804,14 +806,16 @@ controlplane_ready() {
 	ensure_registrations() { echo ensure_registrations >>"$BATS_TEST_TMPDIR/steps"; }
 	ensure_node_prep() { echo ensure_node_prep >>"$BATS_TEST_TMPDIR/steps"; }
 	ensure_trust() { echo ensure_trust >>"$BATS_TEST_TMPDIR/steps"; }
+	ensure_remote_auth() { echo ensure_remote_auth >>"$BATS_TEST_TMPDIR/steps"; }
 	wait_stages() { echo wait_stages >>"$BATS_TEST_TMPDIR/steps"; }
 	run hub_sync
 	[ "$status" -eq 0 ]
 	# The block devices come before cluster-vars, so a count the node cannot
 	# follow never reaches the stages. The registration follows the last
 	# root, whose stage of access fills the token it reads. The node
-	# preparation and the copy of the CA run while Flux applies the stages,
-	# and all three come before the wait for the stages.
+	# preparation, the copy of the CA and that of the client certificates
+	# run while Flux applies the stages, and all four come before the wait
+	# for the stages.
 	[ "$(<"$BATS_TEST_TMPDIR/steps")" = "ensure_flux
 ensure_block_devices
 ensure_cluster_vars
@@ -822,6 +826,7 @@ ensure_root storage
 ensure_registrations
 ensure_node_prep
 ensure_trust
+ensure_remote_auth
 wait_stages" ]
 	[[ ${lines[-1]} == *": 2 stages Ready on 2 clusters at latest@sha256:new" ]]
 }
@@ -833,6 +838,8 @@ wait_stages" ]
 	ensure_kubeconfig_secret() { echo "unit test called ensure_kubeconfig_secret $1" >&2; return 1; }
 	ensure_source() { :; }
 	ensure_root() { :; }
+	# Without openbao-remote-auth it would delete the copies by label.
+	ensure_remote_auth() { :; }
 	wait_stages() { :; }
 	run hub_sync
 	[ "$status" -eq 0 ]
