@@ -1,0 +1,70 @@
+# The module cinder-rbd gives Cinder the volume backend ceph1 on the pool
+# volumes of the Ceph of sandbox-storage, and has no stage of its own. It
+# appends to the stage of the module controlplane a Flux patch that appends
+# ceph1 to the backends of the ControlPlane, and the dependency on the stage
+# of ceph-keys, so the ControlPlane names ceph1 only once both key Secrets
+# in openstack are Ready. A Flux patch runs after every Component of the
+# stage, so it finds the empty list of components/cinder whatever the order
+# of the profile, beside the entries of other backend modules.
+#
+# The entry is upstream's ceph1 of
+# vendor/cobaltcore/deploy/overlays/metal-stack/controlplane/controlplane-lab.yaml
+# with two fields replaced:
+# - monitors: the monitor answers on the node's address on the Docker
+#   network (host networking of the module ceph-cluster), port 3300, which a
+#   pod on the management cluster reaches by the node's container name. It
+#   is the one place the entry names its storage cluster; a backend on
+#   another Ceph is another module that appends another entry. No Flux
+#   variable carries the cluster: a variable that a JSON patch added to
+#   postBuild.substitute of the stage of controlplane would replace the map
+#   another module adds there.
+# - networks: the subnet of the Docker network, network.subnet of the
+#   configuration, where the monitor and the OSDs answer. The stage of
+#   controlplane substitutes it from cluster-vars; the root cluster-management
+#   substitutes nothing, so the variable reaches the stage as text.
+# pool volumes, user cinder, keySecretRef ceph-client-cinder (the Secret of
+# the module ceph-keys) and secretUUID stay as upstream has them. The UUID is
+# that of the libvirt secret a hypervisor defines (#18); nothing reads it on
+# the management cluster.
+#
+# The module needs cinder and ceph-keys beside it, which nothing checks.
+# Without cinder the build of management-controlplane fails, because
+# /spec/services/cinder/backends does not exist. Without ceph-keys the stage
+# waits for a dependency that does not exist.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+patches:
+  - target:
+      group: kustomize.toolkit.fluxcd.io
+      kind: Kustomization
+      name: management-controlplane
+    patch: |
+      - op: add
+        path: /spec/patches/-
+        value:
+          target:
+            group: c5c3.io
+            version: v1alpha1
+            kind: ControlPlane
+            name: controlplane
+            namespace: openstack
+          patch: |
+            - op: add
+              path: /spec/services/cinder/backends/-
+              value:
+                name: ceph1
+                type: RBD
+                rbd:
+                  pool: volumes
+                  user: cinder
+                  monitors:
+                    - sandbox-storage-control-plane:3300
+                  networks:
+                    - "${NETWORK_SUBNET}"
+                  keySecretRef:
+                    name: ceph-client-cinder
+                  secretUUID: 090e4a3c-6c20-4e74-82dc-1a70382babe8
+      - op: add
+        path: /spec/dependsOn/-
+        value:
+          name: management-ceph-keys

@@ -22,10 +22,12 @@ spec:
   components:
     - components/keystone
   # The patches Components of other modules append to this list, and Flux
-  # applies it after every Component: the backend module cinder-nfs appends
-  # its volume backend to the backends of components/cinder, with the
-  # dependency on the stage that serves it, and the module remote-compute
-  # publishes the databases of the OVNCentral controlplane-ovn.
+  # applies it after every Component: the backend modules cinder-nfs and
+  # cinder-rbd append their volume backend to the backends of
+  # components/cinder, each with the dependency on the stage that serves it
+  # (management-cinder-nfs, management-ceph-keys), and the module
+  # remote-compute publishes the databases of the OVNCentral
+  # controlplane-ovn.
   patches: []
   prune: true
   wait: true

@@ -1,9 +1,9 @@
 # Cinder behind the Gateway openstack-gw at cinder.<a-b-c-d>.nip.io. The
 # block is that of Step 4 of upstream's Quick Start (ControlPlane) at the pin
 # with an empty list of backends and without backupBackend: a backend module
-# such as cinder-nfs appends its entry with a Flux patch of the stage of the
-# module controlplane, which runs after every Component, and the API server
-# refuses a ControlPlane whose backends is empty (minItems 1 in
+# such as cinder-nfs or cinder-rbd appends its entry with a Flux patch of the
+# stage of the module controlplane, which runs after every Component, and the
+# API server refuses a ControlPlane whose backends is empty (minItems 1 in
 # vendor/cobaltcore/operators/c5c3/config/crd/bases/c5c3.io_controlplanes.yaml).
 # No publicEndpoint: on port 443 the operator derives https://<hostname>.
 #
