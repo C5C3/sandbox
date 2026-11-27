@@ -1,0 +1,12 @@
+# The module ceph-keys on sandbox-management: the control-plane half of the
+# key hand-off, upstream's keys-pull.yaml unchanged. Two ExternalSecrets read
+# the keys that the module key-push of the storage cluster writes to
+# OpenBao and create the Secrets openstack/ceph-client-cinder and
+# openstack/ceph-client-cinder-backup, each with userKey alone, refreshed
+# every minute. Their SecretStore logs in on kubernetes/management as the
+# role read-ceph-keys, which upstream's bootstrap writes, with a client
+# certificate from openbao-ca-issuer of this cluster.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../vendor/cobaltcore/deploy/overlays/metal-stack/ceph/cluster/keys-pull.yaml

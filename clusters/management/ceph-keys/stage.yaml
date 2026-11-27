@@ -1,0 +1,35 @@
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: management-ceph-keys
+  namespace: flux-system
+spec:
+  # The stage names no stage of the storage cluster: the ExternalSecrets read
+  # what any Ceph pushes to the same paths, an external one included.
+  dependsOn:
+    - name: management-openbao-remote-auth
+  interval: 10m
+  retryInterval: 1m
+  # The keys arrive once the Ceph of the storage cluster runs and key-push
+  # has written them, which on the first make up takes as long as the
+  # bring-up of Ceph.
+  timeout: 30m
+  path: ./infrastructure/ceph-keys
+  prune: true
+  wait: true
+  sourceRef:
+    kind: OCIRepository
+    name: sandbox
+  # No postBuild: upstream's file holds no variable. kstatus reads no Ready
+  # condition of External Secrets, whose conditions carry no
+  # observedGeneration, and counts a Certificate as ready once it exists.
+  healthCheckExprs:
+    - apiVersion: external-secrets.io/v1
+      kind: SecretStore
+      current: status.conditions.exists(c, c.type == 'Ready' && c.status == 'True')
+    - apiVersion: external-secrets.io/v1
+      kind: ExternalSecret
+      current: status.conditions.exists(c, c.type == 'Ready' && c.status == 'True')
+    - apiVersion: cert-manager.io/v1
+      kind: Certificate
+      current: status.conditions.exists(c, c.type == 'Ready' && c.status == 'True' && c.observedGeneration == metadata.generation)
