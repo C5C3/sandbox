@@ -1,0 +1,38 @@
+# The scratch objects of tests/host/storage-keys.bats on sandbox-storage: a
+# SecretStore in rook-ceph that logs in on kubernetes/storage as the role
+# push-ceph-keys with a ServiceAccount the role does not bind, and with the
+# client certificate of the module key-push, so that only the binding of
+# the role refuses it. The test replaces @SERVER@ with the published name
+# of OpenBao.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sandbox-verify-unbound
+  namespace: rook-ceph
+---
+apiVersion: external-secrets.io/v1
+kind: SecretStore
+metadata:
+  name: sandbox-verify-unbound
+  namespace: rook-ceph
+spec:
+  provider:
+    vault:
+      server: "@SERVER@"
+      path: kv-v2
+      version: v2
+      tls:
+        certSecretRef:
+          name: ceph-keys-push-client-tls
+        keySecretRef:
+          name: ceph-keys-push-client-tls
+      auth:
+        kubernetes:
+          mountPath: kubernetes/storage
+          role: push-ceph-keys
+          serviceAccountRef:
+            name: sandbox-verify-unbound
+      caProvider:
+        type: Secret
+        name: ceph-keys-push-client-tls
+        key: ca.crt
