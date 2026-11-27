@@ -266,7 +266,7 @@ address on it directly, which is why a Linux host is required.
 | Resolver fallback | For a host whose resolver drops private answers, `switches.resolver-fallback` makes the CoreDNS of every cluster answer the nip.io names itself, and publishes the CoreDNS of the management cluster on `addresses.dns` (default `172.30.255.53`) for the host. See [Host requirements](#host-requirements) |
 | Certificates | One sandbox CA from cert-manager, name-constrained to `nip.io` like the upstream lab CA. It signs the Gateway certificate `*.<suffix>` and the certificate of the broker's TLS listener, which names `rabbitmq.<a-b-c-d>.nip.io` only. `sandbox-ca.pem` is what the workstation passes as `OS_CACERT` |
 | Message bus | AMQPS on a load-balancer address of its own, `addresses.rabbitmq` (default `172.30.255.11`), as `rabbitmq.<a-b-c-d>.nip.io:5671`. The broker's certificate names nothing else, so every client, the pods of the management cluster included, reaches the broker under that name |
-| OpenBao | Port 8200 with mutual TLS on a load-balancer address, for the External Secrets Operators of the storage and compute clusters |
+| OpenBao | Port 8200 with mutual TLS on a load-balancer address of its own, `addresses.openbao` (default `172.30.255.12`), as `openbao.<a-b-c-d>.nip.io:8200`, for the External Secrets Operators of the storage and compute clusters. The server certificate `openbao-tls` names it in every profile, and each remote cluster presents a client certificate that `openbao-ca-issuer` of the management cluster issues. See [The key hand-off](#the-key-hand-off) |
 | OVN | `externallyReachable: true` on both databases of the `OVNCentral`. The ovn-operator publishes them on node ports of the management node |
 | Ceph | Rook with host networking on the storage cluster, so monitors (3300) and OSDs (6800 to 7300) answer on the node's address on the Docker network. Clients name the monitor by the node's container name, which Docker's DNS resolves. The `networks` field of the RBD backends carries the Docker subnet |
 | Kubernetes APIs | `https://<cluster>-control-plane:6443`, the address of `kind get kubeconfig --internal`, used in the registration kubeconfig and in the kubeconfigs of Flux |
@@ -299,9 +299,9 @@ cluster uses the same ones, see
 | 7 | Console proxy on management | VNC on the compute nodes' addresses | noVNC consoles | Node addresses on the Docker network |
 | 8 | `cinder-volume`, `cinder-backup` on management | Ceph monitors and OSDs on storage | Volumes and backups | Monitor address, pool, user and key Secret in the `CinderBackend` entry |
 | 9 | QEMU on compute | Ceph monitors and OSDs on storage | Attached RBD volumes | libvirt secret defined from the `cinder` key |
-| 10 | External Secrets on storage | OpenBao on management | Push the client keys | Client certificate for OpenBao's mutual TLS, auth mount `kubernetes/storage`, policy `push-ceph-keys` |
-| 11 | External Secrets on compute | OpenBao on management | Read the `cinder` key for libvirt | Client certificate for OpenBao's mutual TLS, auth mount `kubernetes/hypervisor`, a sandbox policy that reads `ceph/client-cinder` |
-| 12 | OpenBao on management | Kubernetes APIs of storage and compute | Token review for 10 and 11 | `auth/kubernetes/<cluster>/config`, which the upstream bootstrap leaves for the time those clusters exist |
+| 10 | External Secrets on storage | OpenBao on management, `openbao.<a-b-c-d>.nip.io:8200` | Push the client keys | Client certificate `openbao-client-storage` for OpenBao's mutual TLS, copied from the hub; auth mount `kubernetes/storage`, role `push-ceph-keys` for `rook-ceph/ceph-keys-push`, policy `push-ceph-keys` |
+| 11 | External Secrets on compute | OpenBao on management, `openbao.<a-b-c-d>.nip.io:8200` | Read the `cinder` key for libvirt | Client certificate `openbao-client-compute` for OpenBao's mutual TLS, copied from the hub; auth mount `kubernetes/hypervisor`, role `read-ceph-client-cinder` for `openstack/ceph-keys-read`, the sandbox policy `read-ceph-client-cinder`, which reads `ceph/client-cinder` alone |
+| 12 | OpenBao on management | Kubernetes APIs of storage and compute | Token review for 10 and 11 | `auth/kubernetes/storage/config` and `auth/kubernetes/hypervisor/config`, which the upstream bootstrap leaves unwritten and the Job `openbao-remote-auth` writes from the API server and CA that `make up` carries in the ConfigMap `flux-system/openbao-remote-auth`. The review uses the token of the login itself, and the account that logs in holds `system:auth-delegator` on its cluster |
 | 13 | Compute node | Compute node | Geneve (UDP 6081), libvirt TLS (16514), QEMU migration (49152 to 49215); with two nodes only | Docker network |
 | 14 | Workstation | Gateway, port 443 | CLI, Horizon, noVNC | `sandbox-ca.pem` |
 
@@ -391,8 +391,11 @@ that deploys them.
   create the Docker network, the registry and the kind clusters, prepare the
   nodes (loop devices; the system bus, the labels and the annotation of the
   hypervisor nodes), install Flux, exchange what crosses a cluster
-  boundary before Flux can (kubeconfigs, the token-review configuration of
-  OpenBao, the sandbox CA for the compute cluster in the ConfigMap
+  boundary before Flux can (kubeconfigs; the API servers and CAs of the
+  storage and compute clusters for OpenBao's token review, in the
+  ConfigMap `flux-system/openbao-remote-auth`; their OpenBao client
+  certificates, in the Secrets `flux-system/openbao-client-<role>`; the
+  sandbox CA for the compute cluster, in the ConfigMap
   `flux-system/sandbox-trust`), and print access data.
 
 ### Moving the upstream pin
@@ -832,7 +835,10 @@ cluster:
   one manager, the pools `volumes` and `backups`, the clients `cinder` and
   `cinder-backup` and the toolbox `rook-ceph-tools`, patched for one host,
   and the pool `.mgr`. Upstream's `keys-push.yaml` and `keys-pull.yaml`
-  belong to the key hand-off and stay out. The device set `loop` asks for
+  belong to the key hand-off, which the modules `key-push` and `ceph-keys`
+  carry ([The key hand-off](#the-key-hand-off)). Flux creates the two
+  clients once and leaves them, so a raised `keyGeneration` stays and
+  rotates their key. The device set `loop` asks for
   `osd-count` claims of `osd-size` in `sandbox-block`. The stage
   `storage-ceph-cluster` depends on `storage-rook-operator` and
   `storage-block-devices`, substitutes `cluster-vars`, and is Ready once the
@@ -932,6 +938,139 @@ Seven states need to be known:
   way out. The loop devices of `make up` stay until `make down` in any
   case.
 
+### The key hand-off
+
+The keys of the Ceph clients `cinder` and `cinder-backup` travel from
+`rook-ceph` on `sandbox-storage` to `openstack` on `sandbox-management`
+through the shared OpenBao, the hand-off upstream designed
+([ADR-0007](docs/adr/0007-ceph-client-keys-through-openbao.md)). Four
+modules and one step of `make up` carry it, over the paths 10 to 12 of
+[Interfaces between the clusters](#interfaces-between-the-clusters):
+
+- `openbao-remote-auth` on the management cluster publishes OpenBao on
+  `addresses.openbao` as the Service `shared-services/openbao-published`,
+  under the name `openbao.<a-b-c-d>.nip.io:8200` that the module `pki` adds
+  to the server certificate `openbao-tls` in every profile
+  ([ADR-0037](docs/adr/0037-publish-openbao-under-a-nip-io-name-named-in-its-certificate-from-the-start.md)).
+  It issues the client certificates `openbao-client-storage` and
+  `openbao-client-compute` from `openbao-ca-issuer`. Its Job
+  `openbao-remote-auth` writes the policy `read-ceph-client-cinder`,
+  enables `kubernetes/storage` and `kubernetes/hypervisor` where missing,
+  writes the role `push-ceph-keys` for `rook-ceph/ceph-keys-push` on the
+  first and `read-ceph-client-cinder` for `openstack/ceph-keys-read` on the
+  second, and points each mount at the API server of its cluster. Upstream's
+  roles `eso-storage` and `eso-hypervisor` on these mounts cannot carry the
+  hand-off ([C5C3/cobaltcore#1901](https://github.com/C5C3/cobaltcore/issues/1901)).
+- `controllers` on the storage cluster releases External Secrets there
+  from the hub, without cert-manager.
+- `key-push` on the storage cluster applies upstream's `keys-push.yaml`:
+  two PushSecrets write the keys to `kv-v2/data/ceph/client-cinder` and
+  `kv-v2/data/ceph/client-cinder-backup`, through a SecretStore on
+  `kubernetes/storage` with the client certificate of the hub.
+- `ceph-keys` on the management cluster applies upstream's
+  `keys-pull.yaml`: two ExternalSecrets read the keys into the Secrets
+  `openstack/ceph-client-cinder` and `openstack/ceph-client-cinder-backup`,
+  with `userKey` alone, every minute. Its stage names no stage of the
+  storage cluster, so an external Ceph can fill the same paths.
+
+OpenBao reviews a login on a remote mount with the token of the login
+itself (`disable_local_ca_jwt=true`, no `token_reviewer_jwt`), so no
+credential crosses the cluster boundary for the review, and the account
+that logs in holds `system:auth-delegator` on its cluster
+([ADR-0038](docs/adr/0038-review-the-tokens-of-a-remote-cluster-with-the-callers-own-token.md)).
+The two things no stage can carry cross in `make up`, after the copy of
+the sandbox CA and before the wait for the stages, when the management
+cluster lists `openbao-remote-auth`
+([ADR-0039](docs/adr/0039-carry-the-openbao-client-certificates-to-the-remote-clusters-through-the-command-layer.md)):
+
+```text
+up: writing the ConfigMap flux-system/openbao-remote-auth for sandbox-storage and sandbox-compute
+up: waiting for the OpenBao client certificate of sandbox-storage
+up: writing the Secret flux-system/openbao-client-storage
+up: waiting for the OpenBao client certificate of sandbox-compute
+up: writing the Secret flux-system/openbao-client-compute
+```
+
+The ConfigMap holds `STORAGE_API_SERVER`, `STORAGE_API_CA_B64`,
+`COMPUTE_API_SERVER` and `COMPUTE_API_CA_B64` from `kind get kubeconfig
+--internal` of each attached remote cluster, and the stage
+`management-openbao-remote-auth` substitutes them into the Job; with no
+remote cluster attached the line ends in `for no remote cluster`, the
+ConfigMap holds no data, and the Job leaves `auth/kubernetes/<mount>/config`
+as it is. Each Secret holds `OPENBAO_CLIENT_CRT_B64`,
+`OPENBAO_CLIENT_KEY_B64` and `OPENBAO_CA_B64`, copied from
+`shared-services/openbao-client-<role>`, and the stage `storage-key-push`
+substitutes them into `rook-ceph/ceph-keys-push-client-tls`. The key goes
+from kubectl through jq into kubectl on stdin and reaches no file. A
+profile without `openbao-remote-auth` deletes those Secrets, and `make up`
+logs `removed the OpenBao client certificates of the hub` when one was
+there.
+
+What OpenBao holds for a mount, read with the root token on stdin:
+
+```bash
+kubectl --kubeconfig .sandbox/kubeconfig/management.yaml -n shared-services get secret openbao-init-keys \
+  -o jsonpath='{.data.init-output}' | base64 -d | jq -r .root_token |
+  kubectl --kubeconfig .sandbox/kubeconfig/management.yaml -n shared-services exec -i openbao-0 -- \
+  sh -c 'read -r BAO_TOKEN && export BAO_TOKEN && BAO_ADDR=https://127.0.0.1:8200 VAULT_CACERT=/openbao/tls/ca.crt \
+  VAULT_CLIENT_CERT=/openbao/client-tls/tls.crt VAULT_CLIENT_KEY=/openbao/client-tls/tls.key exec bao read auth/kubernetes/storage/config'
+```
+
+A key rotates when the `keyGeneration` of its `CephClient` rises. Flux
+creates the two clients once and leaves them, so the stage
+`storage-ceph-cluster` does not set the field back
+([ADR-0040](docs/adr/0040-rotate-a-ceph-client-key-by-its-key-generation-with-flux-creating-the-clients-once.md)):
+
+```bash
+kubectl --kubeconfig .sandbox/kubeconfig/storage.yaml -n rook-ceph patch cephclient cinder --type merge -p '{"spec":{"security":{"cephx":{"keyGeneration":2}}}}'
+```
+
+Rook rewrites `rook-ceph-client-cinder`, the PushSecret writes OpenBao
+within its refresh of one minute, and the ExternalSecret updates
+`openstack/ceph-client-cinder` within its own.
+
+`tests/host/storage-keys.bats` proves point 3 for both remote mounts. The
+consumer on the compute cluster, the module `ceph-libvirt-secret`, is
+[#18](https://github.com/C5C3/sandbox/issues/18), so the test stands in for
+it with scratch objects in `openstack` on `sandbox-compute` under the names
+it takes: the ServiceAccount `ceph-keys-read`, the role
+`read-ceph-client-cinder` and the Secret `flux-system/openbao-client-compute`
+([ADR-0041](docs/adr/0041-prove-the-compute-half-of-point-3-with-a-scratch-externalsecret.md)).
+
+Five states need to be known:
+
+- **The client certificate does not come.** `make up` stops with
+  `openbao-remote-auth: the Secret shared-services/openbao-client-<role> on sandbox-management holds no <key> after <n> s; make status shows the stage management-openbao-remote-auth`.
+  The stage waits for `management-openbao`, so a slow bootstrap of OpenBao
+  holds the certificates back too. Once `make status` shows the stage
+  Ready, `make up` continues.
+- **The Job failed, or OpenBao is sealed.** The stage
+  `management-openbao-remote-auth` is not Ready, and the log of the Job
+  ends with the error line of
+  `infrastructure/openbao-remote-auth/remote-auth.sh`. Once the cause is
+  fixed, deleting the Job runs it again, as for the bootstrap in
+  [The shared OpenBao](#the-shared-openbao); a sealed OpenBao is unsealed
+  by deleting `openbao-bootstrap` first.
+
+  ```bash
+  kubectl --kubeconfig .sandbox/kubeconfig/management.yaml -n shared-services logs job/openbao-remote-auth
+  kubectl --kubeconfig .sandbox/kubeconfig/management.yaml -n shared-services delete job openbao-remote-auth
+  ```
+
+- **A remote cluster cannot resolve the nip.io name.** The SecretStore of
+  that cluster stays not Ready with a lookup error for
+  `openbao.<a-b-c-d>.nip.io`. `switches.resolver-fallback` makes the
+  CoreDNS of every cluster answer the name itself.
+- **OpenBao started before its certificate named the published name.** A
+  sandbox built before the module `pki` added the name keeps serving the old
+  certificate: OpenBao reads it only at its start, and a restart of its pod
+  seals it. The SecretStores fail the verification of the name. `make down`
+  is the way out.
+- **The modules taken off.** Flux removes the stages and what they
+  applied, `make up` deletes the copies in `flux-system`, the keys stay in
+  OpenBao (`deletionPolicy: None` of the PushSecrets), and the CephClients
+  stay with the module `ceph-cluster`.
+
 ## Modules
 
 A module of a cluster is the directory `clusters/<role>/<module>/` with two
@@ -995,8 +1134,8 @@ The table is the planned set; M marks the milestone that builds it.
 | `cinder-nfs` | Upstream's kind NFS export and `csi-driver-nfs`, and the volume backend `nfs1` of Cinder ([ADR-0024](docs/adr/0024-run-cinder-on-upstreams-nfs-export-in-the-profile-controlplane.md)) | `controllers` | 1 |
 | `fake-compute` | The upstream fake compute, for a control plane without hypervisors. Added by the switch `fake-compute` | `controlplane`, and `nova` beside it | 1 |
 | `orders` | The namespace `workflow` of one owner, its assignment on the `ControlPlane` with the role `member` and catalog entries, and the seven example orders of Part 1 of the upstream Quick Start (Orders). See [Orders](#orders) | `controlplane` | 2 |
-| `openbao-remote-auth` | Auth mounts, roles and policies for the storage and compute clusters, OpenBao on a load-balancer address | `openbao` | 3 |
-| `ceph-keys` | ExternalSecrets `ceph-client-cinder` and `ceph-client-cinder-backup` in `openstack` | `openbao-remote-auth` | 3 |
+| `openbao-remote-auth` | OpenBao on `addresses.openbao` as the Service `shared-services/openbao-published`; the client certificates `openbao-client-storage` and `openbao-client-compute` from `openbao-ca-issuer`; the Job `openbao-remote-auth`, which writes the policy `read-ceph-client-cinder`, enables `kubernetes/storage` and `kubernetes/hypervisor`, writes the roles `push-ceph-keys` and `read-ceph-client-cinder` on them and their `config` from the ConfigMap `flux-system/openbao-remote-auth`. See [The key hand-off](#the-key-hand-off) | `openbao`, `loadbalancer` | 3 |
+| `ceph-keys` | Upstream's `keys-pull.yaml`, unchanged: the ExternalSecrets `ceph-client-cinder` and `ceph-client-cinder-backup` in `openstack`, with `userKey` alone, through a SecretStore on `kubernetes/management` as `read-ceph-keys` | `openbao-remote-auth` | 3 |
 | `cinder-rbd` | The `cinder` block of the ControlPlane with the backend `ceph1`. The backup target `cephbk` is a switch | `ceph-keys`, `controlplane` | 3 |
 | `remote-compute` | No stage. `remoteCompute` with the transport URL Secret of `messaging-tls`, `hypervisorOperator`, and `metadataGateway` and `consoleProxy` at `nova-metadata.<suffix>` and `nova-console.<suffix>` on the ControlPlane; `externallyReachable` on both databases of the OVN central, through a Flux patch of the stage of `controlplane` | `controlplane`; needs `messaging-tls`, `glance`, `placement`, `neutron` and `nova` beside it | 4 |
 | `hypervisor-fixtures` | The K-ORC fixtures hvo looks up, from upstream's lab overlay: domain `cc3test` with project `test`, the imports of the domain `Default`, the user `hypervisor-operator` and the role `admin`, the assignment of `admin` on `test`, flavor `1`, image `cirros-kvm` | `controlplane`; needs `remote-compute`, `glance` and `nova` beside it | 4 |
@@ -1047,12 +1186,12 @@ Three states of `remote-compute` and `hypervisor-fixtures` need to be known:
 | Module | Content | Depends on | M |
 | --- | --- | --- | --- |
 | `resolver` | The CoreDNS block that answers nip.io names. Added by the switch `resolver-fallback` | | 1 |
-| `controllers` | External Secrets; cert-manager only if the key hand-off needs it there | | 3 |
+| `controllers` | External Secrets, upstream's chart released from the hub as `storage-external-secrets` through `kubeconfig-storage`, without upstream's dependency on cert-manager. The storage cluster runs no cert-manager: the chart's `certController` serves the webhook, and the client certificate for OpenBao comes from the hub | | 3 |
 | `block-devices` | The StorageClass `sandbox-block`, in which the claims of the OSDs bind to the static local volumes that `make up` creates over the loop devices, one per OSD, see [The storage cluster](#the-storage-cluster) | | 3 |
 | `rook-crds` | Upstream's Namespace `rook-ceph` and CRD `clientprofiles.csi.ceph.io`, unchanged, which the Rook operator needs at its start | | 3 |
 | `rook-operator` | Upstream's Rook chart with one value more, `allowLoopDevices: true`, released from the hub: the stage `storage-rook-operator` applies the `HelmRepository` `storage-rook-release` and the `HelmRelease` `storage-rook-ceph` to `flux-system` of the management cluster, which install the release `rook-ceph` in `rook-ceph` through `kubeconfig-storage` | `rook-crds` | 3 |
 | `ceph-cluster` | Upstream's `CephCluster`, pools `volumes` and `backups`, clients `cinder` and `cinder-backup` and toolbox, patched for one host (host networking, lower memory requests, three health settings and the mute of `BLUESTORE_SLOW_OP_ALERT`, the pools on failure domain `osd` with `STORAGE_POOL_SIZE` replicas), and the pool `.mgr`. See [The storage cluster](#the-storage-cluster) | `rook-operator`, `block-devices` | 3 |
-| `key-push` | SecretStore against the management OpenBao and the two PushSecrets | `ceph-cluster`, `openbao-remote-auth` on management | 3 |
+| `key-push` | Upstream's `keys-push.yaml`: the SecretStore `openbao-ceph-store` at `openbao.<a-b-c-d>.nip.io:8200` on `kubernetes/storage` and the PushSecrets of `cinder` and `cinder-backup`. Upstream's Certificate gives way to the Secret `ceph-keys-push-client-tls`, substituted from `flux-system/openbao-client-storage`, and `ceph-keys-push` holds `system:auth-delegator` | `ceph-cluster`, `controllers`, `openbao-remote-auth` on management | 3 |
 
 ### On sandbox-compute
 
@@ -1260,8 +1399,8 @@ infrastructure/      Stages every cluster may use: crds, controllers,
                      loadbalancer, pki, gateway, openbao, objectstore, ...
 platform/            The c5c3-operator and the sizing profile
 controlplane/        OVNCentral, ControlPlane base and one component per service
-storage/             rook-crds, rook-operator, ceph-cluster, block-devices,
-                     key-push
+storage/             block-devices, rook-crds, rook-operator, ceph-cluster,
+                     controllers, key-push
 compute/             Modules of sandbox-compute released from the hub: access,
                      node-prep, libvirt, hypervisor-operator, ...
 orders/              Owners' namespaces and example orders
@@ -1293,7 +1432,7 @@ make vendor                 # check out the paths of upstream at the pin into ve
 make validate               # render every root and stage against vendor/cobaltcore, check schemas and patches
 make test                   # the unit tests of the command layer
 make test-validate          # the tests of make validate on a fixture tree, with flux and kubeconform
-make test-host              # the lifecycle, the profiles gateway, platform, identity and controlplane, controlplane on the TLS bus, the compute cluster attached to the control plane, the hypervisor node, the compute pool and the storage cluster against a real Docker, each creating and removing a sandbox
+make test-host              # the lifecycle, the profiles gateway, platform, identity and controlplane, controlplane on the TLS bus, the compute cluster attached to the control plane, the hypervisor node, the compute pool, the storage cluster and the key hand-off against a real Docker, each creating and removing a sandbox
 make down                   # delete clusters, registry, network, loop devices
 ```
 
