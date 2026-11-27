@@ -1,0 +1,108 @@
+# The scratch objects of tests/host/storage-keys.bats on sandbox-compute,
+# which stand in for the module ceph-libvirt-secret of #18 (ADR-0041): the
+# ServiceAccount ceph-keys-read in openstack with system:auth-delegator,
+# the client certificate of the compute cluster, a SecretStore that logs in
+# on kubernetes/hypervisor as the role read-ceph-client-cinder, and two
+# ExternalSecrets, one for the cinder key the role may read and one for the
+# cinder-backup key it may not. The test fills the three keys of the Secret
+# from flux-system/openbao-client-compute of the hub, over stdin, and
+# replaces @SERVER@ with the published name of OpenBao.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: openstack
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ceph-keys-read
+  namespace: openstack
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: sandbox-verify-ceph-keys-read
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:auth-delegator
+subjects:
+  - kind: ServiceAccount
+    name: ceph-keys-read
+    namespace: openstack
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: sandbox-verify-openbao-client
+  namespace: openstack
+type: kubernetes.io/tls
+data:
+  tls.crt: ""
+  tls.key: ""
+  ca.crt: ""
+---
+apiVersion: external-secrets.io/v1
+kind: SecretStore
+metadata:
+  name: sandbox-verify-openbao
+  namespace: openstack
+spec:
+  provider:
+    vault:
+      server: "@SERVER@"
+      path: kv-v2
+      version: v2
+      tls:
+        certSecretRef:
+          name: sandbox-verify-openbao-client
+        keySecretRef:
+          name: sandbox-verify-openbao-client
+      auth:
+        kubernetes:
+          mountPath: kubernetes/hypervisor
+          role: read-ceph-client-cinder
+          serviceAccountRef:
+            name: ceph-keys-read
+      caProvider:
+        type: Secret
+        name: sandbox-verify-openbao-client
+        key: ca.crt
+---
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: sandbox-verify-cinder
+  namespace: openstack
+spec:
+  refreshInterval: 1m
+  secretStoreRef:
+    name: sandbox-verify-openbao
+    kind: SecretStore
+  target:
+    name: sandbox-verify-cinder
+    creationPolicy: Owner
+  data:
+    - secretKey: userKey
+      remoteRef:
+        key: ceph/client-cinder
+        property: userKey
+---
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: sandbox-verify-cinder-backup
+  namespace: openstack
+spec:
+  refreshInterval: 1m
+  secretStoreRef:
+    name: sandbox-verify-openbao
+    kind: SecretStore
+  target:
+    name: sandbox-verify-cinder-backup
+    creationPolicy: Owner
+  data:
+    - secretKey: userKey
+      remoteRef:
+        key: ceph/client-cinder-backup
+        property: userKey
