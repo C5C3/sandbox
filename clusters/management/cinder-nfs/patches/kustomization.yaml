@@ -1,8 +1,15 @@
 # The module cinder-nfs gives Cinder the volume backend nfs1 on the export
-# its stage runs: it appends the Component components/cinder-nfs and the
-# dependency on its own stage to the stage of the module controlplane, so
-# the ControlPlane names the backend only once the export serves. A profile
-# without controlplane has no such stage, and the patch changes nothing.
+# its stage runs. It appends to the stage of the module controlplane a Flux
+# patch that appends nfs1 to the backends of the ControlPlane, and the
+# dependency on its own stage, so the ControlPlane names the backend only
+# once the export serves. The entry is that of the block-storage fragment of
+# Step 4 of upstream's Quick Start (ControlPlane) at the pin, as
+# vendor/cobaltcore/deploy/overlays/metal-stack/controlplane-nfs/kustomization.yaml
+# adds it, without the backup target nfsbk. A Flux patch runs after every
+# Component of the stage, so it finds the empty list of components/cinder
+# whatever the order of the profile, and each backend module appends its own
+# entry beside the others. A profile without controlplane has no such stage,
+# and the patch changes nothing.
 apiVersion: kustomize.config.k8s.io/v1alpha1
 kind: Component
 patches:
@@ -12,8 +19,23 @@ patches:
       name: management-controlplane
     patch: |
       - op: add
-        path: /spec/components/-
-        value: components/cinder-nfs
+        path: /spec/patches/-
+        value:
+          target:
+            group: c5c3.io
+            version: v1alpha1
+            kind: ControlPlane
+            name: controlplane
+            namespace: openstack
+          patch: |
+            - op: add
+              path: /spec/services/cinder/backends/-
+              value:
+                name: nfs1
+                type: NFS
+                nfs:
+                  server: nfs-server.openstack.svc.cluster.local
+                  path: /volumes
       - op: add
         path: /spec/dependsOn/-
         value:

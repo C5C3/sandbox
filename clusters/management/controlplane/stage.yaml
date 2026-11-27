@@ -15,15 +15,17 @@ spec:
   # One Component per service. The patches Components of other modules
   # append theirs: components/glance, placement, barbican, neutron, cinder,
   # nova and horizon from the service modules of the same names, glance
-  # with the dependency on objectstore, components/cinder-nfs and
-  # messaging-tls with the dependency on the stage of their module,
-  # components/orders, the namespace assignments, without one, and
-  # components/remote-compute, the remote compute contract of Nova.
+  # with the dependency on objectstore, components/messaging-tls with the
+  # dependency on the stage of its module, components/orders, the namespace
+  # assignments, without one, and components/remote-compute, the remote
+  # compute contract of Nova.
   components:
     - components/keystone
-  # The patches Components of other modules append to this list: the module
-  # remote-compute publishes the databases of the OVNCentral
-  # controlplane-ovn here, after every Component.
+  # The patches Components of other modules append to this list, and Flux
+  # applies it after every Component: the backend module cinder-nfs appends
+  # its volume backend to the backends of components/cinder, with the
+  # dependency on the stage that serves it, and the module remote-compute
+  # publishes the databases of the OVNCentral controlplane-ovn.
   patches: []
   prune: true
   wait: true
