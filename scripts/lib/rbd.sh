@@ -1,6 +1,6 @@
 # shellcheck shell=bash
 # The RBD checks of make verify. Source scripts/lib/hub.sh first; the
-# functions use report, poll, os_error, os_quiet, cinder_error,
+# functions use report, poll, pool_wait, os_error, os_quiet, cinder_error,
 # volume_create, errfile, tmp and controlplane of scripts/verify.sh, which
 # sources this file, and
 # compute_skip of scripts/lib/compute.sh, which it sources before.
@@ -117,26 +117,22 @@ rbd_export_digest() {
 	rbd_out=${rbd_out%% *}
 }
 
-# rbd_backend: the check rbd-backend. It reads the pools of the backends,
-# and again after each of up to 150 pauses of 2 s, until one belongs to
+# rbd_backend: the check rbd-backend. It waits up to 300 s for a pool of
 # ceph1.
 rbd_backend() {
-	local out pool state i
-	for ((i = 0; ; i++)); do
-		if ! out=$(openstack volume backend pool list -f value 2>"$errfile"); then
-			report FAIL rbd-backend "$(os_error "$out")"
-			return
-		fi
-		pool=$(grep -m 1 -F '@ceph1#' <<<"$out" || :)
-		if [ -n "$pool" ]; then
-			break
-		fi
-		if [ "$i" -ge 150 ]; then
-			report FAIL rbd-backend "the backend ceph1 reports no pool after 300 s"
-			return
-		fi
-		sleep 2
-	done
+	local out pool state rc=0
+	pool_wait '@ceph1#' || rc=$?
+	case $rc in
+	0) pool=$polled ;;
+	1)
+		report FAIL rbd-backend "the backend ceph1 reports no pool after 300 s"
+		return
+		;;
+	*)
+		report FAIL rbd-backend "$polled"
+		return
+		;;
+	esac
 	if ! out=$(openstack volume service list --service cinder-volume -f json 2>"$errfile"); then
 		report FAIL rbd-backend "$(os_error "$out")"
 		return

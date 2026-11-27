@@ -350,8 +350,11 @@ fake_delete() {
 # sandbox-verify-compute-net with COMPUTE_MTU, the status and the host of
 # sandbox-verify-compute-server with COMPUTE_SERVER_STATUS and
 # COMPUTE_SERVER_HOST, its console log with console.log, and its noVNC URL
-# with the token CONSOLE_TOKEN. For the RBD checks it prints the pools of
-# the backends with POOLS, the cinder-volume services with
+# with the token CONSOLE_TOKEN. It prints the pools of the backends with
+# POOLS, by default the pool of ceph1, from the call POOLS_AFTER on, by
+# default the first, and nothing before; a volume created before it
+# printed a pool ends in error, as on a scheduler without a backend. For
+# the RBD checks it prints the cinder-volume services with
 # volume-services.json, the status and the host of sandbox-verify-rbd-volume
 # with RBD_VOLUME_STATUS and RBD_HOST, the status of the backups
 # sandbox-verify-rbd-backup and sandbox-verify-rbd-rotated with
@@ -411,8 +414,21 @@ IPV4_ADDRESS}"
 			echo "${PAYLOAD:-sandbox-verify-payload}"
 			;;
 		"network show id-sandbox-verify-net -f value -c status") echo "${NETWORK_STATUS:-ACTIVE}" ;;
-		"volume show id-sandbox-verify-volume -f value -c status") echo "${VOLUME_STATUS:-available}" ;;
-		"volume backend pool list -f value") printf '%s\n' ${POOLS-controlplane-cinder@ceph1#ceph1} ;;
+		"volume show id-sandbox-verify-volume -f value -c status")
+			if [ -e "$BATS_TEST_TMPDIR/no-backend.sandbox-verify-volume" ]; then
+				echo error
+			else
+				echo "${VOLUME_STATUS:-available}"
+			fi
+			;;
+		"volume backend pool list -f value")
+			n=$(($(cat -- "$BATS_TEST_TMPDIR/pool-calls" 2>/dev/null || echo 0) + 1))
+			echo "$n" >"$BATS_TEST_TMPDIR/pool-calls"
+			if [ "$n" -ge "${POOLS_AFTER:-1}" ] && [ -n "${POOLS-x}" ]; then
+				printf '%s\n' ${POOLS-controlplane-cinder@ceph1#ceph1}
+				: >"$BATS_TEST_TMPDIR/pools-reported"
+			fi
+			;;
 		"volume service list --service cinder-volume -f json") cat -- "$BATS_TEST_TMPDIR/volume-services.json" ;;
 		"volume show id-sandbox-verify-rbd-volume -f value -c status") echo "${RBD_VOLUME_STATUS:-available}" ;;
 		"volume show id-sandbox-verify-rbd-volume -f value -c os-vol-host-attr:host") echo "${RBD_HOST:-controlplane-cinder@ceph1#ceph1}" ;;
@@ -492,6 +508,10 @@ IPV4_ADDRESS}"
 				'+-------------+-----------------------------+'
 			;;
 		"create --name "*" 1")
+			# The scheduler finds no valid backend before a pool is reported.
+			if [ ! -e "$BATS_TEST_TMPDIR/pools-reported" ]; then
+				: >"$BATS_TEST_TMPDIR/no-backend.$3"
+			fi
 			printf '%s\n' '+--------------------------------+--------------------------------------+' \
 				'| Property                       | Value                                |' \
 				'+--------------------------------+--------------------------------------+' \
@@ -1465,6 +1485,7 @@ Max retries exceeded with url: /v2/images"
 		'network create *|neutron-network' \
 		'subnet create *|neutron-network' \
 		'network show *|neutron-network' \
+		'volume backend pool list *|cinder-volume' \
 		'cinder create *|cinder-volume' \
 		'volume show *|cinder-volume' \
 		'compute service list -f json|nova-services' \
@@ -1533,6 +1554,26 @@ Max retries exceeded with url: /v2/images"
 	verify_fails "FAIL cinder-volume: the volume sandbox-verify-volume is 'creating' after 120 s, expected available" 15
 	[ "$(grep -c '' "$BATS_TEST_TMPDIR/sleep.log")" -eq 60 ]
 	[ "$(logged 'volume show id-sandbox-verify-volume *' | grep -c '')" -eq 61 ]
+}
+
+@test "verify.sh waits for Cinder to list a pool before cinder-volume creates its volume, polling every 2 s" {
+	healthy_cloud
+	export POOLS_AFTER=4
+	run "$BATS_TEST_TMPDIR/scripts/verify.sh"
+	echo "$output"
+	[ "$status" -eq 0 ]
+	[ "${lines[-1]}" = "verify: 16 of 16 checks passed" ]
+	[ "$(grep -cxF 2 "$BATS_TEST_TMPDIR/sleep.log")" -eq 3 ]
+	[ "$(logged 'volume backend pool list -f value' | wc -l)" -eq 4 ]
+	[ "$(logged 'volume backend pool list -f value' | tail -n 1)" -lt "$(logged 'cinder create --name sandbox-verify-volume 1')" ]
+}
+
+@test "verify.sh fails cinder-volume after 300 s when Cinder lists no pool, and creates no volume" {
+	healthy_cloud
+	export POOLS=
+	verify_fails "FAIL cinder-volume: Cinder reports no pool after 300 s" 15
+	[ "$(grep -cxF 2 "$BATS_TEST_TMPDIR/sleep.log")" -eq 150 ]
+	[ -z "$(logged 'cinder create *')" ]
 }
 
 @test "verify.sh passes cinder-volume on a cloud without the image service, where openstack volume create fails" {
@@ -2052,7 +2093,9 @@ Connection refused'
 		[ -z "$(rbd_lines)" ]
 		[ "${lines[-1]}" = "verify: 16 of 16 checks passed" ]
 		[ -z "$(storage_calls)" ]
-		[ -z "$(logged 'volume backend *')" ]
+		# The one read of the pools is that of cinder-volume.
+		[ "$(logged 'volume backend pool list *' | wc -l)" -eq 1 ]
+		[ -z "$(logged 'volume service list *')" ]
 		[ -z "$(logged '*sandbox-verify-rbd*')" ]
 	done
 }
@@ -2139,9 +2182,11 @@ ok rbd-rotation: keyGeneration of rook-ceph/cinder-backup rose from 1 to 2, open
 	volume_services down
 	verify_fails "FAIL rbd-backend: cinder-volume on controlplane-cinder@ceph1 is 'down', expected up" 17 18
 
+	# cinder-volume reads the pools first and fails with the same line.
 	rbd_cloud
 	export STUB_FAILS='volume backend pool list *' STUB_ERROR=$'Internal Server Error (HTTP 500)\nsecond line'
-	verify_fails "FAIL rbd-backend: Internal Server Error (HTTP 500)" 17 18
+	verify_fails "FAIL rbd-backend: Internal Server Error (HTTP 500)" 16 18
+	grep -qxF "FAIL cinder-volume: Internal Server Error (HTTP 500)" <<<"$output"
 	# rbd-volume runs after a failed rbd-backend.
 	[ "$(rbd_lines | tail -n 1 | cut -d : -f 1)" = "ok rbd-volume" ]
 }

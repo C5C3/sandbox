@@ -24,7 +24,8 @@
 #                                 subnet sandbox-verify-subnet on 192.0.2.0/24
 #                                 is ACTIVE
 #   cinder     cinder-catalog     the same for the type block-storage
-#              cinder-volume      the 1 GiB volume sandbox-verify-volume is
+#              cinder-volume      once Cinder lists a pool, within 300 s, the
+#                                 1 GiB volume sandbox-verify-volume is
 #                                 available within 120 s
 #   nova       nova-catalog       the same for the type compute
 #              nova-services      a nova-scheduler and a nova-conductor are up
@@ -214,6 +215,29 @@ poll() {
 	done
 }
 
+# pool_wait <text>: reads openstack volume backend pool list, and again after
+# each of up to 150 pauses of 2 s, until a pool holds the text; an empty text
+# takes any pool. It keeps that pool in polled and returns 0, returns 1 when
+# no pool holds the text after the last pause, and 2 at once when a call
+# fails, with the first line of the error in polled.
+pool_wait() {
+	local out i
+	for ((i = 0; ; i++)); do
+		if ! out=$(openstack volume backend pool list -f value 2>"$errfile"); then
+			polled=$(os_error "$out")
+			return 2
+		fi
+		polled=$(_first_line "$(grep -F -- "$1" <<<"$out" || :)")
+		if [ -n "$polled" ]; then
+			return 0
+		fi
+		if [ "$i" -ge 150 ]; then
+			return 1
+		fi
+		sleep 2
+	done
+}
+
 # catalog_read: reads openstack catalog list -f json into catalog at its
 # first call, and keeps it for the later ones. It returns 1, with the first
 # line of the error in catalog_error, when the read failed.
@@ -395,12 +419,27 @@ check_neutron() {
 
 # check_cinder: the checks of the service cinder. The volume is shown and
 # deleted by its id once it exists, because Cinder deletes a volume in the
-# background and a leftover of the same name can still be there.
+# background and a leftover of the same name can still be there. A volume
+# pod is Ready once it reaches the message bus, which can be before its
+# service reported a pool to the scheduler, and a volume created then finds
+# no valid backend and ends in error; so the check waits for a pool first.
 check_cinder() {
 	local out volume=sandbox-verify-volume rc=0
 	check_catalog cinder block-storage
 
 	os_quiet volume delete sandbox-verify-volume
+	pool_wait '' || rc=$?
+	case $rc in
+	0) ;;
+	1)
+		report FAIL cinder-volume "Cinder reports no pool after 300 s"
+		return
+		;;
+	*)
+		report FAIL cinder-volume "$polled"
+		return
+		;;
+	esac
 	if ! out=$(volume_create sandbox-verify-volume); then
 		report FAIL cinder-volume "$out"
 	else
