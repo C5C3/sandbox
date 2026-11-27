@@ -38,7 +38,7 @@ switches:
   osd-size: 10Gi
 upstream:
   # Read by config_load in scripts/lib/common.sh: the commit of C5C3/cobaltcore that make vendor checks out. scripts/pin.sh moves it.
-  cobaltcore: 15a0323e243c7f53b91200f193a58b5b41d41f6a
+  cobaltcore: c19daa38e1473239bdce793e4b508a863b367fc7
 flux:
   # Read by ensure_flux in scripts/lib/hub.sh: the version of the chart flux-operator.
   operator: 0.63.1
