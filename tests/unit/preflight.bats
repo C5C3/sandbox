@@ -258,7 +258,7 @@ preflight_copy() {
 
 @test "scripts/preflight.sh fails a configuration without a switch of a service module" {
 	preflight_copy
-	for key in glance barbican horizon fake-compute; do
+	for key in glance barbican horizon fake-compute cinder-backup; do
 		config_with "del(.switches[\"$key\"])"
 		run "$BATS_TEST_TMPDIR/scripts/preflight.sh" management
 		[ "$status" -eq 1 ]

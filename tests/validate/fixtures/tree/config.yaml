@@ -18,6 +18,7 @@ switches:
   barbican: false
   horizon: false
   fake-compute: false
+  cinder-backup: false
   osd-count: 1
   osd-size: 10Gi
 upstream:

@@ -158,14 +158,16 @@ modules=$(cluster_modules management) || exit 1
 if [ "$SANDBOX_RESOLVER_FALLBACK" = true ] && ! grep -qxF loadbalancer <<<"$modules"; then
 	die "switches.resolver-fallback needs the module loadbalancer on sandbox-management, the profile $SANDBOX_PROFILE does not list it"
 fi
-# The switches glance, barbican, horizon and fake-compute add the module of
-# their name. The first three patch the stage of controlplane, glance makes
-# it depend on the stage of objectstore, and the stage of fake-compute
-# depends on that of controlplane and runs a compute for the Nova of nova.
-# profile_load did not see the added modules, so the run stops here at the
-# first module that one of them needs and the profile does not list.
+# The switches glance, barbican, horizon, fake-compute and cinder-backup add
+# the module of their name. The first three patch the stage of controlplane,
+# glance makes it depend on the stage of objectstore, the stage of
+# fake-compute depends on that of controlplane and runs a compute for the
+# Nova of nova, and cinder-backup sets the backup target of the cinder block
+# beside the backend ceph1 of cinder-rbd. profile_load did not see the added
+# modules, so the run stops here at the first module that one of them needs
+# and the profile does not list.
 for need in glance:controlplane glance:objectstore barbican:controlplane horizon:controlplane \
-	fake-compute:controlplane fake-compute:nova; do
+	fake-compute:controlplane fake-compute:nova cinder-backup:cinder cinder-backup:cinder-rbd; do
 	switch=${need%%:*} module=${need#*:}
 	variable=SANDBOX_SWITCH_${switch^^}
 	variable=${variable//-/_}

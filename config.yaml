@@ -30,6 +30,8 @@ switches:
   horizon: false
   # Read by cluster_modules in scripts/lib/profile.sh: true adds the module fake-compute to sandbox-management.
   fake-compute: false
+  # Read by cluster_modules in scripts/lib/profile.sh: true adds the module cinder-backup to sandbox-management.
+  cinder-backup: false
   # Read by ensure_block_devices in scripts/lib/storage.sh and by the module ceph-cluster: the OSDs of sandbox-storage.
   osd-count: 1
   # Read by ensure_block_devices in scripts/lib/storage.sh and by the module ceph-cluster: the size of the sparse file of each OSD, a whole number of Gi.

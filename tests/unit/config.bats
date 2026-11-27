@@ -20,6 +20,7 @@ setup() {
 	[ "$SANDBOX_SWITCH_BARBICAN" = false ]
 	[ "$SANDBOX_SWITCH_HORIZON" = false ]
 	[ "$SANDBOX_SWITCH_FAKE_COMPUTE" = false ]
+	[ "$SANDBOX_SWITCH_CINDER_BACKUP" = false ]
 	[ "$SANDBOX_OSD_COUNT" = 1 ]
 	[ "$SANDBOX_OSD_SIZE" = 10Gi ]
 	[ "$SANDBOX_FLUX_OPERATOR_VERSION" = 0.63.1 ]
@@ -38,7 +39,8 @@ setup() {
 @test "config_load fails for each key that is absent" {
 	for key in network.subnet addresses.gateway registry.image switches.hypervisor-nodes flux.operator upstream.cobaltcore \
 		addresses.pool addresses.dns addresses.rabbitmq addresses.openbao switches.resolver-fallback \
-		switches.glance switches.barbican switches.horizon switches.fake-compute switches.osd-count switches.osd-size; do
+		switches.glance switches.barbican switches.horizon switches.fake-compute switches.cinder-backup switches.osd-count \
+		switches.osd-size; do
 		config_with "del(.${key%%.*}[\"${key#*.}\"])"
 		run config_load
 		[ "$status" -eq 1 ]
@@ -82,7 +84,7 @@ setup() {
 
 @test "config_load treats a null pool, DNS address, RabbitMQ address, OpenBao address or switch as not set" {
 	for key in addresses.pool addresses.dns addresses.rabbitmq addresses.openbao switches.resolver-fallback \
-		switches.glance switches.barbican switches.horizon switches.fake-compute; do
+		switches.glance switches.barbican switches.horizon switches.fake-compute switches.cinder-backup; do
 		config_with ".${key%%.*}[\"${key#*.}\"] = null"
 		run config_load
 		[ "$status" -eq 1 ]
@@ -106,7 +108,7 @@ setup() {
 }
 
 @test "config_load treats an empty switch of a service module as not set" {
-	for key in glance barbican horizon fake-compute; do
+	for key in glance barbican horizon fake-compute cinder-backup; do
 		config_with ".switches[\"$key\"] = \"\""
 		run config_load
 		[ "$status" -eq 1 ]
@@ -116,7 +118,7 @@ setup() {
 
 @test "config_load reads false and true as values of the switches of the service modules" {
 	local key variable value
-	for key in glance barbican horizon fake-compute; do
+	for key in glance barbican horizon fake-compute cinder-backup; do
 		variable=SANDBOX_SWITCH_${key^^}
 		variable=${variable//-/_}
 		for value in true false; do
@@ -128,7 +130,7 @@ setup() {
 }
 
 @test "config_load rejects a switch of a service module that is neither true nor false" {
-	for key in glance barbican horizon fake-compute; do
+	for key in glance barbican horizon fake-compute cinder-backup; do
 		config_with ".switches[\"$key\"] = \"yes\""
 		run config_load
 		[ "$status" -eq 1 ]
