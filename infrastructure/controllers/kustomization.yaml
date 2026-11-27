@@ -33,6 +33,10 @@ patches:
   # As vendor/cobaltcore/deploy/bases/devstack/base/kustomization.yaml does on
   # kind: without the webhook, as upstream found, the container of the
   # memcached-operator is killed after about 2.5 minutes.
+  # The chart pulls its image Always. The manager exits when it loses its
+  # leader lease, and the kubelet pulls one image at a time, so the restart
+  # would wait for every pull ahead of it. IfNotPresent restarts it at once,
+  # as the other operators restart.
   - target:
       group: helm.toolkit.fluxcd.io
       version: v2
@@ -47,5 +51,7 @@ patches:
         namespace: memcached-system
       spec:
         values:
+          image:
+            pullPolicy: IfNotPresent
           webhook:
             enabled: false
