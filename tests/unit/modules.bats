@@ -458,6 +458,30 @@ LAB=vendor/cobaltcore/deploy/overlays/metal-stack/controlplane/controlplane-lab.
 	[ "$(jq -c '.rbd |= del(.monitors, .networks)' <<<"$entry")" = "$(jq -c '.rbd |= del(.monitors, .networks)' <<<"$upstream")" ]
 }
 
+@test "cinder-backup appends components/cinder-backup to the stage of controlplane and nothing else" {
+	local file=$SANDBOX_ROOT/clusters/management/cinder-backup/patches/kustomization.yaml
+	[ ! -e "$SANDBOX_ROOT/clusters/management/cinder-backup/stage.yaml" ]
+	[ "$(yq -o=json -I=0 '[.patches[].target]' "$file")" = \
+		'[{"group":"kustomize.toolkit.fluxcd.io","kind":"Kustomization","name":"management-controlplane"}]' ]
+	[ "$(yq '.patches[0].patch' "$file" | yq -o=json -I=0 '.')" = \
+		'[{"op":"add","path":"/spec/components/-","value":"components/cinder-backup"}]' ]
+}
+
+@test "the component cinder-backup sets the backup target to upstream's cephbk with the monitor and the network of cinder-rbd, and nothing else" {
+	local file=$SANDBOX_ROOT/controlplane/components/cinder-backup/kustomization.yaml expected
+	[ "$(yq -o=json -I=0 '[.apiVersion, .kind, (.patches | length), has("resources")]' "$file")" = \
+		'["kustomize.config.k8s.io/v1alpha1","Component",1,false]' ]
+	[ "$(yq -o=json -I=0 '.patches[0].target' "$file")" = \
+		'{"group":"c5c3.io","version":"v1alpha1","kind":"ControlPlane","name":"controlplane","namespace":"openstack"}' ]
+	[ "$(component_patch cinder-backup 0 | jq -c '[.apiVersion, .kind, .metadata.name, .metadata.namespace, (.spec | keys)]')" = \
+		'["c5c3.io/v1alpha1","ControlPlane","controlplane","openstack",["services"]]' ]
+	expected=$(yq -o=json -I=0 '{"backupBackend": .spec.services.cinder.backupBackend}' "$SANDBOX_ROOT/$LAB" |
+		jq -c --argjson rbd "$(backend_ops cinder-rbd | jq -c '.[0].value.patch[0].value.rbd')" \
+			'.backupBackend.rbd.monitors = $rbd.monitors | .backupBackend.rbd.networks = $rbd.networks')
+	[ "$(jq -r '.backupBackend.name' <<<"$expected")" = cephbk ]
+	[ "$(component_patch cinder-backup 0 | jq -c '.spec.services.cinder')" = "$expected" ]
+}
+
 @test "the stage of cinder-nfs runs the NFS export after controllers, and the stage of fake-compute the fake compute after controlplane" {
 	local dir=$SANDBOX_ROOT/clusters/management
 	[ "$(yq -o=json -I=0 '[.spec.dependsOn, .spec.path, .spec.timeout]' "$dir/cinder-nfs/stage.yaml")" = \
@@ -500,17 +524,17 @@ LAB=vendor/cobaltcore/deploy/overlays/metal-stack/controlplane/controlplane-lab.
 
 @test "the three bus consumers declare messaging: {} in the patch of their block, and the other components no messaging" {
 	local component expected
-	for component in glance placement barbican neutron cinder nova horizon; do
+	for component in glance placement barbican neutron cinder nova horizon cinder-backup; do
 		case $component in
 		neutron | cinder | nova) expected="[{\"messaging\":{}},[\"$component\"]]" ;;
-		*) expected="[null,[\"$component\"]]" ;;
+		*) expected="[null,[\"${component%-backup}\"]]" ;;
 		esac
 		echo "$component"
 		[ "$(component_patch "$component" 0 | jq -c '[.spec.infrastructure, (.spec.services | keys)]')" = "$expected" ]
 	done
 }
 
-@test "the six database services add their TENANT_SERVICE_ variable to the container tenant of the Job, and horizon none" {
+@test "the six database services add their TENANT_SERVICE_ variable to the container tenant of the Job, and horizon and cinder-backup none" {
 	local component file
 	[ "$(yq 'select(.kind == "Job") | .spec.template.spec.containers[0].name' "$SANDBOX_ROOT/controlplane/tenant.yaml")" = tenant ]
 	for component in glance placement barbican neutron cinder nova; do
@@ -522,7 +546,7 @@ LAB=vendor/cobaltcore/deploy/overlays/metal-stack/controlplane/controlplane-lab.
 		[ "$(component_patch "$component" 1 | jq -c '[.apiVersion, .kind, .metadata.name, .metadata.namespace, .spec.template.spec.containers]')" = \
 			"[\"batch/v1\",\"Job\",\"controlplane-database-tenant\",\"openstack\",[{\"name\":\"tenant\",\"env\":[{\"name\":\"TENANT_SERVICE_${component^^}\",\"value\":\"$component\"}]}]]" ]
 	done
-	for component in horizon; do
+	for component in horizon cinder-backup; do
 		echo "$component"
 		[ "$(yq '.patches | length' "$SANDBOX_ROOT/controlplane/components/$component/kustomization.yaml")" = 1 ]
 	done
@@ -535,7 +559,7 @@ LAB=vendor/cobaltcore/deploy/overlays/metal-stack/controlplane/controlplane-lab.
 		'{"apiVersion":"ovn.openstack.c5c3.io/v1alpha1","kind":"OVNCentral","metadata":{"name":"controlplane-ovn","namespace":"openstack"},"spec":{"tls":{"issuerRef":{"name":"openstack-ovn-ca-issuer"}},"northbound":{"replicas":1},"southbound":{"replicas":1},"northd":{"deployment":{"replicas":1}}}}' ]
 	[ "$(yq -o=json -I=0 '.resources' "$dir/horizon/kustomization.yaml")" = \
 		'["../../../vendor/cobaltcore/deploy/bases/devstack/infrastructure/horizon-secret-key-externalsecret.yaml"]' ]
-	for component in glance placement barbican cinder nova; do
+	for component in glance placement barbican cinder nova cinder-backup; do
 		[ "$(yq 'has("resources")' "$dir/$component/kustomization.yaml")" = false ]
 	done
 }

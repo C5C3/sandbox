@@ -2,8 +2,9 @@
 # controlplane. One Component per service adds its block to spec.services
 # (components/keystone, glance, placement, barbican, neutron, cinder, nova
 # and horizon), the backend modules cinder-nfs and cinder-rbd append the
-# volume backends of cinder with Flux patches of the stage, the module
-# messaging-tls adds the brownfield messaging block
+# volume backends of cinder with Flux patches of the stage,
+# components/cinder-backup adds its backup target, the module messaging-tls
+# adds the brownfield messaging block
 # (components/messaging-tls), the module orders the namespace assignments
 # of its owners (components/orders), and the module remote-compute the
 # remote compute contract of Nova (components/remote-compute). Neutron,
