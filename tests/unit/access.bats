@@ -44,7 +44,10 @@ secret() {
 # and hypervisor.<node>. The calls of the order checks go to
 # fake_hub, under the names orders.<namespace>, secret.<namespace>.<name>,
 # apply, appcred, patch, delete.<name> and children.<name>; a patch appends
-# its merge patch to patch.log. The hub has the CRD, a ControlPlane with the
+# its merge patch to patch.log. The calls of the RBD checks go to
+# fake_storage, under the names rbd-info, rbd-bench, rbd-ls-backups,
+# export-digest, key-digest, cephclient, patch-cephclient, secret,
+# deployment and rollout. The hub has the CRD, a ControlPlane with the
 # Keystone hostname of AUTH_URL, the admin password PASSWORD and the CA
 # CA_PEM. kubectl fails like an unreachable server for the call whose file
 # name KUBECTL_FAILS names.
@@ -93,6 +96,16 @@ access_host() {
 		*" patch keystoneapplicationcredentials.c5c3.io sandbox-verify-appcred --type merge -p "*) file=patch ;;
 		*" delete "*" --ignore-not-found --timeout=180s") file=delete.$7 ;;
 		*" get secrets,"*" -A -l "*" -o json") file=children.${7##*-name=} ;;
+		*" -n rook-ceph exec deploy/rook-ceph-tools -- rbd info --format json volumes/"*) file=rbd-info ;;
+		*" -n rook-ceph exec deploy/rook-ceph-tools -- rbd bench --io-type write --io-size 4K --io-total 4M volumes/"*) file=rbd-bench ;;
+		*" -n rook-ceph exec deploy/rook-ceph-tools -- rbd ls backups") file=rbd-ls-backups ;;
+		*" -n rook-ceph exec deploy/rook-ceph-tools -- sh -c "*" export-digest volumes/"*) file=export-digest ;;
+		*" -n rook-ceph exec deploy/rook-ceph-tools -- sh -c "*" key-digest") file=key-digest ;;
+		*" -n rook-ceph get cephclient cinder-backup -o json") file=cephclient ;;
+		*" -n rook-ceph patch cephclient cinder-backup --type merge -p "*) file=patch-cephclient ;;
+		*" -n openstack get secret ceph-client-cinder-backup -o json") file=secret ;;
+		*" -n openstack get deployment controlplane-cinder-backup -o json") file=deployment ;;
+		*" -n openstack rollout status deployment/controlplane-cinder-backup --timeout=300s") file=rollout ;;
 		*)
 			echo "unexpected kubectl $*" >&2
 			return 1
@@ -107,12 +120,16 @@ access_host() {
 			fake_hub "$file" "$@"
 			return
 			;;
+		rbd-* | export-digest | key-digest | cephclient | patch-cephclient | secret | deployment | rollout)
+			fake_storage "$file" "$@"
+			return
+			;;
 		esac
 		if [ -f "$BATS_TEST_TMPDIR/hub/$file" ]; then
 			cat -- "$BATS_TEST_TMPDIR/hub/$file"
 		fi
 	}
-	export -f kind docker kubectl fake_hub fake_apply fake_rotation fake_mint fake_retire fake_delete
+	export -f kind docker kubectl fake_hub fake_apply fake_rotation fake_mint fake_retire fake_delete fake_storage
 }
 
 # The fake hub of the orders lives in hub/orders/ of the test's directory:
@@ -333,14 +350,21 @@ fake_delete() {
 # sandbox-verify-compute-net with COMPUTE_MTU, the status and the host of
 # sandbox-verify-compute-server with COMPUTE_SERVER_STATUS and
 # COMPUTE_SERVER_HOST, its console log with console.log, and its noVNC URL
-# with the token CONSOLE_TOKEN. The names do not start with OS_, which
-# verify.sh unsets.
+# with the token CONSOLE_TOKEN. For the RBD checks it prints the pools of
+# the backends with POOLS, the cinder-volume services with
+# volume-services.json, the status and the host of sandbox-verify-rbd-volume
+# with RBD_VOLUME_STATUS and RBD_HOST, the status of the backups
+# sandbox-verify-rbd-backup and sandbox-verify-rbd-rotated with
+# BACKUP_STATUS and ROTATED_STATUS, and the id id-<name> for a backup
+# create. The names do not start with OS_, which verify.sh unsets.
 #
 # A volume create fails as openstack 6.6.0 does when catalog.json holds no
-# image service. It also replaces cinder with a function that appends its
+# image service, and a volume backup restore fails as it does on its own
+# answer. It also replaces cinder with a function that appends its
 # arguments after "cinder " to openstack.log and answers cinder create as
 # python-cinderclient does, with a table whose id is id-<name>, without the
-# row id when CINDER_NO_ID is set. A call whose line matches STUB_FAILS
+# row id when CINDER_NO_ID is set, and the restore of
+# sandbox-verify-rbd-backup onto sandbox-verify-rbd-restored. A call whose line matches STUB_FAILS
 # prints a warning of cinderclient and ERROR: with STUB_ERROR on stderr and
 # fails.
 openstack_logs() {
@@ -388,6 +412,18 @@ IPV4_ADDRESS}"
 			;;
 		"network show id-sandbox-verify-net -f value -c status") echo "${NETWORK_STATUS:-ACTIVE}" ;;
 		"volume show id-sandbox-verify-volume -f value -c status") echo "${VOLUME_STATUS:-available}" ;;
+		"volume backend pool list -f value") printf '%s\n' ${POOLS-controlplane-cinder@ceph1#ceph1} ;;
+		"volume service list --service cinder-volume -f json") cat -- "$BATS_TEST_TMPDIR/volume-services.json" ;;
+		"volume show id-sandbox-verify-rbd-volume -f value -c status") echo "${RBD_VOLUME_STATUS:-available}" ;;
+		"volume show id-sandbox-verify-rbd-volume -f value -c os-vol-host-attr:host") echo "${RBD_HOST:-controlplane-cinder@ceph1#ceph1}" ;;
+		"volume show id-sandbox-verify-rbd-restored -f value -c status") echo available ;;
+		"volume backup create --name "*" -f value -c id id-sandbox-verify-rbd-volume") printf 'id-%s\n' "$5" ;;
+		"volume backup show id-sandbox-verify-rbd-backup -f value -c status") echo "${BACKUP_STATUS:-available}" ;;
+		"volume backup show id-sandbox-verify-rbd-rotated -f value -c status") echo "${ROTATED_STATUS:-available}" ;;
+		"volume backup restore "*)
+			echo 'too many values to unpack (expected 2)' >&2
+			return 1
+			;;
 		"compute service list -f json") cat -- "$BATS_TEST_TMPDIR/services.json" ;;
 		"compute service list --service nova-compute --host sandbox-management-control-plane -f value -c State")
 			echo "${COMPUTE_STATE:-up}"
@@ -449,6 +485,12 @@ IPV4_ADDRESS}"
 			return 1
 		fi
 		case $* in
+		"backup-restore --volume id-sandbox-verify-rbd-restored id-sandbox-verify-rbd-backup")
+			printf '%s\n' '+-------------+-----------------------------+' '| Property    | Value                       |' \
+				'+-------------+-----------------------------+' '| backup_id   | id-sandbox-verify-rbd-backup |' \
+				'| volume_id   | id-sandbox-verify-rbd-restored |' '| volume_name | sandbox-verify-rbd-restored |' \
+				'+-------------+-----------------------------+'
+			;;
 		"create --name "*" 1")
 			printf '%s\n' '+--------------------------------+--------------------------------------+' \
 				'| Property                       | Value                                |' \
@@ -748,6 +790,158 @@ hypervisor_reason() {
 	jq -n --arg reason "$1" '{apiVersion: "kvm.cloud.sap/v1", kind: "Hypervisor", metadata: {name: "sandbox-compute-worker"},
 		status: {conditions: [{type: "Onboarding", status: "False", reason: $reason, message: "onboarding"}]}}' \
 		>"$BATS_TEST_TMPDIR/hub/hypervisor.sandbox-compute-worker"
+}
+
+# The keys of client.cinder-backup in the fake storage cluster before and
+# after the rotation, and the key a Secret holds that Ceph does not, raw and
+# as Rook writes them.
+OLD_KEY='AQDvB2lnOldKeyOfCinderBackup/sandbox+verify=='
+NEW_KEY='AQDvB2lnNewKeyOfCinderBackup/sandbox+verify=='
+STRAY_KEY='AQDvB2lnStrayKeyNoCephHolds/sandbox+verify=='
+# The sha256 the fake toolbox prints for the first 4 MiB of an image.
+IMAGE_DIGEST=5d9c2a6b0e8f4c3a7b1d9e2f6a4c8b0d3e7f1a5c9b2d6e0f4a8c3b7d1e5f9a2c
+
+# fake_storage <call> <argument of kubectl>...: answers the call of the RBD
+# checks that access_host named, from storage/ in the test's directory.
+# keyGeneration of the CephClient cinder-backup starts at 1, and at none
+# with NO_KEY_GENERATION set. A merge patch of it appends the patch to
+# storage/patch.log and rotates the key: Ceph then holds NEW_KEY, the
+# Secret openstack/ceph-client-cinder-backup holds NEW_KEY, OLD_KEY with
+# SECRET_KEEPS set and STRAY_KEY with SECRET_STRAY set, and the generation
+# of the Deployment controlplane-cinder-backup rises from 3 to 4, unless
+# NO_ROLL is set. The image is RBD_SIZE bytes, by default 1 GiB, the pool
+# backups lists RBD_BACKUPS, by default the base image of the backups of
+# sandbox-verify-rbd-volume, and the first 4 MiB of each image have the
+# sha256 IMAGE_DIGEST, those of sandbox-verify-rbd-restored RESTORED_DIGEST
+# when it is set.
+fake_storage() {
+	local call=$1 dir=$BATS_TEST_TMPDIR/storage key generation=3
+	shift
+	mkdir -p -- "$dir"
+	case $call in
+	rbd-info)
+		jq -n --arg image "${!#}" --argjson size "${RBD_SIZE:-1073741824}" \
+			'{name: ($image | sub("^volumes/"; "")), size: $size, objects: ($size / 4194304), order: 22, format: 2}'
+		;;
+	rbd-bench) printf '%s\n' 'bench  type write io_size 4096 io_threads 16 bytes 4194304 pattern sequential' 'elapsed: 0   ops: 1024' ;;
+	rbd-ls-backups) printf '%s\n' "${RBD_BACKUPS-volume-id-sandbox-verify-rbd-volume.backup.base}" ;;
+	export-digest)
+		if [ "${!#}" = volumes/volume-id-sandbox-verify-rbd-restored ]; then
+			printf '%s  -\n' "${RESTORED_DIGEST:-$IMAGE_DIGEST}"
+		else
+			printf '%s  -\n' "$IMAGE_DIGEST"
+		fi
+		;;
+	key-digest)
+		key=$OLD_KEY
+		if [ -e "$dir/rotated" ]; then
+			key=$NEW_KEY
+		fi
+		printf '%s' "$key" | sha256sum
+		;;
+	cephclient)
+		if [ -n "${NO_KEY_GENERATION:-}" ]; then
+			echo '{"apiVersion": "ceph.rook.io/v1", "kind": "CephClient", "metadata": {"name": "cinder-backup", "namespace": "rook-ceph"}, "spec": {"security": {"cephx": {"keyType": "aes"}}}}'
+		else
+			jq -n --argjson generation "$(cat -- "$dir/generation" 2>/dev/null || echo 1)" '{apiVersion: "ceph.rook.io/v1", kind: "CephClient",
+				metadata: {name: "cinder-backup", namespace: "rook-ceph"},
+				spec: {security: {cephx: {keyRotationPolicy: "KeyGeneration", keyGeneration: $generation, keyType: "aes"}}}}'
+		fi
+		;;
+	patch-cephclient)
+		printf '%s\n' "${!#}" >>"$dir/patch.log"
+		jq -r '.spec.security.cephx.keyGeneration' <<<"${!#}" >"$dir/generation"
+		: >"$dir/rotated"
+		echo 'cephclient.ceph.rook.io/cinder-backup patched'
+		;;
+	secret)
+		key=$OLD_KEY
+		if [ -e "$dir/rotated" ] && [ -z "${SECRET_KEEPS:-}" ]; then
+			key=$NEW_KEY
+			if [ -n "${SECRET_STRAY:-}" ]; then
+				key=$STRAY_KEY
+			fi
+		fi
+		jq -n --arg key "$(printf '%s' "$key" | base64 -w 0)" '{apiVersion: "v1", kind: "Secret",
+			metadata: {name: "ceph-client-cinder-backup", namespace: "openstack"}, data: {userKey: $key}}'
+		;;
+	deployment)
+		if [ -e "$dir/rotated" ] && [ -z "${NO_ROLL:-}" ]; then
+			generation=4
+		fi
+		jq -n --argjson generation "$generation" '{apiVersion: "apps/v1", kind: "Deployment",
+			metadata: {name: "controlplane-cinder-backup", namespace: "openstack", generation: $generation}}'
+		;;
+	rollout) echo 'deployment "controlplane-cinder-backup" successfully rolled out' ;;
+	esac
+}
+
+# storage_parts: adds to the hub and the cloud of the test the storage
+# cluster sandbox-storage, which kind lists beside the other clusters of the
+# test unless STORAGE_CLUSTER_KIND is set and empty, with a kubeconfig file,
+# and the cinder-volume service on controlplane-cinder@ceph1 up beside one
+# on controlplane-cinder@nfs1 that is down.
+storage_parts() {
+	: >"$BATS_TEST_TMPDIR/.sandbox/kubeconfig/storage.yaml"
+	volume_services up
+	kind() {
+		local compute=
+		if [ -e "$BATS_TEST_TMPDIR/.sandbox/kubeconfig/compute.yaml" ]; then
+			compute=${COMPUTE_CLUSTER_KIND-sandbox-compute}
+		fi
+		case $* in
+		"get clusters") printf '%s\n' sandbox-management $compute ${STORAGE_CLUSTER_KIND-sandbox-storage} ;;
+		"get nodes --name sandbox-management") echo sandbox-management-control-plane ;;
+		"get nodes --name sandbox-compute") printf '%s\n' sandbox-compute-control-plane sandbox-compute-worker ;;
+		"get nodes --name sandbox-storage") echo sandbox-storage-control-plane ;;
+		*) return 1 ;;
+		esac
+	}
+	export OLD_KEY NEW_KEY STRAY_KEY IMAGE_DIGEST
+	export -f kind
+}
+
+# volume_services <state>: writes volume-services.json, the cinder-volume
+# services of openstack 6.6.0 under -f json, with the one on
+# controlplane-cinder@ceph1 in the state given, or without it for none.
+volume_services() {
+	jq -n --arg state "$1" '[{Binary: "cinder-volume", Host: "controlplane-cinder@nfs1", Zone: "nova", Status: "enabled", State: "down",
+		"Updated At": "2026-11-27T09:00:00.000000"}]
+		+ if $state == "none" then [] else [{Binary: "cinder-volume", Host: "controlplane-cinder@ceph1", Zone: "nova",
+			Status: "enabled", State: $state, "Updated At": "2026-11-27T10:00:00.000000"}] end' >"$BATS_TEST_TMPDIR/volume-services.json"
+}
+
+# rbd_cloud [cephbk]: healthy_cloud with storage_parts and the backend ceph1
+# of type RBD in the cinder block of the ControlPlane, and with cephbk the
+# backup target cephbk.
+rbd_cloud() {
+	rm -rf -- "$BATS_TEST_TMPDIR/storage"
+	rm -f -- "$BATS_TEST_TMPDIR"/{kubectl,openstack,sleep}.log
+	healthy_cloud
+	storage_parts
+	rbd_backends '[{name: "ceph1", type: "RBD", rbd: {pool: "volumes", user: "cinder", monitors: ["sandbox-storage-control-plane:3300"],
+		networks: ["172.30.0.0/16"], keySecretRef: {name: "ceph-client-cinder"}}}]'
+	if [ "${1:-}" = cephbk ]; then
+		hub_edit '.spec.services.cinder.backupBackend = {name: "cephbk", type: "RBD", rbd: {pool: "backups", user: "cinder-backup",
+			monitors: ["sandbox-storage-control-plane:3300"], networks: ["172.30.0.0/16"], keySecretRef: {name: "ceph-client-cinder-backup"}}}'
+	fi
+}
+
+# rbd_backends <jq value>: sets the backends of the cinder block of the
+# ControlPlane to the value.
+rbd_backends() {
+	hub_edit ".spec.services.cinder.backends = $1"
+}
+
+# rbd_lines: prints the lines of $output of the RBD checks.
+rbd_lines() {
+	grep -E '^(ok|FAIL) rbd-' <<<"$output" || :
+}
+
+# storage_calls: prints the calls of kubectl.log with the kubeconfig of
+# sandbox-storage.
+storage_calls() {
+	grep -F -- "--kubeconfig $BATS_TEST_TMPDIR/.sandbox/kubeconfig/storage.yaml " "$BATS_TEST_TMPDIR/kubectl.log" || :
 }
 
 # hub_file_edit <file> <jq filter>: changes the file of hub/ with the filter.
@@ -1841,6 +2035,260 @@ Connection refused'
 		"$BATS_TEST_TMPDIR/curl.log" "$BATS_TEST_TMPDIR/openssl.log"
 	# It reaches openssl on stdin.
 	grep -qF -- "$CONSOLE_TOKEN" "$BATS_TEST_TMPDIR/openssl.stdin"
+}
+
+@test "verify.sh runs no RBD check and reads no storage cluster for a ControlPlane without backends, with nfs1 alone, or with an entry ceph1 of type NFS" {
+	local case
+	for case in none nfs1 ceph1-nfs; do
+		rbd_cloud
+		case $case in
+		none) hub_edit 'del(.spec.services.cinder.backends)' ;;
+		nfs1) rbd_backends '[{name: "nfs1", type: "NFS", nfs: {server: "nfs-server.openstack.svc.cluster.local", path: "/volumes"}}]' ;;
+		ceph1-nfs) rbd_backends '[{name: "ceph1", type: "NFS", nfs: {server: "nfs-server.openstack.svc.cluster.local", path: "/volumes"}}]' ;;
+		esac
+		run "$BATS_TEST_TMPDIR/scripts/verify.sh"
+		echo "$case: $output"
+		[ "$status" -eq 0 ]
+		[ -z "$(rbd_lines)" ]
+		[ "${lines[-1]}" = "verify: 16 of 16 checks passed" ]
+		[ -z "$(storage_calls)" ]
+		[ -z "$(logged 'volume backend *')" ]
+		[ -z "$(logged '*sandbox-verify-rbd*')" ]
+	done
+}
+
+@test "verify.sh passes rbd-backend and rbd-volume with ceph1 after cinder-volume and before the compute checks" {
+	rbd_cloud
+	compute_parts
+	storage_parts
+	run "$BATS_TEST_TMPDIR/scripts/verify.sh"
+	echo "$output"
+	[ "$status" -eq 0 ]
+	[ "$(check_ids)" = keystone-token,keystone-catalog,glance-catalog,glance-image,placement-catalog,placement-classes,barbican-catalog,barbican-secret,neutron-catalog,neutron-network,cinder-catalog,cinder-volume,nova-catalog,nova-services,nova-server,horizon-login,rbd-backend,rbd-volume,compute-pool,compute-chassis,compute-metadata-agent,compute-hypervisor,compute-network,compute-server,compute-metadata,compute-console ]
+	[ "$(rbd_lines)" = "ok rbd-backend: the backend ceph1 reports the pool controlplane-cinder@ceph1#ceph1, and cinder-volume on controlplane-cinder@ceph1 is up
+ok rbd-volume: the 1 GiB volume sandbox-verify-rbd-volume is available on controlplane-cinder@ceph1#ceph1, and its image volumes/volume-id-sandbox-verify-rbd-volume on sandbox-storage has 1073741824 bytes" ]
+	[ "${lines[-1]}" = "verify: 26 of 26 checks passed" ]
+	# rbd reads the image in the toolbox of sandbox-storage, and nothing
+	# backs up or rotates.
+	[ "$(storage_calls | sed 's|^--kubeconfig [^ ]* ||')" = "-n rook-ceph exec deploy/rook-ceph-tools -- rbd info --format json volumes/volume-id-sandbox-verify-rbd-volume" ]
+	[ -n "$(logged 'cinder create --name sandbox-verify-rbd-volume 1')" ]
+	[ -z "$(logged 'volume backup create *')" ]
+}
+
+@test "verify.sh passes the five RBD checks in the order of the table with cephbk, and raises keyGeneration from 1 to 2 with a merge patch" {
+	rbd_cloud cephbk
+	run "$BATS_TEST_TMPDIR/scripts/verify.sh"
+	echo "$output"
+	[ "$status" -eq 0 ]
+	[ "$(check_ids)" = keystone-token,keystone-catalog,glance-catalog,glance-image,placement-catalog,placement-classes,barbican-catalog,barbican-secret,neutron-catalog,neutron-network,cinder-catalog,cinder-volume,nova-catalog,nova-services,nova-server,horizon-login,rbd-backend,rbd-volume,rbd-backup,rbd-restore,rbd-rotation ]
+	[ "$(rbd_lines)" = "ok rbd-backend: the backend ceph1 reports the pool controlplane-cinder@ceph1#ceph1, and cinder-volume on controlplane-cinder@ceph1 is up
+ok rbd-volume: the 1 GiB volume sandbox-verify-rbd-volume is available on controlplane-cinder@ceph1#ceph1, and its image volumes/volume-id-sandbox-verify-rbd-volume on sandbox-storage has 1073741824 bytes
+ok rbd-backup: the backup sandbox-verify-rbd-backup of sandbox-verify-rbd-volume is available, and the pool backups holds its image volume-id-sandbox-verify-rbd-volume.backup.base
+ok rbd-restore: the backup sandbox-verify-rbd-backup restored onto sandbox-verify-rbd-restored, whose first 4 MiB are those of sandbox-verify-rbd-volume
+ok rbd-rotation: keyGeneration of rook-ceph/cinder-backup rose from 1 to 2, openstack/ceph-client-cinder-backup holds Ceph's new key, controlplane-cinder-backup rolled, and the backup sandbox-verify-rbd-rotated is available" ]
+	[ "${lines[-1]}" = "verify: 21 of 21 checks passed" ]
+	[ "$(<"$BATS_TEST_TMPDIR/storage/patch.log")" = '{"spec":{"security":{"cephx":{"keyGeneration":2}}}}' ]
+	grep -qxF -- "--kubeconfig $BATS_TEST_TMPDIR/.sandbox/kubeconfig/storage.yaml -n rook-ceph patch cephclient cinder-backup --type merge -p {\"spec\":{\"security\":{\"cephx\":{\"keyGeneration\":2}}}}" \
+		"$BATS_TEST_TMPDIR/kubectl.log"
+	grep -qxF -- "--kubeconfig $BATS_TEST_TMPDIR/.sandbox/kubeconfig/storage.yaml -n rook-ceph exec deploy/rook-ceph-tools -- rbd bench --io-type write --io-size 4K --io-total 4M volumes/volume-id-sandbox-verify-rbd-volume" \
+		"$BATS_TEST_TMPDIR/kubectl.log"
+	[ -n "$(logged 'volume backup create --name sandbox-verify-rbd-backup -f value -c id id-sandbox-verify-rbd-volume')" ]
+	[ -n "$(logged 'cinder backup-restore --volume id-sandbox-verify-rbd-restored id-sandbox-verify-rbd-backup')" ]
+	[ -z "$(logged 'volume backup restore *')" ]
+	[ -n "$(logged 'volume backup create --name sandbox-verify-rbd-rotated -f value -c id id-sandbox-verify-rbd-volume')" ]
+	# The rollout is waited for on the hub after the patch on the storage
+	# cluster.
+	[ "$(grep -nF 'patch cephclient' "$BATS_TEST_TMPDIR/kubectl.log" | cut -d : -f 1)" -lt \
+		"$(grep -nF 'rollout status' "$BATS_TEST_TMPDIR/kubectl.log" | cut -d : -f 1)" ]
+	[ ! -e "$BATS_TEST_TMPDIR/sleep.log" ]
+}
+
+@test "verify.sh passes the six checks of the service set of storage on a cloud without the image service, and nine with cephbk" {
+	local backup
+	for backup in "" cephbk; do
+		rbd_cloud $backup
+		hub_edit '.spec.services |= {keystone, cinder}'
+		catalog_edit 'map(select(.Type != "image"))'
+		run "$BATS_TEST_TMPDIR/scripts/verify.sh"
+		echo "${backup:-ceph1}: $output"
+		[ "$status" -eq 0 ]
+		if [ -z "$backup" ]; then
+			[ "$(check_ids)" = keystone-token,keystone-catalog,cinder-catalog,cinder-volume,rbd-backend,rbd-volume ]
+			[ "${lines[-1]}" = "verify: 6 of 6 checks passed" ]
+		else
+			[ "$(check_ids)" = keystone-token,keystone-catalog,cinder-catalog,cinder-volume,rbd-backend,rbd-volume,rbd-backup,rbd-restore,rbd-rotation ]
+			[ "${lines[-1]}" = "verify: 9 of 9 checks passed" ]
+		fi
+		[ -z "$(logged 'volume create *')" ]
+	done
+}
+
+@test "verify.sh fails rbd-backend after 300 s for a pool list without ceph1, polling every 2 s, without the service, for a service that is down, and with the first line of openstack's error" {
+	rbd_cloud
+	export POOLS='controlplane-cinder@nfs1#nfs1'
+	verify_fails "FAIL rbd-backend: the backend ceph1 reports no pool after 300 s" 17 18
+	[ "$(grep -cxF 2 "$BATS_TEST_TMPDIR/sleep.log")" -eq 150 ]
+	[ "$(wc -l <"$BATS_TEST_TMPDIR/sleep.log")" -eq 150 ]
+	unset POOLS
+
+	rbd_cloud
+	volume_services none
+	verify_fails "FAIL rbd-backend: no cinder-volume service on controlplane-cinder@ceph1" 17 18
+
+	rbd_cloud
+	volume_services down
+	verify_fails "FAIL rbd-backend: cinder-volume on controlplane-cinder@ceph1 is 'down', expected up" 17 18
+
+	rbd_cloud
+	export STUB_FAILS='volume backend pool list *' STUB_ERROR=$'Internal Server Error (HTTP 500)\nsecond line'
+	verify_fails "FAIL rbd-backend: Internal Server Error (HTTP 500)" 17 18
+	# rbd-volume runs after a failed rbd-backend.
+	[ "$(rbd_lines | tail -n 1 | cut -d : -f 1)" = "ok rbd-volume" ]
+}
+
+@test "verify.sh fails rbd-volume at each of its steps and skips the three checks after it, naming rbd-volume" {
+	local case line
+	while IFS='|' read -r case line; do
+		rbd_cloud cephbk
+		case $case in
+		error) export RBD_VOLUME_STATUS=error ;;
+		host) export RBD_HOST='controlplane-cinder@nfs1#nfs1' ;;
+		size) export RBD_SIZE=2147483648 ;;
+		info) export KUBECTL_FAILS=rbd-info ;;
+		create) export STUB_FAILS='cinder create --name sandbox-verify-rbd-volume 1' STUB_ERROR='Quota exceeded for resources: volumes' ;;
+		storage) export STORAGE_CLUSTER_KIND= ;;
+		esac
+		verify_fails "FAIL rbd-volume: $line" 17 21
+		[ "$(rbd_lines | tail -n 3)" = "FAIL rbd-backup: skipped, rbd-volume failed
+FAIL rbd-restore: skipped, rbd-volume failed
+FAIL rbd-rotation: skipped, rbd-volume failed" ]
+		[ -z "$(logged 'volume backup create *')" ]
+		[ -z "$(storage_calls | grep -F 'patch cephclient')" ]
+		unset RBD_VOLUME_STATUS RBD_HOST RBD_SIZE KUBECTL_FAILS STUB_FAILS STUB_ERROR STORAGE_CLUSTER_KIND
+	done <<'CASES'
+error|the volume sandbox-verify-rbd-volume is 'error' after 120 s, expected available
+host|the volume sandbox-verify-rbd-volume is on 'controlplane-cinder@nfs1#nfs1', expected controlplane-cinder@ceph1#<pool>
+size|the image volumes/volume-id-sandbox-verify-rbd-volume has 2147483648 bytes, expected 1073741824
+info|rbd info volumes/volume-id-sandbox-verify-rbd-volume: The connection to the server 127.0.0.1:40001 was refused - did you specify the right host or port?
+create|Quota exceeded for resources: volumes
+storage|sandbox-storage does not exist
+CASES
+	# A volume in error is polled for 120 s.
+	rbd_cloud cephbk
+	export RBD_VOLUME_STATUS=error
+	verify_fails "FAIL rbd-volume: the volume sandbox-verify-rbd-volume is 'error' after 120 s, expected available" 17 21
+	[ "$(grep -cxF 2 "$BATS_TEST_TMPDIR/sleep.log")" -eq 60 ]
+}
+
+@test "verify.sh fails rbd-backup for a backup in error after 600 s and for a pool backups without the image of the volume, skips rbd-restore and runs rbd-rotation" {
+	rbd_cloud cephbk
+	export BACKUP_STATUS=error
+	verify_fails "FAIL rbd-backup: the backup sandbox-verify-rbd-backup is 'error' after 600 s, expected available" 19 21
+	[ "$(grep -cxF 2 "$BATS_TEST_TMPDIR/sleep.log")" -eq 300 ]
+	[ "$(rbd_lines | tail -n 2)" = "FAIL rbd-restore: skipped, rbd-backup failed
+ok rbd-rotation: keyGeneration of rook-ceph/cinder-backup rose from 1 to 2, openstack/ceph-client-cinder-backup holds Ceph's new key, controlplane-cinder-backup rolled, and the backup sandbox-verify-rbd-rotated is available" ]
+	[ -z "$(logged 'cinder backup-restore *')" ]
+	unset BACKUP_STATUS
+
+	rbd_cloud cephbk
+	export RBD_BACKUPS=$'volume-id-other.backup.base\nvolume-id-sandbox-verify-rbd-volume'
+	verify_fails "FAIL rbd-backup: rbd ls backups lists no image volume-id-sandbox-verify-rbd-volume.backup.*" 19 21
+	[ "$(rbd_lines | tail -n 2 | cut -d : -f 1)" = "FAIL rbd-restore
+ok rbd-rotation" ]
+}
+
+@test "verify.sh fails rbd-restore when the first 4 MiB of the restored image differ from those of the volume, and with the ERROR line of a failed restore" {
+	rbd_cloud cephbk
+	export RESTORED_DIGEST=0e4b1f7c3a9d5e2b8f6c0a4d7e1b9c3f5a8d2e6b0c4f7a1d9e3b5c8f2a6d0e4b
+	verify_fails "FAIL rbd-restore: the first 4 MiB of sandbox-verify-rbd-restored differ from those of sandbox-verify-rbd-volume" 20 21
+	[ "$(storage_calls | grep -c ' export-digest volumes/')" -eq 2 ]
+	unset RESTORED_DIGEST
+
+	rbd_cloud cephbk
+	export STUB_FAILS='cinder backup-restore *' STUB_ERROR='Invalid volume: Volume to be restored to must be available (HTTP 400)'
+	verify_fails "FAIL rbd-restore: Invalid volume: Volume to be restored to must be available (HTTP 400)" 20 21
+	[ -z "$(storage_calls | grep -F ' export-digest volumes/')" ]
+}
+
+@test "verify.sh fails rbd-rotation at each of its steps with the line of that step" {
+	local case line
+	while IFS='|' read -r case line; do
+		rbd_cloud cephbk
+		case $case in
+		generation) export NO_KEY_GENERATION=1 ;;
+		keeps) export SECRET_KEEPS=1 ;;
+		stray) export SECRET_STRAY=1 ;;
+		roll) export NO_ROLL=1 ;;
+		patch) export KUBECTL_FAILS=patch-cephclient ;;
+		rollout) export KUBECTL_FAILS=rollout ;;
+		rotated) export ROTATED_STATUS=error ;;
+		esac
+		verify_fails "FAIL rbd-rotation: $line" 20 21
+		case $case in
+		generation) [ -z "$(storage_calls | grep -F 'patch cephclient')" ] ;;
+		keeps | stray) [ "$(grep -cxF 2 "$BATS_TEST_TMPDIR/sleep.log")" -eq 150 ] ;;
+		roll | rotated) [ "$(grep -cxF 2 "$BATS_TEST_TMPDIR/sleep.log")" -eq 300 ] ;;
+		esac
+		unset NO_KEY_GENERATION SECRET_KEEPS SECRET_STRAY NO_ROLL KUBECTL_FAILS ROTATED_STATUS
+	done <<'CASES'
+generation|the CephClient rook-ceph/cinder-backup on sandbox-storage has no keyGeneration
+keeps|the Secret openstack/ceph-client-cinder-backup holds the old key after 300 s
+stray|the Secret openstack/ceph-client-cinder-backup holds a key Ceph does not hold for client.cinder-backup
+roll|the Deployment openstack/controlplane-cinder-backup did not roll within 600 s
+patch|The connection to the server 127.0.0.1:40001 was refused - did you specify the right host or port?
+rollout|The connection to the server 127.0.0.1:40001 was refused - did you specify the right host or port?
+rotated|the backup sandbox-verify-rbd-rotated is 'error' after 600 s, expected available
+CASES
+}
+
+@test "verify.sh passes no key of client.cinder-backup to kubectl or openstack as an argument and prints none" {
+	local key
+	rbd_cloud cephbk
+	run "$BATS_TEST_TMPDIR/scripts/verify.sh"
+	[ "$status" -eq 0 ]
+	for key in "$OLD_KEY" "$NEW_KEY" "$(printf '%s' "$OLD_KEY" | base64 -w 0)" "$(printf '%s' "$NEW_KEY" | base64 -w 0)"; do
+		! grep -qF -- "$key" "$BATS_TEST_TMPDIR/kubectl.log" "$BATS_TEST_TMPDIR/openstack.log"
+		[[ $output != *"$key"* ]]
+	done
+	# The rotation did read both keys: the Secret on the hub and Ceph's in
+	# the toolbox.
+	grep -qF -- '-n openstack get secret ceph-client-cinder-backup -o json' "$BATS_TEST_TMPDIR/kubectl.log"
+	[ -n "$(storage_calls | grep -F ' key-digest')" ]
+}
+
+@test "verify.sh deletes the two backups and then the two volumes before its first create and after a failed check, and reports no failed delete" {
+	rbd_cloud cephbk
+	run "$BATS_TEST_TMPDIR/scripts/verify.sh"
+	[ "$status" -eq 0 ]
+	runs_before 'volume backup delete sandbox-verify-rbd-backup' 'volume delete sandbox-verify-rbd-volume'
+	runs_before 'volume backup delete sandbox-verify-rbd-rotated' 'volume delete sandbox-verify-rbd-volume'
+	runs_before 'volume delete sandbox-verify-rbd-volume' 'cinder create --name sandbox-verify-rbd-volume 1'
+	runs_before 'volume delete sandbox-verify-rbd-restored' 'cinder create --name sandbox-verify-rbd-volume 1'
+	runs_before 'volume backup delete id-sandbox-verify-rbd-backup' 'volume delete id-sandbox-verify-rbd-volume'
+	runs_before 'volume backup delete id-sandbox-verify-rbd-rotated' 'volume delete id-sandbox-verify-rbd-restored'
+
+	# A failed restore deletes by id what was created, the backups first.
+	rbd_cloud cephbk
+	export RESTORED_DIGEST=0e4b1f7c3a9d5e2b8f6c0a4d7e1b9c3f5a8d2e6b0c4f7a1d9e3b5c8f2a6d0e4b
+	verify_fails "FAIL rbd-restore: the first 4 MiB of sandbox-verify-rbd-restored differ from those of sandbox-verify-rbd-volume" 20 21
+	runs_before 'cinder create --name sandbox-verify-rbd-restored 1' 'volume delete id-sandbox-verify-rbd-restored'
+	runs_before 'volume backup create --name sandbox-verify-rbd-backup *' 'volume backup delete id-sandbox-verify-rbd-backup'
+	runs_before 'volume backup delete id-sandbox-verify-rbd-rotated' 'volume delete id-sandbox-verify-rbd-volume'
+	unset RESTORED_DIGEST
+
+	# A volume that never becomes available is deleted by its id.
+	rbd_cloud cephbk
+	export RBD_VOLUME_STATUS=error
+	verify_fails "FAIL rbd-volume: the volume sandbox-verify-rbd-volume is 'error' after 120 s, expected available" 17 21
+	runs_before 'cinder create --name sandbox-verify-rbd-volume 1' 'volume delete id-sandbox-verify-rbd-volume'
+	unset RBD_VOLUME_STATUS
+
+	rbd_cloud cephbk
+	export STUB_FAILS='* delete *' STUB_ERROR='No volume with a name or ID of sandbox-verify-rbd-volume exists.'
+	run "$BATS_TEST_TMPDIR/scripts/verify.sh"
+	[ "$status" -eq 0 ]
+	[ "${lines[-1]}" = "verify: 21 of 21 checks passed" ]
+	[ -n "$(logged 'volume backup delete *')" ]
 }
 
 @test "verify.sh runs no order check for a ControlPlane without a namespace assigned on the management cluster" {
