@@ -849,6 +849,12 @@ LAB=vendor/cobaltcore/deploy/overlays/metal-stack/controlplane/controlplane-lab.
 	done
 }
 
+@test "the memcached-operator runs without the webhook and pulls its image IfNotPresent" {
+	[ "$(yq '.patches[] | select(.target.name == "memcached-operator") | .patch' \
+		"$SANDBOX_ROOT/infrastructure/controllers/kustomization.yaml" | yq -o=json -I=0 '.spec.values')" = \
+		'{"image":{"pullPolicy":"IfNotPresent"},"webhook":{"enabled":false}}' ]
+}
+
 @test "the module sizing holds the SizingProfile sandbox on the base Minimal" {
 	[ "$(yq -o=json -I=0 '[.apiVersion, .kind, .metadata.name, .spec.base]' "$SANDBOX_ROOT/platform/sizing/sizingprofile.yaml")" = \
 		'["c5c3.io/v1alpha1","SizingProfile","sandbox","Minimal"]' ]
