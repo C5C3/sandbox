@@ -1,0 +1,37 @@
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: management-openbao-remote-auth
+  namespace: flux-system
+spec:
+  # openbao initialises OpenBao and keeps the root token the Job reads,
+  # loadbalancer gives the Service its address.
+  dependsOn:
+    - name: management-openbao
+    - name: management-loadbalancer
+  interval: 10m
+  retryInterval: 1m
+  timeout: 15m
+  path: ./infrastructure/openbao-remote-auth
+  prune: true
+  wait: true
+  sourceRef:
+    kind: OCIRepository
+    name: sandbox
+  # cluster-vars holds ADDRESSES_OPENBAO. make up writes the ConfigMap
+  # openbao-remote-auth with the API server and CA of each attached remote
+  # cluster (ensure_remote_auth in scripts/lib/remote-auth.sh); without it
+  # the Job leaves auth/kubernetes/<mount>/config as it is.
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: cluster-vars
+      - kind: ConfigMap
+        name: openbao-remote-auth
+        optional: true
+  # kstatus waits for the Job to complete and for the address of the
+  # Service, and counts a Certificate as ready once it exists.
+  healthCheckExprs:
+    - apiVersion: cert-manager.io/v1
+      kind: Certificate
+      current: status.conditions.exists(c, c.type == 'Ready' && c.status == 'True' && c.observedGeneration == metadata.generation)

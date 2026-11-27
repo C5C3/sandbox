@@ -232,6 +232,72 @@ EOF
 		'[{"apiGroups":[""],"resources":["secrets"],"verbs":["create"]}]' ]
 }
 
+@test "the stage management-openbao-remote-auth applies the module after openbao and loadbalancer, substitutes cluster-vars and the optional ConfigMap openbao-remote-auth, and waits for the Certificates" {
+	local stage=$SANDBOX_ROOT/clusters/management/openbao-remote-auth/stage.yaml
+	run stage_contract "$SANDBOX_ROOT" management/openbao-remote-auth
+	echo "point $output"
+	[ "$status" -eq 0 ]
+	[ "$(yq -o=json -I=0 '[.spec.dependsOn, .spec.path, .spec.interval, .spec.retryInterval, .spec.timeout, .spec.postBuild]' "$stage")" = \
+		'[[{"name":"management-openbao"},{"name":"management-loadbalancer"}],"./infrastructure/openbao-remote-auth","10m","1m","15m",{"substituteFrom":[{"kind":"ConfigMap","name":"cluster-vars"},{"kind":"ConfigMap","name":"openbao-remote-auth","optional":true}]}]' ]
+	[ "$(yq -o=json -I=0 '.spec.healthCheckExprs' "$stage")" = \
+		"$(yq -o=json -I=0 '[.spec.healthCheckExprs[] | select(.kind == "Certificate")]' "$SANDBOX_ROOT/clusters/management/pki/stage.yaml")" ]
+	[ "$(yq -o=json -I=0 '.resources' "$SANDBOX_ROOT/infrastructure/openbao-remote-auth/kustomization.yaml")" = \
+		'["service.yaml","certificates.yaml","job.yaml"]' ]
+}
+
+@test "the Job openbao-remote-auth is forced, pins the image of openbao-bootstrap, mounts only its runner and an emptyDir, and takes the four API variables as := defaults" {
+	local dir=$SANDBOX_ROOT/infrastructure/openbao-remote-auth job='select(.kind == "Job")' spec
+	spec=$(yq -o=json -I=0 "$job | .spec" "$dir/job.yaml")
+	[ "$(yq "$job | .metadata.name + \" \" + .metadata.annotations[\"kustomize.toolkit.fluxcd.io/force\"]" "$dir/job.yaml")" = \
+		"openbao-remote-auth enabled" ]
+	[ "$(jq -c '[.backoffLimit, .activeDeadlineSeconds, .template.spec.serviceAccountName, .template.spec.containers[0].command]' <<<"$spec")" = \
+		'[4,900,"openbao-remote-auth",["bash","/runner/remote-auth.sh"]]' ]
+	[ "$(jq -r '.template.spec.containers[0].image' <<<"$spec")" = \
+		"$(yq "$job | .spec.template.spec.containers[0].image" "$SANDBOX_ROOT/infrastructure/openbao/bootstrap.yaml")" ]
+	[ "$(jq -c '.template.spec.containers[0] | [.securityContext, .resources]' <<<"$spec")" = \
+		"$(yq ea -o=json -I=0 "[$job | .spec.template.spec.containers[0]] | map([.securityContext, .resources]) | .[0]" "$SANDBOX_ROOT/infrastructure/openbao/bootstrap.yaml")" ]
+	[ "$(jq -c '.template.spec.volumes' <<<"$spec")" = \
+		'[{"name":"tmp","emptyDir":{}},{"name":"runner","configMap":{"name":"openbao-remote-auth-runner"}}]' ]
+	[ "$(jq -c '.template.spec.containers[0].env' <<<"$spec")" = \
+		'[{"name":"HOME","value":"/tmp"},{"name":"STORAGE_API_SERVER","value":"${STORAGE_API_SERVER:=}"},{"name":"STORAGE_API_CA_B64","value":"${STORAGE_API_CA_B64:=}"},{"name":"COMPUTE_API_SERVER","value":"${COMPUTE_API_SERVER:=}"},{"name":"COMPUTE_API_CA_B64","value":"${COMPUTE_API_CA_B64:=}"}]' ]
+	# Each default is quoted in the file.
+	[ "$(grep -cE '^ +value: "\$\{(STORAGE|COMPUTE)_API_(SERVER|CA_B64):=\}"$' "$dir/job.yaml")" = 4 ]
+}
+
+@test "the generator openbao-remote-auth-runner holds the runner, the policy and upstream's common.sh, which Flux does not substitute" {
+	local generator
+	generator=$(yq -o=json -I=0 '.configMapGenerator[] | select(.name == "openbao-remote-auth-runner")' \
+		"$SANDBOX_ROOT/infrastructure/openbao-remote-auth/kustomization.yaml")
+	[ "$(jq -c '[.namespace, .options.annotations["kustomize.toolkit.fluxcd.io/substitute"]]' <<<"$generator")" = \
+		'["shared-services","disabled"]' ]
+	[ "$(jq -r '.files | map(split("/")[-1]) | join(" ")' <<<"$generator")" = "remote-auth.sh read-ceph-client-cinder.hcl common.sh" ]
+	[ -f "$SANDBOX_ROOT/infrastructure/openbao-remote-auth/$(jq -r '.files[2]' <<<"$generator")" ]
+}
+
+@test "every rule of the Role openbao-remote-auth names its objects, and the module has no ClusterRole" {
+	local dir=$SANDBOX_ROOT/infrastructure/openbao-remote-auth
+	[ "$(yq ea -o=json -I=0 '[select(.kind == "Role") | .rules[]] | map([.resources, .resourceNames, .verbs])' "$dir/job.yaml")" = \
+		'[[["pods"],["openbao-0"],["get"]],[["pods/exec"],["openbao-0"],["create"]],[["secrets"],["openbao-init-keys"],["get"]]]' ]
+	[ "$(yq ea '[select(.kind == "ClusterRole" or .kind == "ClusterRoleBinding")] | length' "$dir"/*.yaml)" = 0 ]
+}
+
+@test "the Service openbao-published puts port 8200 of the OpenBao server on addresses.openbao" {
+	[ "$(yq -o=json -I=0 '[.kind, .metadata.namespace, .metadata.name, .metadata.annotations, .spec]' "$SANDBOX_ROOT/infrastructure/openbao-remote-auth/service.yaml")" = \
+		'["Service","shared-services","openbao-published",{"metallb.io/loadBalancerIPs":"${ADDRESSES_OPENBAO}"},{"type":"LoadBalancer","ports":[{"name":"https","port":8200,"targetPort":8200}],"selector":{"app.kubernetes.io/name":"openbao","app.kubernetes.io/instance":"openbao","component":"server"}}]' ]
+}
+
+@test "the client Certificates of storage and compute come from the ClusterIssuer openbao-ca-issuer for client auth alone" {
+	[ "$(yq ea -o=json -I=0 '[[.metadata.namespace, .metadata.name, .spec.secretName, .spec.issuerRef, .spec.usages, .spec.commonName, .spec.duration, .spec.renewBefore]]' \
+		"$SANDBOX_ROOT/infrastructure/openbao-remote-auth/certificates.yaml")" = \
+		'[["shared-services","openbao-client-storage","openbao-client-storage",{"name":"openbao-ca-issuer","kind":"ClusterIssuer"},["client auth"],"openbao-client.sandbox-storage","8760h","720h"],["shared-services","openbao-client-compute","openbao-client-compute",{"name":"openbao-ca-issuer","kind":"ClusterIssuer"},["client auth"],"openbao-client.sandbox-compute","8760h","720h"]]' ]
+}
+
+@test "the policy read-ceph-client-cinder grants read on kv-v2/data/ceph/client-cinder alone" {
+	[ "$(grep -vE '^[[:space:]]*(#|$)' "$SANDBOX_ROOT/infrastructure/openbao-remote-auth/read-ceph-client-cinder.hcl")" = 'path "kv-v2/data/ceph/client-cinder" {
+  capabilities = ["read"]
+}' ]
+}
+
 @test "every rule of the two tenant Roles and of the Roles rabbitmq-transport and hypervisor-operator-auth names its objects" {
 	local file count roles='select(.kind == "Role")'
 	while read -r file count; do

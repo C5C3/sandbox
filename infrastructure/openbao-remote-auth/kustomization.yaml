@@ -1,0 +1,34 @@
+# The module openbao-remote-auth: the shared OpenBao for the storage and
+# compute clusters. It publishes OpenBao on addresses.openbao, issues the
+# client certificates its mutual TLS requires for sandbox-storage and
+# sandbox-compute, and runs the Job openbao-remote-auth, which writes the
+# policy read-ceph-client-cinder, enables the auth mounts kubernetes/storage
+# and kubernetes/hypervisor, writes the roles of the key hand-off on them and
+# points each at the API server of its cluster. Upstream's roles eso-storage
+# and eso-hypervisor on these mounts cannot carry the hand-off
+# (C5C3/cobaltcore#1901), so the sandbox writes roles of its own.
+#
+# make up copies the client certificates into flux-system, from where the
+# stages of the remote clusters substitute them (ADR-0039), and carries the
+# API servers and CAs of the remote clusters into the ConfigMap
+# flux-system/openbao-remote-auth, which the stage substitutes into the Job
+# (ADR-0038).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - service.yaml
+  - certificates.yaml
+  - job.yaml
+configMapGenerator:
+  # The runner, the policy it writes and upstream's helpers that run bao in
+  # openbao-0. The scripts hold ${...} of bash, which the substitution of the
+  # stage would read as variables.
+  - name: openbao-remote-auth-runner
+    namespace: shared-services
+    files:
+      - remote-auth.sh
+      - read-ceph-client-cinder.hcl
+      - ../../vendor/cobaltcore/deploy/bases/shared-openbao/bootstrap/common.sh
+    options:
+      annotations:
+        kustomize.toolkit.fluxcd.io/substitute: disabled

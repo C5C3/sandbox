@@ -1,0 +1,39 @@
+# The client certificates of the storage and the compute cluster for the
+# mutual TLS of OpenBao, from the ClusterIssuer openbao-ca-issuer that also
+# signs openbao-tls, with the lifetimes of upstream's
+# vendor/cobaltcore/deploy/bases/tls/openbao-client-tls-cert.yaml. The
+# remote clusters run no cert-manager and cannot reach this issuer: make up
+# copies each Secret into flux-system/openbao-client-<role>, and the stages
+# of the remote cluster substitute it. ca.crt of each Secret is the
+# openbao-ca, with which the remote clusters verify OpenBao.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: openbao-client-storage
+  namespace: shared-services
+spec:
+  secretName: openbao-client-storage
+  duration: 8760h
+  renewBefore: 720h
+  issuerRef:
+    name: openbao-ca-issuer
+    kind: ClusterIssuer
+  usages:
+    - client auth
+  commonName: openbao-client.sandbox-storage
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: openbao-client-compute
+  namespace: shared-services
+spec:
+  secretName: openbao-client-compute
+  duration: 8760h
+  renewBefore: 720h
+  issuerRef:
+    name: openbao-ca-issuer
+    kind: ClusterIssuer
+  usages:
+    - client auth
+  commonName: openbao-client.sandbox-compute
