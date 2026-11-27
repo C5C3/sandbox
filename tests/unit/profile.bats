@@ -445,3 +445,24 @@ switches_on() {
 	[ "$status" -eq 0 ]
 	[ "$output" = $'crds\ncontrollers\nloadbalancer\npki\ngateway\nopenbao\nobjectstore\nplatform\nsizing\ncontrolplane\ncinder-nfs\norders\nfake-compute' ]
 }
+
+@test "profile_load loads storage with the management and the storage cluster, its 14 and 6 modules, 12 and 6 stages and no switch" {
+	export SANDBOX_PROFILE=storage
+	profile_load
+	[ "$SANDBOX_PROFILE_CLUSTERS" = "management storage" ]
+	[ "$(yq '.switches' "$SANDBOX_PROFILE_FILE")" = null ]
+
+	config_load
+	run cluster_modules management
+	[ "$status" -eq 0 ]
+	[ "$output" = $'crds\ncontrollers\nloadbalancer\npki\ngateway\nopenbao\nplatform\nsizing\nmessaging-tls\ncontrolplane\ncinder\ncinder-rbd\nopenbao-remote-auth\nceph-keys' ]
+	run cluster_modules storage
+	[ "$status" -eq 0 ]
+	[ "$output" = $'block-devices\nrook-crds\nrook-operator\nceph-cluster\ncontrollers\nkey-push' ]
+	run cluster_stages management
+	[ "$status" -eq 0 ]
+	[ "$output" = $'crds\ncontrollers\nloadbalancer\npki\ngateway\nopenbao\nplatform\nsizing\nmessaging-tls\ncontrolplane\nopenbao-remote-auth\nceph-keys' ]
+	run cluster_stages storage
+	[ "$status" -eq 0 ]
+	[ "$output" = $'block-devices\nrook-crds\nrook-operator\nceph-cluster\ncontrollers\nkey-push' ]
+}

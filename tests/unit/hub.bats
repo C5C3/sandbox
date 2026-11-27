@@ -444,17 +444,24 @@ scaffold_attached() {
 	# The host check passes, kind lists no cluster, and a failed fetch of
 	# upstream stops the run.
 	echo 'preflight_run() { :; }' >"$BATS_TEST_TMPDIR/scripts/lib/preflight.sh"
-	export SANDBOX_PROFILE=controlplane SANDBOX_CONFIG=$SANDBOX_ROOT/config.yaml SANDBOX_UPSTREAM_URL=file://$BATS_TEST_TMPDIR/missing
+	export SANDBOX_UPSTREAM_URL=file://$BATS_TEST_TMPDIR/missing
 	kind() {
 		[ "$*" = "get clusters" ] && return 0
 		echo "unit test called kind $*" >&2
 		return 1
 	}
 	export -f docker kind
-	run "$BATS_TEST_TMPDIR/scripts/up.sh"
-	[ "$status" -eq 1 ]
-	[[ ${lines[-1]} == "error: vendor: cannot fetch "* ]]
-	[[ $output != *"switches."* && $output != *"unit test called"* ]]
+	# controlplane turns on four switches; storage lists cinder and
+	# cinder-rbd for cinder-backup.
+	for profile in controlplane storage; do
+		export SANDBOX_PROFILE=$profile
+		config_with '.switches["cinder-backup"] = '"$([ "$profile" = storage ] && echo true || echo false)"
+		run "$BATS_TEST_TMPDIR/scripts/up.sh"
+		echo "$profile: $output"
+		[ "$status" -eq 1 ]
+		[[ ${lines[-1]} == "error: vendor: cannot fetch "* ]]
+		[[ $output != *"switches."* && $output != *"unit test called"* ]]
+	done
 }
 
 @test "up.sh stops at a failed fetch of upstream before it calls kind or Docker" {
