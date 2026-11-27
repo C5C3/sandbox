@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
 # The hand-off of the Ceph client keys through the shared OpenBao, against a
-# real Docker: point 3 of the README for both remote clusters. It runs the
+# real Docker: point 3 of PLAN.md for both remote clusters. It runs the
 # scratch profile keys, which lives outside the tree in the test's
 # directory: management with the modules up to openbao, openbao-remote-auth
 # and ceph-keys, storage with the Ceph of tests/host/storage-ceph.bats,

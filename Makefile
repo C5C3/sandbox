@@ -1,5 +1,5 @@
-# The command layer of the sandbox. See "Planned command surface" in the
-# README.
+# The command layer of the sandbox. See "Planned command surface" in
+# PLAN.md.
 
 SHELL := bash
 .NOTPARALLEL:

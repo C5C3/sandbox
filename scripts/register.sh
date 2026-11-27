@@ -8,7 +8,7 @@
 # it into the Secret c5c3-clusters/<name>, the cluster name a
 # targetClusterRef names, with the namespaces as a comma-separated list.
 # The Secret carries no label of a cluster role, so make up leaves it alone;
-# "The registration of a compute cluster" in the README says how to read and
+# "The registration of a compute cluster" in PLAN.md says how to read and
 # remove it.
 set -euo pipefail
 

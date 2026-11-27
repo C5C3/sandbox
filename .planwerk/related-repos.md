@@ -4,7 +4,7 @@
 
 When: the work finds a gap or a defect in upstream that the sandbox cannot
 close on its own side. That is the case when a point from "Points to prove
-first" of the README fails, or holds only with a workaround, because of
+first" of PLAN.md fails, or holds only with a workaround, because of
 upstream behavior; when an upstream base, chart, CRD, operator or guide has to
 change before a module of the sandbox works; or when a patch in the sandbox
 carries something upstream should carry itself.

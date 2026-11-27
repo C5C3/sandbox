@@ -3,7 +3,7 @@
 # unsealed and configured by the Job openbao-bootstrap, the ClusterSecretStore
 # and the ExternalSecrets that read it, Garage, the c5c3-operator and the
 # SizingProfile sandbox on sandbox-management, and the recovery after a
-# restart of the OpenBao pod that the README names. It needs a host that
+# restart of the OpenBao pod that PLAN.md names. It needs a host that
 # passes the host check for the management role, refuses to start while a
 # sandbox exists and ends with make down.
 #

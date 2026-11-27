@@ -11,7 +11,7 @@
 #
 # Keystone refuses to delete an enabled domain and K-ORC does not disable
 # it, so taking the module off a running sandbox leaves the Domain
-# hvo-cc3test in deletion; the README says how to release it.
+# hvo-cc3test in deletion; PLAN.md says how to release it.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:

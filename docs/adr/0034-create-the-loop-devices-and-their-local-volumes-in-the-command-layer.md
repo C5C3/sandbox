@@ -6,7 +6,7 @@
 
 ## Context
 
-Point 1 of the README: Rook brings up an OSD on a loop device offered as a static `volumeMode: Block` local volume inside a kind node ([Points to prove first](../../README.md#points-to-prove-first)). [ADR-0008](0008-one-storage-node-one-osd-single-replica-pools.md) puts the OSDs of `sandbox-storage` there, one by default, with the switches `osd-count` and `osd-size` for their number and the size of their sparse files. `sandbox-storage` has one node, `sandbox-storage-control-plane`, whose `/var` is a Docker volume, and the host check requires the kernel module `loop` for the storage role.
+Point 1 of PLAN.md: Rook brings up an OSD on a loop device offered as a static `volumeMode: Block` local volume inside a kind node ([Points to prove first](../../PLAN.md#points-to-prove-first)). [ADR-0008](0008-one-storage-node-one-osd-single-replica-pools.md) puts the OSDs of `sandbox-storage` there, one by default, with the switches `osd-count` and `osd-size` for their number and the size of their sparse files. `sandbox-storage` has one node, `sandbox-storage-control-plane`, whose `/var` is a Docker volume, and the host check requires the kernel module `loop` for the storage role.
 
 No manifest creates a file or attaches a loop device, and `losetup --find` hands out whichever device of the host is free. A kind node has no devtmpfs: Docker fills `/dev` of a privileged container once, at creation, so a loop device the kernel creates later has no node there, and `losetup` fails on it. kubelet holds every block volume open through a loop device of its own: it runs `losetup -f` on `<kubelet dir>/plugins/.../volumeDevices/<volume name>/<pod uid>` (`pkg/volume/util/volumepathhandler/volume_path_handler_linux.go` and `pkg/volume/local/local.go` of kubernetes/kubernetes@v1.37.0). So the node needs free loop devices beyond those of the OSDs, and a deleted node leaves kubelet's loop devices attached on the host, each holding an OSD file open. Nor does a kind node run udev: ceph-volume in the OSD prepare Job reads `/run/udev/data/b<major>:<minor>` of every block device of the host, partitions included, from `/run/udev` of the node, and the host run of this package found it failing with `RuntimeError: No udev data could be retrieved for /sys/block/loop0`, then for `/sys/block/nvme0n1/nvme0n1p1`, until each device had a record.
 
@@ -33,7 +33,7 @@ Three fixed volumes in the module, with three devices in every profile. A fixed 
 
 The host's `/dev` mounted into the node. It gives the node every device of the host, its disks among them, where the node needs loop device nodes alone, which `mknod` creates in a running node.
 
-A block-capable provisioner, the second fallback of point 1 of the README. It is a fallback for a failed point, which changes what the package builds and which the owner confirms first ([When a point to prove fails](README.md#when-a-point-to-prove-fails)). The local-path provisioner of kind has no block mode, so it would add a provisioner to the storage cluster.
+A block-capable provisioner, the second fallback of point 1 of PLAN.md. It is a fallback for a failed point, which changes what the package builds and which the owner confirms first ([When a point to prove fails](README.md#when-a-point-to-prove-fails)). The local-path provisioner of kind has no block mode, so it would add a provisioner to the storage cluster.
 
 ## Consequences
 

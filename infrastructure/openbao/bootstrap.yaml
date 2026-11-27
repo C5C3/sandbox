@@ -8,7 +8,7 @@
 # when its spec changes: a change of bootstrap.sh, or a move of the pin that
 # changes upstream's scripts or policies, renames a mounted ConfigMap. The
 # Job has no ttlSecondsAfterFinished, because Flux would create a deleted Job
-# again at every reconcile. README.md, section "The shared OpenBao", says how
+# again at every reconcile. PLAN.md, section "The shared OpenBao", says how
 # to run it again by hand.
 #
 # The Role lets the Job read the pod openbao-0 and exec into it, where the

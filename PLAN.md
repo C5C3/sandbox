@@ -1,4 +1,11 @@
-# CobaltCore OpenStack Sandbox
+# Plan of the CobaltCore OpenStack Sandbox
+
+> This file holds the design of the sandbox and the plan of its milestones,
+> which the README held until 2026-11-27. It stays while the issues of
+> [#2](https://github.com/C5C3/sandbox/issues/2) are open. Once they are
+> done, its content moves into proper documentation and this file is
+> removed. How to start a sandbox and use it is in the
+> [README](README.md).
 
 A modular sandbox for evaluating the parts of
 [CobaltCore OpenStack](https://github.com/C5C3/cobaltcore) on a single Linux
@@ -16,7 +23,7 @@ of the IPCEI-CIS and NeoNephos community, November 24 to 26, 2026.
 > control plane of milestone 1, the orders of milestone 2, Ceph, the key
 > hand-off and Cinder on RBD of milestone 3 and the hypervisor of
 > milestone 4 are implemented, and milestones 5 to 7 are specification.
-> This README describes what is to be built, which upstream material it builds
+> This document describes what is to be built, which upstream material it builds
 > on, and which points have to be proven first. It was written against
 > `C5C3/cobaltcore` at `15a0323e` and `C5C3/playground` at `d2e6b596`
 > (both 2026-11-24). Statements marked *upstream* are taken from those

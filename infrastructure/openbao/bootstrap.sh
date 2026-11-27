@@ -28,7 +28,7 @@
 #   OPENBAO_BOOTSTRAP_TIMEOUT   seconds to wait for bao status, by default 600
 #   OPENBAO_BOOTSTRAP_INTERVAL  seconds between two tries, by default 5
 #
-# README.md, section "The shared OpenBao", says how to run the Job again.
+# PLAN.md, section "The shared OpenBao", says how to run the Job again.
 set -euo pipefail
 
 scripts_dir=${SCRIPTS_DIR:-/scripts}

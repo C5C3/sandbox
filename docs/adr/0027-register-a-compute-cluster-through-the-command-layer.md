@@ -8,7 +8,7 @@
 
 The CobaltCore operators reach a target cluster through its registration: a Secret in `c5c3-clusters` on the management cluster with the label `sigs.k8s.io/multicluster-runtime-kubeconfig: "true"`, a kubeconfig, and the namespaces they may use there. Upstream's guide Deploy to a Target Cluster assembles that kubeconfig from the server of `kind get kubeconfig --internal` and the token and CA of the Secret `c5c3-access/target-cluster-access-token`, which the token controller of the target fills in once the access chart is installed ([ADR-0026](0026-release-a-vendored-chart-through-an-artifactgenerator-on-the-hub.md)). The operators refuse a kubeconfig whose user runs a credential plugin and leave such a cluster unresolvable, without a message on any object.
 
-The token comes from one cluster and the Secret goes to another, which no stage of Flux can do. The README asks that the registration be a part of its own with inputs, a kubeconfig and names, and not a side effect of creating a kind cluster, because the external compute cluster of milestone 7 is registered the same way.
+The token comes from one cluster and the Secret goes to another, which no stage of Flux can do. PLAN.md asks that the registration be a part of its own with inputs, a kubeconfig and names, and not a side effect of creating a kind cluster, because the external compute cluster of milestone 7 is registered the same way.
 
 ## Decision
 
@@ -28,7 +28,7 @@ The kubeconfig reaches no file and no argument list: it travels through pipes an
 
 A Job on the management cluster that reads the token through `kubeconfig-compute`. It would keep the registration in Flux, but it serves no external cluster, which has no such Secret, and it puts a cluster-admin kubeconfig into a pod.
 
-The registration as a step of `ensure_cluster`, when the kind cluster is created. The token exists only after Flux has installed the access chart, which comes later, and the registration would be the side effect of creating a kind cluster that the README rules out.
+The registration as a step of `ensure_cluster`, when the kind cluster is created. The token exists only after Flux has installed the access chart, which comes later, and the registration would be the side effect of creating a kind cluster that PLAN.md rules out.
 
 ## Consequences
 
