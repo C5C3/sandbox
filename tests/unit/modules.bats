@@ -840,8 +840,11 @@ LAB=vendor/cobaltcore/deploy/overlays/metal-stack/controlplane/controlplane-lab.
 	local pattern names name
 	pattern=$(yq '.patches[] | select(.patch | test("/spec/suspend")) | .target.name' \
 		"$SANDBOX_ROOT/infrastructure/controllers/kustomization.yaml")
-	names=$(yq '.patches[] | select(.patch | test("/spec/dependsOn")) | .patch' \
-		"$SANDBOX_ROOT/platform/operator/kustomization.yaml" | yq '.[0].value[].name')
+	# The module platform keeps upstream's dependsOn (ADR-0021).
+	[ "$(yq '[.patches[] | select(.patch | test("dependsOn"))] | length' \
+		"$SANDBOX_ROOT/platform/operator/kustomization.yaml")" = 0 ]
+	names=$(yq ea 'select(.kind == "HelmRelease" and .metadata.name == "c5c3-operator") | .spec.dependsOn[].name' \
+		"$SANDBOX_ROOT/vendor/cobaltcore/deploy/bases/controlplane-operator/helmrelease.yaml")
 	[ -n "$pattern" ]
 	[ -n "$names" ]
 	for name in $names; do
