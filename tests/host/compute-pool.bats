@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
 # The compute pool on a hypervisor of sandbox-compute, against a real Docker:
-# points 5, 7, 8 and 9 of the README. It runs the scratch profile
+# points 5, 7, 8 and 9 of PLAN.md. It runs the scratch profile
 # compute-pool: Keystone, Glance, Placement, Neutron and Nova on the TLS bus
 # of messaging-tls on sandbox-management with the modules remote-compute,
 # hypervisor-fixtures and compute-pool, and access, controllers, node-prep,

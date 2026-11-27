@@ -6,7 +6,7 @@
 
 ## Context
 
-Milestone 4 of the README is done when Part 2, Steps 1 to 5 of upstream's Quick Start (metal-stack) pass on one node, and of Step 6 the metadata call and the noVNC console: a `Hypervisor` onboarded, the pool Ready, a server `ACTIVE`. The quick start runs these by hand. `make verify` runs the checks of the services the ControlPlane declares and the checks of the orders ([ADR-0025](0025-check-the-orders-with-scratch-orders-and-a-scheduled-rotation.md)), and reads the hub only. The `Hypervisor` objects live on the compute cluster. The lab has no provider network, so a server is reached through its console only.
+Milestone 4 of PLAN.md is done when Part 2, Steps 1 to 5 of upstream's Quick Start (metal-stack) pass on one node, and of Step 6 the metadata call and the noVNC console: a `Hypervisor` onboarded, the pool Ready, a server `ACTIVE`. The quick start runs these by hand. `make verify` runs the checks of the services the ControlPlane declares and the checks of the orders ([ADR-0025](0025-check-the-orders-with-scratch-orders-and-a-scheduled-rotation.md)), and reads the hub only. The `Hypervisor` objects live on the compute cluster. The lab has no provider network, so a server is reached through its console only.
 
 ## Decision
 
@@ -23,7 +23,7 @@ A check whose input an earlier check failed to create reports `FAIL <id>: skippe
 
 A WebSocket client beside `curl` and `openssl`, such as `websocat` or a Python script. It adds a host requirement for one check.
 
-The console URL alone, or its page alone. Neither shows that the proxy reaches the VNC of a node on another cluster, interface 7 of the README.
+The console URL alone, or its page alone. Neither shows that the proxy reaches the VNC of a node on another cluster, interface 7 of PLAN.md.
 
 A ping or an SSH login to the server. The lab has no provider network and the sandbox no floating IPs.
 

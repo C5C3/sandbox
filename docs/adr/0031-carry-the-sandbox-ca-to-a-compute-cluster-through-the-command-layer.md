@@ -6,11 +6,11 @@
 
 ## Context
 
-Point 5 of the README: `nova-compute`, the metadata agent and the hypervisor operator (hvo) on `sandbox-compute` reach Keystone, the public catalog rows and the metadata API through the Gateway on port 443, whose certificate the sandbox CA signs ([ADR-0005](0005-metallb-addresses-nip-io-names-one-ca-port-443.md)). Upstream's remote compute contract carries `ca.crt` for the broker alone, and no field of the ControlPlane, the `NovaCompute` or the hvo chart names a trust anchor for the Gateway. Upstream's guide Connect a Compute Cluster leaves the CA of the metadata API to the owner of the compute cluster, as the Secret `nova-metadata-ca`.
+Point 5 of PLAN.md: `nova-compute`, the metadata agent and the hypervisor operator (hvo) on `sandbox-compute` reach Keystone, the public catalog rows and the metadata API through the Gateway on port 443, whose certificate the sandbox CA signs ([ADR-0005](0005-metallb-addresses-nip-io-names-one-ca-port-443.md)). Upstream's remote compute contract carries `ca.crt` for the broker alone, and no field of the ControlPlane, the `NovaCompute` or the hvo chart names a trust anchor for the Gateway. Upstream's guide Connect a Compute Cluster leaves the CA of the metadata API to the owner of the compute cluster, as the Secret `nova-metadata-ca`.
 
 hvo at its pinned commit builds its Keystone client with `clientconfig.AuthenticatedClient` (`internal/openstack/service_client.go` of [cobaltcore-dev/openstack-hypervisor-operator@a2baf3f](https://github.com/cobaltcore-dev/openstack-hypervisor-operator/tree/a2baf3f4002e39ff93f105fae9594b357ba55b21)), and in the gophercloud/utils version it vendors only `NewServiceClient` reads `OS_CACERT`. The gap is [C5C3/cobaltcore#1885](https://github.com/C5C3/cobaltcore/issues/1885).
 
-The CA lives in the Secret `cert-manager/sandbox-ca` on the management cluster. A stage on the hub substitutes only from ConfigMaps and Secrets in `flux-system`, and the README assigns CA bundles that cross a cluster boundary to the command layer.
+The CA lives in the Secret `cert-manager/sandbox-ca` on the management cluster. A stage on the hub substitutes only from ConfigMaps and Secrets in `flux-system`, and PLAN.md assigns CA bundles that cross a cluster boundary to the command layer.
 
 ## Decision
 
@@ -28,7 +28,7 @@ The CA of the mirrored contract for the metadata agent and hvo too, without the 
 
 `OS_CACERT` in hvo. The pinned image ignores it.
 
-A certificate from a public CA through DNS-01 on a real domain, the README's fallback for point 5. It needs a domain only the owner of the sandbox has.
+A certificate from a public CA through DNS-01 on a real domain, the fallback of PLAN.md for point 5. It needs a domain only the owner of the sandbox has.
 
 A copy of the CA by a stage, through External Secrets on the hub. The source is a cert-manager Secret on the same cluster and the target a ConfigMap in `flux-system`; the command layer already holds the hub's kubeconfig and writes `cluster-vars` the same way.
 

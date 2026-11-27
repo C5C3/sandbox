@@ -35,7 +35,7 @@
 #                              the MariaDB and the services, by default 1500
 #   TENANT_INTERVAL            seconds between two tries, by default 5
 #
-# README.md, section "The database tenant onboarding", says how to run the Job
+# PLAN.md, section "The database tenant onboarding", says how to run the Job
 # again.
 set -euo pipefail
 

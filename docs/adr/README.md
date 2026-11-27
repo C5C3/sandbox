@@ -82,7 +82,7 @@ The package that finds the failure writes the new ADR before it builds the modul
 1. It adds the new ADR. Its Context names the point, what was run and what failed. Its Decision is the fallback taken. It supersedes, in whole or in part, each ADR whose Decision or Consequences the fallback taken changes, and no other. The ADRs in the point's ADR cell are the ones to check first.
 2. It sets the Status of each superseded ADR, in its file and in the table of ADRs above.
 3. It puts the new ADR into the ADR cell of the point's row in the points table.
-4. It adds the new ADR's link beside the old one in the row of each superseded decision in the [design decisions of the README](../../README.md#design-decisions).
+4. It adds the new ADR's link beside the old one in the row of each superseded decision in the [design decisions of PLAN.md](../../PLAN.md#design-decisions).
 
 Where the new ADR supersedes nothing, the second and the fourth item do not apply.
 

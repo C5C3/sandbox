@@ -14,7 +14,7 @@ Upstream holds the one-replica settings of the server as a patch in `deploy/base
 
 The module `openbao` runs upstream's release `shared-services/openbao` on one replica, with upstream's one-replica settings restated as a patch, and the Job `openbao-bootstrap` in the same stage. The Job runs `infrastructure/openbao/bootstrap.sh`. It waits until `openbao-0` answers, runs upstream's `init-unseal.sh` with 5 Shamir shares and threshold 3, then `setup-secret-engines.sh`, `setup-auth.sh`, `setup-policies.sh` and `write-bootstrap-secrets.sh` with the root token from the Secret, and annotates the `ClusterSecretStore` `openbao-cluster-store` so that External Secrets validates it at once.
 
-The Job runs once. Flux creates it again when a ConfigMap it mounts changes its name. Nothing unseals OpenBao after a restart of its pod: the README names the symptom and the two commands that run the Job again.
+The Job runs once. Flux creates it again when a ConfigMap it mounts changes its name. Nothing unseals OpenBao after a restart of its pod: PLAN.md names the symptom and the two commands that run the Job again.
 
 ## Alternatives not taken
 
@@ -24,7 +24,7 @@ A CronJob that runs `init-unseal.sh` every few minutes. It would unseal after a 
 
 ## Consequences
 
-After a restart of `openbao-0`, OpenBao stays sealed until the Job is deleted and the stage reconciled, as the README section "The shared OpenBao" describes. The sandbox is rebuilt, not repaired, so this is the one repair it documents.
+After a restart of `openbao-0`, OpenBao stays sealed until the Job is deleted and the stage reconciled, as the section "The shared OpenBao" of PLAN.md describes. The sandbox is rebuilt, not repaired, so this is the one repair it documents.
 
 The restated patch in `infrastructure/openbao/kustomization.yaml` is compared with upstream's patch at each move of the pin. `make validate` reports it only once it changes nothing.
 

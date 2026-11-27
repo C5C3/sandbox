@@ -15,7 +15,7 @@
 # changes it through the name of the generated ConfigMap, and a change in the
 # set of TENANT_SERVICE_<SERVICE> variables, which the service components of
 # the stage add, through the env of the container, so the script writes the
-# roles of a new service. README.md, section "The database tenant
+# roles of a new service. PLAN.md, section "The database tenant
 # onboarding", says how to run it again by hand.
 #
 # The Role in openstack lets the runner read the MariaDB and the ControlPlane,

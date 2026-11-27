@@ -24,4 +24,4 @@ Leaving the TLS files to #17. libvirtd would not start in this package, and poin
 
 ## Consequences
 
-Point 6 is proven on a host by the test of this package, not on a running sandbox. Until #17 a sandbox with these modules has its libvirt pod `Running` and not Ready and the agent's pod restarting, which the README describes. The scratch objects leave the TLS files under `/etc/pki` of the node behind, which go with `make down`.
+Point 6 is proven on a host by the test of this package, not on a running sandbox. Until #17 a sandbox with these modules has its libvirt pod `Running` and not Ready and the agent's pod restarting, which PLAN.md describes. The scratch objects leave the TLS files under `/etc/pki` of the node behind, which go with `make down`.

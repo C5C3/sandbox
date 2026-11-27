@@ -6,7 +6,7 @@
 
 ## Context
 
-Point 3 of the README is that OpenBao authenticates ServiceAccounts of the storage and the compute cluster through their `kubernetes/<cluster>` mounts, and that both clusters present a client certificate issued on the management cluster ([ADR-0007](0007-ceph-client-keys-through-openbao.md)). [#13](https://github.com/C5C3/sandbox/issues/13) builds the storage half and its consumer on the management cluster. The consumer on the compute cluster, the module `ceph-libvirt-secret`, is [#18](https://github.com/C5C3/sandbox/issues/18), which depends on Cinder on RBD of [#14](https://github.com/C5C3/sandbox/issues/14).
+Point 3 of PLAN.md is that OpenBao authenticates ServiceAccounts of the storage and the compute cluster through their `kubernetes/<cluster>` mounts, and that both clusters present a client certificate issued on the management cluster ([ADR-0007](0007-ceph-client-keys-through-openbao.md)). [#13](https://github.com/C5C3/sandbox/issues/13) builds the storage half and its consumer on the management cluster. The consumer on the compute cluster, the module `ceph-libvirt-secret`, is [#18](https://github.com/C5C3/sandbox/issues/18), which depends on Cinder on RBD of [#14](https://github.com/C5C3/sandbox/issues/14).
 
 ## Decision
 

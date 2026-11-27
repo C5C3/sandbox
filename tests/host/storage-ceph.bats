@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
 # Rook Ceph on loop devices in sandbox-storage, against a real Docker:
-# points 1 and 2 of the README. It runs the scratch profile ceph, the modules
+# points 1 and 2 of PLAN.md. It runs the scratch profile ceph, the modules
 # block-devices, rook-crds, rook-operator and ceph-cluster on sandbox-storage
 # and none on sandbox-management; then the scratch profile ceph-3, the same
 # with switches.osd-count 3. Both live outside the tree in the test's

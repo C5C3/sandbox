@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
 # The worker of sandbox-compute as a hypervisor node, against a real Docker:
-# point 6 of the README. It runs the scratch profile hypervisor-node, the
+# point 6 of PLAN.md. It runs the scratch profile hypervisor-node, the
 # modules access, controllers, node-prep, libvirt and kvm-node-agent on
 # sandbox-compute and none on sandbox-management; then the scratch profile
 # hypervisor-node-off, the same with access and controllers alone. Both live
