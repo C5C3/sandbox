@@ -1,0 +1,42 @@
+# The release of vendor/cobaltcore/deploy/bases/operators/releases/
+# external-secrets.yaml on sandbox-storage: the chart, its version range, the
+# values, install and upgrade are upstream's, unchanged. The release history
+# stays on sandbox-storage, which has no flux-system, in the namespace of the
+# chart. Upstream's dependsOn on cert-manager is left out: the storage
+# cluster runs no cert-manager, and certController serves the webhook.
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: storage-external-secrets
+  namespace: flux-system
+spec:
+  interval: 30m
+  releaseName: external-secrets
+  targetNamespace: external-secrets
+  storageNamespace: external-secrets
+  kubeConfig:
+    secretRef:
+      name: kubeconfig-storage
+  chart:
+    spec:
+      chart: external-secrets
+      version: ">=0.10.0 <3.0.0"
+      sourceRef:
+        kind: HelmRepository
+        name: storage-external-secrets
+  values:
+    installCRDs: true
+    webhook:
+      port: 9443
+    certController:
+      enabled: true
+  install:
+    crds: CreateReplace
+    createNamespace: true
+    remediation:
+      retries: 3
+      remediateLastFailure: true
+  upgrade:
+    crds: CreateReplace
+    remediation:
+      retries: 3

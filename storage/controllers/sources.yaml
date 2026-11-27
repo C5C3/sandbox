@@ -1,0 +1,12 @@
+# The URL of vendor/cobaltcore/deploy/bases/operators/sources/
+# external-secrets.yaml. The role in the name keeps it apart from the source
+# of management-controllers and of the module controllers of the compute
+# cluster.
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  name: storage-external-secrets
+  namespace: flux-system
+spec:
+  interval: 1h
+  url: https://charts.external-secrets.io

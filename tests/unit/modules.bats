@@ -524,11 +524,11 @@ EOF
 		"$SANDBOX_ROOT/vendor/cobaltcore/deploy/bases/tls/openbao-tls-cert.yaml")" = '["shared-services",true]' ]
 }
 
-@test "the stages of openbao, objectstore, platform, sizing, cinder-nfs, fake-compute, hypervisor-fixtures, of access, controllers, node-prep, libvirt, kvm-node-agent and hypervisor-operator on compute and of block-devices, rook-crds and rook-operator on storage substitute no variables" {
+@test "the stages of openbao, objectstore, platform, sizing, cinder-nfs, fake-compute, hypervisor-fixtures, of access, controllers, node-prep, libvirt, kvm-node-agent and hypervisor-operator on compute and of block-devices, rook-crds, rook-operator and controllers on storage substitute no variables" {
 	local stage
 	for stage in management/{openbao,objectstore,platform,sizing,cinder-nfs,fake-compute,hypervisor-fixtures} \
 		compute/{access,controllers,node-prep,libvirt,kvm-node-agent,hypervisor-operator} \
-		storage/{block-devices,rook-crds,rook-operator}; do
+		storage/{block-devices,rook-crds,rook-operator,controllers}; do
 		echo "$stage"
 		[ "$(yq '.spec | has("postBuild")' "$SANDBOX_ROOT/clusters/$stage/stage.yaml")" = false ]
 	done
@@ -945,6 +945,42 @@ EOF
 	tree_copy
 	yq -i 'del(.spec.kubeConfig)' "$BATS_TEST_TMPDIR/tree/storage/rook-operator/release.yaml"
 	run stage_contract "$BATS_TEST_TMPDIR/tree" storage/rook-operator
+	echo "point $output"
+	[ "$status" -eq 1 ]
+	[ "$output" = 4 ]
+}
+
+@test "the stage storage-controllers applies the source and the release of External Secrets on sandbox-management without a dependency and waits for the release" {
+	local stage=$SANDBOX_ROOT/clusters/storage/controllers/stage.yaml
+	run stage_contract "$SANDBOX_ROOT" storage/controllers
+	echo "point $output"
+	[ "$status" -eq 0 ]
+	[ "$(yq -o=json -I=0 '[.spec.path, .spec.interval, .spec.retryInterval, .spec.timeout, (.spec | has("kubeConfig")), (.spec | has("dependsOn")), (.spec | has("postBuild"))]' "$stage")" = \
+		'["./storage/controllers","10m","1m","10m",false,false,false]' ]
+	[ "$(yq -o=json -I=0 '.spec.healthCheckExprs' "$stage")" = \
+		"$(yq -o=json -I=0 '.spec.healthCheckExprs' "$SANDBOX_ROOT/clusters/compute/controllers/stage.yaml")" ]
+	[ "$(yq -o=json -I=0 '.resources' "$SANDBOX_ROOT/storage/controllers/kustomization.yaml")" = '["sources.yaml","releases.yaml"]' ]
+}
+
+@test "the source and the release of storage/controllers are upstream's External Secrets, under names of their own, without dependsOn and with the kubeconfig of storage" {
+	local dir=$SANDBOX_ROOT/storage/controllers upstream=$SANDBOX_ROOT/vendor/cobaltcore/deploy/bases/operators
+	local fields='[.spec.interval, .spec.chart.spec.chart, .spec.chart.spec.version, .spec.values, .spec.install, .spec.upgrade]'
+	[ "$(yq ea -o=json -I=0 '[.kind + "/" + .metadata.namespace + "/" + .metadata.name]' "$dir/sources.yaml" "$dir/releases.yaml")" = \
+		'["HelmRepository/flux-system/storage-external-secrets","HelmRelease/flux-system/storage-external-secrets"]' ]
+	[ "$(yq -o=json -I=0 '[.spec.interval, .spec.url]' "$dir/sources.yaml")" = \
+		"$(yq -o=json -I=0 '[.spec.interval, .spec.url]' "$upstream/sources/external-secrets.yaml")" ]
+	[ "$(yq -o=json -I=0 "$fields" "$dir/releases.yaml")" = "$(yq -o=json -I=0 "$fields" "$upstream/releases/external-secrets.yaml")" ]
+	[ "$(yq -o=json -I=0 '[.spec.releaseName, .spec.targetNamespace, .spec.storageNamespace, .spec.chart.spec.sourceRef, .spec.kubeConfig, (.spec | has("dependsOn"))]' "$dir/releases.yaml")" = \
+		'["external-secrets","external-secrets","external-secrets",{"kind":"HelmRepository","name":"storage-external-secrets"},{"secretRef":{"name":"kubeconfig-storage"}},false]' ]
+	# Upstream's release waits for cert-manager, which the storage cluster
+	# does not run.
+	[ "$(yq -o=json -I=0 '.spec.dependsOn' "$upstream/releases/external-secrets.yaml")" = '[{"name":"cert-manager","namespace":"cert-manager"}]' ]
+}
+
+@test "a release of storage/controllers without kubeConfig breaks point 4" {
+	tree_copy
+	yq -i 'del(.spec.kubeConfig)' "$BATS_TEST_TMPDIR/tree/storage/controllers/releases.yaml"
+	run stage_contract "$BATS_TEST_TMPDIR/tree" storage/controllers
 	echo "point $output"
 	[ "$status" -eq 1 ]
 	[ "$output" = 4 ]
